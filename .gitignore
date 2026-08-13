@@ -1,0 +1,21 @@
+# Game copy — never commit
+Bully Scholarship Edition/
+
+# Generated analysis artifacts
+dump/
+
+# Build outputs
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor/OS
+.vs/
+.idea/
+Thumbs.db

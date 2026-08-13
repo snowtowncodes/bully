@@ -4,6 +4,9 @@ Bully Scholarship Edition/
 # Generated analysis artifacts
 dump/
 
+# opencode internal state — not project code
+.opencode/
+
 # Build outputs
 build/
 out/

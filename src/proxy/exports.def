@@ -1,0 +1,20 @@
+; Bully DX12 Wrapper — M1 proxy exports
+; Maps clean d3d9.dll export names to our internal symbols.
+LIBRARY d3d9
+EXPORTS
+    Direct3DCreate9              = proxy_Direct3DCreate9
+    Direct3DCreate9Ex            = proxy_Direct3DCreate9Ex
+    Direct3DShaderValidatorCreate9 = proxy_Direct3DShaderValidatorCreate9
+    PSGPError                    = proxy_PSGPError
+    PSGPSampleTexture            = proxy_PSGPSampleTexture
+    D3DPERF_BeginEvent           = proxy_D3DPERF_BeginEvent
+    D3DPERF_EndEvent             = proxy_D3DPERF_EndEvent
+    D3DPERF_GetStatus            = proxy_D3DPERF_GetStatus
+    D3DPERF_QueryRepeatFrame     = proxy_D3DPERF_QueryRepeatFrame
+    D3DPERF_SetMarker            = proxy_D3DPERF_SetMarker
+    D3DPERF_SetOptions           = proxy_D3DPERF_SetOptions
+    D3DPERF_SetRegion            = proxy_D3DPERF_SetRegion
+    DebugSetLevel                = proxy_DebugSetLevel
+    DebugSetMute                 = proxy_DebugSetMute
+    Direct3DCreate9On12          = proxy_Direct3DCreate9On12
+    Direct3DCreate9On12Ex        = proxy_Direct3DCreate9On12Ex

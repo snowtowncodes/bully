@@ -1,0 +1,3 @@
+# Runtime trust history; populated only by run.ps1 after it hashes a generated proxy.
+proxy-hash-history.json
+.history-validation-*.json

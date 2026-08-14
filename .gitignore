@@ -4,8 +4,12 @@ Bully Scholarship Edition/
 # Generated analysis artifacts
 dump/
 
+# Read-only dependency source used for local inspection
+deps/
+
 # opencode internal state — not project code
 .opencode/
+.cortexkit/
 
 # Build outputs
 build/

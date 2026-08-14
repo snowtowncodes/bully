@@ -92,6 +92,13 @@ Bully.exe
   interop (e.g. tone map / post FX), then graphics-mod API.
 - **M5 — Mod platform**: ASI loader integration, mod SDK, config system.
 
+### Current verification status (2026-08-14)
+
+The native proxy path is the safe default. A matched On12 run creates a verified
+D3D12-backed device and produces varied backbuffer pixels, but the visible game
+window remains white. The On12 path is parked until a specific compatibility
+lead appears; enhancement-pass work does not start from the current evidence.
+
 ## 5. Risks & open questions
 
 1. **9On12 completeness for Gamebryo**: Gamebryo 2008-era D3D9 uses fixed-function

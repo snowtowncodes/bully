@@ -173,21 +173,21 @@ static RendererBackend ReadRendererBackend() {
     GetRendererIniPath(iniPath, ARRAYSIZE(iniPath));
 
     char value[32] = {};
-    GetPrivateProfileStringA("renderer", "backend", "on12",
+    GetPrivateProfileStringA("renderer", "backend", "native",
                              value, ARRAYSIZE(value), iniPath);
 
     if (_stricmp(value, "native") == 0) {
         Log("[proxy] requested backend=native (ini=%s)\n", iniPath);
         return RendererBackend::Native;
     }
-    if (_stricmp(value, "on12") == 0 || value[0] == '\0') {
+    if (_stricmp(value, "on12") == 0) {
         Log("[proxy] requested backend=on12 (ini=%s)\n", iniPath);
         return RendererBackend::On12;
     }
 
-    Log("[proxy] requested backend=%s is unrecognized; using on12 default (ini=%s)\n",
+    Log("[proxy] requested backend=%s is unrecognized; using native default (ini=%s)\n",
         value, iniPath);
-    return RendererBackend::On12;
+    return RendererBackend::Native;
 }
 
 static On12DeviceMode ReadOn12DeviceMode() {
@@ -234,7 +234,7 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     config.captureFrames = GetPrivateProfileIntA(
         "diagnostics", "capture_frames", 1, iniPath) != 0;
     config.captureFrontBuffer = GetPrivateProfileIntA(
-        "diagnostics", "capture_frontbuffer", 1, iniPath) != 0;
+        "diagnostics", "capture_frontbuffer", 0, iniPath) != 0;
     config.captureFrame = GetPrivateProfileIntA(
         "diagnostics", "capture_frame", 60, iniPath);
 

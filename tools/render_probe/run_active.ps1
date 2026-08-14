@@ -17,7 +17,7 @@ param(
     [switch]$ValidateBridgeOnly,
 
     [ValidateSet('on12', 'native')]
-    [string]$Backend = 'on12',
+    [string]$Backend = 'native',
 
     [ValidateRange(1, 3600)]
     [int]$DurationSeconds = 40,
@@ -446,7 +446,7 @@ try {
         (ConvertTo-PowerShellSingleQuotedLiteral -Value $RequestPath)
     $encodedWorkerCommand = ConvertTo-EncodedPowerShellCommand -Command $workerCommand
     $taskAction = New-ScheduledTaskAction -Execute $powershellExe -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {0}' -f $encodedWorkerCommand) -WorkingDirectory $ScriptDirectory
-    $taskPrincipal = New-ScheduledTaskPrincipal -UserId $ControllerSid -LogonType Interactive -RunLevel Highest
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId $ControllerSid -LogonType Interactive -RunLevel Limited
     $expiryTrigger = New-ScheduledTaskTrigger -Once -At $TaskExpiryAt
     $expiryTrigger.Enabled = $false
     $expiryTrigger.EndBoundary = $TaskExpiryAt.AddSeconds(1).ToString('s')

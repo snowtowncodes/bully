@@ -8,6 +8,11 @@ Strategy: a `d3d9.dll` proxy in the game folder intercepts Gamebryo's
 **D3D9On12** translation layer, running the game's D3D9 on our D3D12 device.
 Enhancement passes hook in later via `IDirect3DDevice9On12` interop.
 
+Current status: the native proxy path is the safe default. The On12 path is
+available only when explicitly selected and is parked pending a targeted fix:
+it creates a verified D3D12-backed device and a varied backbuffer, but the
+visible game window remains white.
+
 See [docs/architecture.md](docs/architecture.md) for the full plan.
 
 ## Layout

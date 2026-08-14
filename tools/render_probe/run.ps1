@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('on12', 'native')]
-    [string]$Backend = 'on12',
+    [string]$Backend = 'native',
 
     [ValidateSet('internal', 'explicit')]
     [string]$On12Device = 'internal',

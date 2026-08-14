@@ -46,7 +46,7 @@ procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 | `renderer.force_present_interval` | `none`, `immediate`, `default`, `one` | `none` preserves the game's requested value. |
 | `diagnostics.trace_device` | `0`, `1` | Device-call trace logging. |
 | `diagnostics.capture_frames` | `0`, `1` | Enables the pre-Present backbuffer BMP. |
-| `diagnostics.capture_frontbuffer` | `0`, `1` | Enables post-Present frontbuffer capture after successful Present. |
+| `diagnostics.capture_frontbuffer` | `0`, `1` | Opt-in post-Present readback; default `0` because it can interfere with presentation. |
 | `diagnostics.capture_frame` | non-negative frame number | Current default is `60`. |
 
 The probe writes the four renderer controls into a staged INI. Do not use
@@ -159,6 +159,13 @@ outside change. It does not truncate, rename, or delete the game-folder proxy
 log. Confirm `installation.status=installed-and-restored` when staging occurred
 and confirm display state after cleanup. Do not hand-edit game files outside
 the harness.
+
+## Current Result (2026-08-14)
+
+- Current native control: `20260814-094923-pid44584-native-se-none_pi-none_od-i`, proxy SHA-256 `0d7acd...`, `capture_frontbuffer=0`; the process survived 35 seconds and the main-window captures included nonblank output. This is the valid native control for the current proxy wrapper.
+- Matched On12 control: `20260814-095119-pid17544-on12-se-none_pi-none_od-i`, the same proxy SHA-256 and controls; all three main-window captures were blank-white. The log verified `IDirect3DDevice9On12`, `ID3D12Device`, `Present=S_OK`, and a nonblank pre-Present backbuffer.
+- DXCap artifact: `dump/render-probe/dxcap-manual-20260814-115504/bully-on12-frame60.vsglog` is 4,120 bytes and `dxcap -p -toXML` reports no DirectX activity. The append-only proxy log shows that DXCap's process entered `Direct3DCreate9On12` but stopped before device creation returned, so this capture is non-diagnostic for the normal runtime path.
+- Decision: park D3D9On12. Do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead. Native is now the safe default; On12 remains an explicit experimental selection.
 
 ## Stop Conditions
 

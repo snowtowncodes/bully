@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateI
 
 ## Active Console Bridge
 
-`run_active.ps1` is a separate wrapper for a controller that is running in session 0, WinDisc, or another noninteractive desktop. It resolves the active physical console session, verifies that its `explorer.exe` belongs to the same SID as the controller, then creates one short-lived scheduled task using that SID with interactive logon and highest run level. The task runs `run.ps1` in the unlocked console desktop; `run.ps1` remains the only script that stages or restores game files.
+`run_active.ps1` is a separate wrapper for a controller that is running in session 0, WinDisc, or another noninteractive desktop. It resolves the active physical console session, verifies that its `explorer.exe` belongs to the same SID as the controller, then creates one short-lived scheduled task using that SID with interactive logon and the normal user token. The task runs `run.ps1` in the unlocked console desktop; `run.ps1` remains the only script that stages or restores game files.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -ValidateBridgeOnly
@@ -38,7 +38,7 @@ Each bridge invocation leaves its request, result, controller cleanup record, an
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `-Backend` | `on12` | Renderer INI backend: `on12` or `native`. |
+| `-Backend` | `native` | Renderer INI backend: `native` or explicitly requested `on12`. |
 | `-On12Device` | `internal` | Explicit `[renderer] on12_device`: `internal` or `explicit`. Applied only when the harness stages its INI. |
 | `-ForceSwapEffect` | `none` | Explicit `[renderer] force_swap_effect`: `none`, `discard`, `flip`, or `copy`. Applied only when the harness stages its INI. |
 | `-ForcePresentInterval` | `none` | Explicit `[renderer] force_present_interval`: `none`, `immediate`, `default`, or `one`. Applied only when the harness stages its INI. |
@@ -92,7 +92,7 @@ Every written PNG gets deterministic metrics: dimensions, mean/min/max RGB, lumi
 - `low-information-uniform`: very low luminance standard deviation and coarse-color diversity.
 - `nonblank`: everything else.
 
-The optional proxy-created `bully_renderprobe_backbuffer.bmp` and `bully_renderprobe_frontbuffer.bmp` are copied and analyzed separately when they changed during the run. Both include the same deterministic metrics, classification, hashes, and pre/post provenance in the report. They are diagnostic evidence only and do not satisfy the success requirement for window/desktop PNG captures.
+The optional proxy-created `bully_renderprobe_backbuffer.bmp` and `bully_renderprobe_frontbuffer.bmp` are copied and analyzed separately when they changed during the run. Frontbuffer readback is opt-in and disabled by default because it can interfere with presentation. Both artifacts include the same deterministic metrics, classification, hashes, and pre/post provenance in the report. They are diagnostic evidence only and do not satisfy the success requirement for window/desktop PNG captures.
 
 ## Output And Exit Status
 

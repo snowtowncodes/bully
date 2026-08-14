@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(d3d9proxy SHARED proxy.cpp)
+target_link_libraries(d3d9proxy PRIVATE d3d12 dxgi)
 
 set_target_properties(d3d9proxy PROPERTIES
     OUTPUT_NAME "d3d9"

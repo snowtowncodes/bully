@@ -445,7 +445,7 @@ try {
         (ConvertTo-PowerShellSingleQuotedLiteral -Value $WorkerScriptPath), `
         (ConvertTo-PowerShellSingleQuotedLiteral -Value $RequestPath)
     $encodedWorkerCommand = ConvertTo-EncodedPowerShellCommand -Command $workerCommand
-    $taskAction = New-ScheduledTaskAction -Execute $powershellExe -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {0}' -f $encodedWorkerCommand) -WorkingDirectory $ScriptDirectory
+    $taskAction = New-ScheduledTaskAction -Execute $powershellExe -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand {0}' -f $encodedWorkerCommand) -WorkingDirectory $ScriptDirectory
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $ControllerSid -LogonType Interactive -RunLevel Limited
     $expiryTrigger = New-ScheduledTaskTrigger -Once -At $TaskExpiryAt
     $expiryTrigger.Enabled = $false

@@ -5,7 +5,19 @@ current D3D9 proxy. It is a visual verification plan, not a game-file editing
 procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 [probe usage and safety notes](../tools/render_probe/README.md),
 [proxy diagnostics](../src/proxy/proxy.cpp), and
-[default proxy INI](../src/proxy/bully_d3d9proxy.ini).
+[default proxy INI](../src/proxy/bully_d3d9proxy.ini). Evidence authority:
+[DXVK evidence ledger](dxvk_evidence_ledger.md).
+
+## Current Evidence Boundary
+
+The ledger is authoritative for current classification. The run
+`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` is retained as historical,
+environment-specific visible DXVK proof only. Later direct and proxy DXVK runs
+produced blank-white selected `main-window` captures; the later proxy runs also
+retained varied pre-Present backbuffers. Current visible DXVK qualification is
+unresolved. Native remains the default/control, and DXVK remains opt-in
+qualification work rather than a current release claim. A backbuffer artifact,
+API success, or contaminated capture does not by itself prove visible output.
 
 ## Preconditions
 
@@ -54,10 +66,12 @@ procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 The probe writes the four renderer controls into a staged INI. Do not use
 `-NoInstall` for an A/B case because requested controls are then not applied.
 
-## Test Matrix
+## Retained Test Matrix
 
-Use 35 seconds and captures at 5, 15, and 30 seconds for every listed case.
-Run cases in this order and stop on a stop condition below.
+The commands below retain useful historical coverage and future qualification
+procedures; they are not current status evidence or a current milestone order.
+If a future authorized run uses this matrix, use 35 seconds and captures at 5,
+15, and 30 seconds for every listed case, and stop on a stop condition below.
 
 1. Native control:
 
@@ -65,7 +79,7 @@ Run cases in this order and stop on a stop condition below.
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend native -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    ```
 
-2. DXVK chainload control. Before this case, place the x86 DXVK `d3d9.dll`
+2. DXVK chainload qualification case. Before this case, place the x86 DXVK `d3d9.dll`
    beside `Bully.exe` as `dxvk_d3d9.dll`; the normal harness does not install
    third-party dependencies:
 
@@ -176,14 +190,18 @@ log. Confirm `installation.status=installed-and-restored` when staging occurred
 and confirm display state after cleanup. Do not hand-edit game files outside
 the harness.
 
-## Current Result (2026-08-14)
+## Dated Historical Results (2026-08-14)
 
-- Current native control: `20260814-094923-pid44584-native-se-none_pi-none_od-i`, proxy SHA-256 `0d7acd...`, `capture_frontbuffer=0`; the process survived 35 seconds and the main-window captures included nonblank output. This is the valid native control for the current proxy wrapper.
-- Matched On12 control: `20260814-095119-pid17544-on12-se-none_pi-none_od-i`, the same proxy SHA-256 and controls; all three main-window captures were blank-white. The log verified `IDirect3DDevice9On12`, `ID3D12Device`, `Present=S_OK`, and a nonblank pre-Present backbuffer.
+These entries preserve the recorded 2026-08-14 runs; they do not establish
+current runtime or release status. See the [DXVK evidence ledger](dxvk_evidence_ledger.md)
+for the current evidence boundary.
+
+- Dated native control: `20260814-094923-pid44584-native-se-none_pi-none_od-i`, proxy SHA-256 `0d7acd...`, `capture_frontbuffer=0`; the process survived 35 seconds and the main-window captures included nonblank output. This is the retained native control record for that proxy wrapper.
+- Dated matched On12 run: `20260814-095119-pid17544-on12-se-none_pi-none_od-i`, the same proxy SHA-256 and controls; all three main-window captures were blank-white. The log verified `IDirect3DDevice9On12`, `ID3D12Device`, `Present=S_OK`, and a nonblank pre-Present backbuffer.
 - DXCap artifact: `dump/render-probe/dxcap-manual-20260814-115504/bully-on12-frame60.vsglog` is 4,120 bytes and `dxcap -p -toXML` reports no DirectX activity. The append-only proxy log shows that DXCap's process entered `Direct3DCreate9On12` but stopped before device creation returned, so this capture is non-diagnostic for the normal runtime path.
-- Verified DXVK chainload: `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`, proxy SHA-256 `f34120a0...`; the proxy absolute-loaded `dxvk_d3d9.dll`, wrapped the returned D3D9 interfaces, recorded successful presents, and the main-window capture at 30 seconds visibly shows DXVK 3.0.2 rendering Bully through Vulkan. The outer evidence manifest records `restoreSucceeded=true`.
+- Historical visible DXVK proof (environment-specific): `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`, proxy SHA-256 `f34120a0...`; the proxy absolute-loaded `dxvk_d3d9.dll`, wrapped the returned D3D9 interfaces, recorded successful presents, and the main-window capture at 30 seconds visibly shows DXVK 3.0.2 rendering Bully through Vulkan. The outer evidence manifest records `restoreSucceeded=true`.
 - Native marker slice: `20260814-211207-pid31140-native-se-none_pi-none_od-i`; `ColorFill` succeeded and the in-process backbuffer visibly contains the marker, while the active-window PNGs were rejected because they captured a PowerShell terminal.
-- Decision: use DXVK as the working translated backend while retaining native as the dependency-free default. Park D3D9On12; do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead.
+- Historical decision: use DXVK as the translated backend while retaining native as the dependency-free default. Current decision: keep native as the control/default and DXVK as opt-in qualification work; current visible DXVK qualification remains unresolved. Park D3D9On12 and do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead.
 
 ## Stop Conditions
 

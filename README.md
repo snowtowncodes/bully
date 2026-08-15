@@ -7,16 +7,20 @@ Strategy: a `d3d9.dll` proxy in the game folder intercepts Gamebryo's
 `Direct3DCreate9`, keeps the interception surface for future mods, and selects a
 native D3D9, DXVK, or experimental D3D9On12 backend at runtime.
 
-Current status: `backend=dxvk` is the first verified translated path. Our proxy
-chainloads an x86 DXVK DLL renamed to `dxvk_d3d9.dll`; Bully renders visibly
-through Vulkan while the proxy's D3D9 wrappers and telemetry remain active.
-Native is still the dependency-free default. The On12 path is parked because it
-creates a D3D12-backed device and varied backbuffer but a white visible window.
+Current status: native D3D9 is the dependency-free default and control. DXVK is
+an opt-in qualification path, not a current release claim. The retained
+`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
+environment-specific visible DXVK proof. Later direct and proxy DXVK runs
+produced blank-white selected `main-window` captures; later proxy runs also had
+varied pre-Present backbuffers. Current visible DXVK qualification is unresolved.
+See the [DXVK evidence ledger](docs/dxvk_evidence_ledger.md) for the evidence
+boundary and classification.
 
-The first graphics-mod vertical slice is an opt-in `mods.test_marker` applied
-through the stable device `Present` hook. It uses D3D9 `ColorFill` to modify the
-backbuffer without adding new vtable intercepts; the native backbuffer was
-verified with the marker enabled. It remains disabled by default.
+The retained graphics-mod marker experiment is an opt-in `mods.test_marker`
+applied through the stable device `Present` hook. D3D9 `ColorFill` proves the
+marker reached the native in-process backbuffer, but the contaminated
+active-window PNGs do not prove visible-window presentation. It remains disabled
+by default.
 
 See [docs/architecture.md](docs/architecture.md) for the full plan.
 

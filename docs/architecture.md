@@ -69,9 +69,10 @@ Bully.exe
 - **Injection**: drop `d3d9.dll` in the game folder (standard wrapper technique;
   no exe patching required for the renderer hook). ASI loader (ThirteenAG pattern)
   comes later for mod loading.
-- **Working translated backend**: `backend=dxvk` absolute-loads an x86 DXVK
-  `d3d9.dll` renamed to `dxvk_d3d9.dll` beside `Bully.exe`. The module remains
-  loaded for process lifetime so returned COM objects retain valid code.
+- **Opt-in translated backend path**: `backend=dxvk` absolute-loads an x86
+  DXVK `d3d9.dll` renamed to `dxvk_d3d9.dll` beside `Bully.exe`. The module
+  remains loaded for process lifetime so returned COM objects retain valid
+  code.
 - **D3D12 research door**: On12 still exposes `IDirect3DDevice9On12`, but its
   visible presentation failure must be fixed before native D3D12 enhancement
   passes are credible.
@@ -80,46 +81,68 @@ Bully.exe
 
 ## 4. Milestones
 
-- **M0 — Recon (done, this doc)**: game located, renderer identified as Gamebryo
-  NiDX9Renderer, dynamic d3d9 load path found, strategy fixed.
-- **M1 — Proxy skeleton (done)**: forwarding proxy and wrapped D3D9 traffic surface.
-- **M2a — D3D9On12 redirect (parked)**: D3D12-backed device and real backbuffer
-  proven; visible window remains white, so the DX12 first-frame gate is open.
-- **M2b — DXVK compatibility backend (done)**: our proxy chainloads DXVK and
-  produces visible Vulkan-rendered game frames while wrappers remain active.
-- **M3 — Traffic profile**: capture the full D3D9 feature surface the game uses
-  (render states, FVF, shader models, state blocks, queries, SWVP usage). Gate for
-  deciding stock-9On12 vs custom build vs dxvk.
-- **M4 — Enhancement passes**: first DX12-native pass via `IDirect3DDevice9On12`
-  interop (e.g. tone map / post FX), then graphics-mod API.
-- **M5 — Mod platform**: ASI loader integration, mod SDK, config system.
+- **M0 — Recon and evidence boundary (done, this doc)**: game located, renderer
+  identified as Gamebryo NiDX9Renderer, dynamic d3d9 load path found, and the
+  limits of visible-output evidence documented.
+- **M1 — Proxy skeleton (done)**: forwarding proxy and wrapped D3D9 traffic
+  surface.
+- **M2 — Backend evidence and qualification (active)**: native is the
+  dependency-free control and default. The retained
+  `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
+  environment-specific visible DXVK proof. Later direct and proxy DXVK runs
+  produced blank-white selected `main-window` captures; the later proxy runs
+  retained varied pre-Present backbuffers. Current visible DXVK qualification
+  is unresolved, so DXVK remains opt-in qualification work rather than a
+  release claim.
+
+### Next critical work
+
+1. **Evidence integrity**: preserve authoritative reports, backend logs, capture
+   targets, and contamination decisions.
+2. **Bounded DXVK diagnosis**: isolate the white-window condition with matched,
+   minimal cases; do not generalize from API or backbuffer success.
+3. **Proxy contract**: define and verify supported load, fallback, wrapper,
+   cleanup, and evidence behavior.
+4. **Native gameplay smoke/campaign**: establish the native control across startup,
+   smoke coverage, and a bounded campaign path.
+5. **Optional DXVK qualification**: revisit only after the preceding evidence and
+   contract gates pass.
+
+On12, traffic profiling, and mod-platform work remain deferred; they are not
+current next steps.
 
 ### Current verification status (2026-08-14)
 
-Native remains the dependency-free default. The verified DXVK chainload run
-`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` used proxy build SHA-256
-`f34120a0...`, loaded DXVK 3.0.2 as `dxvk_d3d9.dll`, kept the proxy wrappers
-active, survived the 35-second gate, and produced nonblank game-window captures.
-The DXVK log confirms an x86 D3D9 device and Vulkan swapchain on the RTX 4070
-SUPER. On12 remains parked with the documented white-window result.
+Native remains the dependency-free default and control. The retained
+`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
+environment-specific visible DXVK proof: its proxy and DXVK records show
+chainloading, successful presentation calls, and selected nonblank
+`main-window` captures. Later direct and proxy DXVK runs produced blank-white
+selected `main-window` captures; the later proxy runs also recorded varied
+pre-Present backbuffers. Current visible DXVK qualification is unresolved, and
+DXVK remains opt-in qualification work rather than a release claim. See the
+[DXVK evidence ledger](dxvk_evidence_ledger.md) for the authoritative
+classification. On12 remains parked.
 
 The first mod vertical slice uses `mods.test_marker=1` at the existing device
 `Present` boundary. Run `20260814-211207-pid31140-native-se-none_pi-none_od-i`
 logged `ColorFill` success and its captured native backbuffer visibly contains
-the magenta marker over the Bully title screen. The active-window PNGs from that
-run were rejected as proof because the desktop capture included a PowerShell
-terminal; the in-process backbuffer is the qualifying evidence for this slice.
+the magenta marker over the Bully title screen. This proves the marker was
+applied to the native backbuffer, not that it reached the visible window. The
+active-window PNGs from that run were rejected because the desktop capture
+included a PowerShell terminal; no qualifying visible-marker proof is retained.
 
 ## 5. Risks & open questions
 
-1. **DXVK packaging and support boundary**: the verified integration needs the
+1. **DXVK packaging and support boundary**: the historical integration needs the
    x86 DXVK `d3d9.dll` renamed to `dxvk_d3d9.dll`. DXVK is zlib-licensed and must
    remain the final D3D9 implementation in the chain; the renamed load works in
    this project but is not an upstream-supported chainloading configuration.
 2. **9On12 completeness for Gamebryo**: Gamebryo 2008-era D3D9 uses fixed-function
    fallbacks (`ShaderBinaries\Off`), state blocks, `D3DPOOL_MANAGED`, and possibly
    SW vertex processing. 9On12 is "complete and relatively performant" per MS but
-   game-specific gaps are plausible. Mitigation: M3 traffic profile, custom build.
+   game-specific gaps are plausible. This work is deferred pending a new
+   compatibility lead.
 3. **Device creation parameters**: `NiDX9Renderer` may request specific
    D3DCREATE_* flags (PUREDEVICE, MULTITHREADED) that 9On12 rejects. We can sanitize
    flags in our CreateDevice passthrough hook if needed.
@@ -129,12 +152,13 @@ terminal; the in-process backbuffer is the qualifying evidence for this slice.
    natively. Verify at M1.
 6. **Shader translation**: 9On12 converts SM1-3 shaders to SM4+ internally.
    Gamebryo `.fxb` libraries are pre-compiled bytecode — 9On12 handles the
-   resulting D3D9 shaders; recompiling `.fxb` is out of scope until M5 (mod API).
+   resulting D3D9 shaders; recompiling `.fxb` is out of scope while mod work is
+   deferred.
 
 ## 6. References
 
 - microsoft/D3D9On12 — https://github.com/microsoft/D3D9On12 (open source 2021; DDI mapping layer; build notes in README)
-- doitsujin/dxvk — https://github.com/doitsujin/dxvk (DXVK 3.0.2 used for the verified x86 D3D9-to-Vulkan path)
+- doitsujin/dxvk — https://github.com/doitsujin/dxvk (DXVK 3.0.2 used in the archived x86 D3D9-to-Vulkan evidence)
 - Direct3DCreate9On12 spec — https://microsoft.github.io/DirectX-Specs/d3d/TranslationLayerResourceInterop.html
 - elishacloud/dxwrapper (MIT) — proxy/ASI/detours reference — https://github.com/elishacloud/dxwrapper
 - CookiePLMonster/SilentPatchBully (MIT) — pattern-scan hook reference for this exe — https://github.com/CookiePLMonster/SilentPatchBully

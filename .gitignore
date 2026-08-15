@@ -11,6 +11,9 @@ deps/
 .opencode/
 .cortexkit/
 
+# Deepwork progress state
+.slim/deepwork/
+
 # Build outputs
 build/
 out/

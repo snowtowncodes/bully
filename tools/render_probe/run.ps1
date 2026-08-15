@@ -2496,11 +2496,25 @@ function Get-ProbeOutcome {
         }
     }
 
+    # Desktop copies are retained as diagnostic evidence, but cannot establish a
+    # visual pass. Only a selected nonblank PrintWindow capture qualifies.
     $analyzedCaptures = @($script:CaptureRecords | Where-Object {
-        ($null -ne $_.selected) -and ($null -ne $_.selected.analysis) -and $_.selected.analysis.succeeded
+        ($null -ne $_.selected) -and
+        ($_.selected.method -ceq 'PrintWindow') -and
+        ($null -ne $_.selected.analysis) -and
+        $_.selected.analysis.succeeded -and
+        ($_.selected.analysis.classification -ceq 'nonblank')
     })
-    $nonblankCaptures = @($analyzedCaptures | Where-Object { $_.selected.analysis.classification -eq 'nonblank' })
-    $blankOrLowInfoCaptures = @($analyzedCaptures | Where-Object { $_.selected.analysis.classification -ne 'nonblank' })
+    $nonblankCaptures = @($analyzedCaptures)
+    $blankOrLowInfoCaptures = @($script:CaptureRecords | Where-Object {
+        ($null -ne $_.selected) -and
+        ($null -ne $_.selected.analysis) -and
+        $_.selected.analysis.succeeded -and
+        ($_.selected.analysis.classification -cne 'nonblank')
+    })
+    $diagnosticDesktopCaptures = @($script:CaptureRecords | Where-Object {
+        ($null -ne $_.selected) -and ($_.selected.method -ceq 'CopyFromScreen')
+    })
     $earlyExitOrCrash = [bool]$script:ProcessInfo['exitedBeforeTimeout'] -or [bool]$script:ProcessInfo['knownFailureEvidenceSeen']
     $screenCapturesTrustworthy = ($script:Display['screenCapturesTrustworthy'] -ne $false)
     $succeeded = [bool]$script:ProcessInfo['survivedToTimeout'] -and ($nonblankCaptures.Count -gt 0) -and (-not $earlyExitOrCrash) -and $screenCapturesTrustworthy
@@ -2513,20 +2527,25 @@ function Get-ProbeOutcome {
         [void]$reasons.Add('Bully.exe exited early or matching crash evidence was found.')
     }
     if ($analyzedCaptures.Count -eq 0) {
-        [void]$reasons.Add('No capture produced an analyzable image.')
+        if ($diagnosticDesktopCaptures.Count -gt 0) {
+            [void]$reasons.Add('No qualifying PrintWindow capture was available; desktop fallback captures are diagnostic only.')
+        }
+        elseif ($blankOrLowInfoCaptures.Count -gt 0) {
+            [void]$reasons.Add('All selected PrintWindow captures were blank or low-information.')
+        }
+        else {
+            [void]$reasons.Add('No qualifying PrintWindow capture produced a nonblank analyzable image.')
+        }
     }
     if (-not $screenCapturesTrustworthy) {
         [void]$reasons.Add('Host display preflight failed and -AllowVirtualDisplay was used; screen captures are not trustworthy for a successful visual run.')
-    }
-    elseif ($nonblankCaptures.Count -eq 0) {
-        [void]$reasons.Add('All analyzable captures were blank or low-information.')
     }
     if ($script:RunErrors.Count -gt 0) {
         [void]$reasons.Add('The harness recorded one or more operational errors.')
         $succeeded = $false
     }
     if ($succeeded) {
-        [void]$reasons.Add('Bully.exe survived the bounded duration and at least one capture was nonblank.')
+        [void]$reasons.Add('Bully.exe survived the bounded duration and at least one qualifying PrintWindow capture was nonblank.')
     }
 
     return [ordered]@{

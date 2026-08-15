@@ -2,13 +2,13 @@
 
 ## Pattern Overview
 
-**Overall:** DLL Proxy Injection with D3D9-to-D3D12 Translation
+**Overall:** DLL Proxy Injection with selectable D3D9 translation backends
 
 **Key Characteristics:**
 - Intercepts Gamebryo's D3D9 renderer via DLL search-order hijacking
-- Routes D3D9 commands through Microsoft's D3D9On12 translation layer
-- Provides transparent D3D12 backend without game modification
-- Exposes interop surface for future enhancement passes
+- Routes D3D9 commands through native D3D9, DXVK (D3D9-to-Vulkan), or experimental D3D9On12
+- Provides a verified visible DXVK backend without game modification
+- Keeps D3D9 wrappers as the interception surface for future enhancement passes
 
 ## Layers
 
@@ -20,7 +20,7 @@
 - Used by: Not modified; consumes proxy d3d9.dll via DLL search order
 
 **Proxy Layer:**
-- Purpose: Intercept D3D9 creation, redirect to D3D9On12, log device traffic
+- Purpose: Intercept D3D9 creation, select a backend, and log device traffic
 - Location: `src/proxy/proxy.cpp`, `src/proxy/exports.def`
 - Contains: Export forwarding, Direct3DCreate9 hook, IDirect3DDevice9/IDirect3D9/IDirect3DSwapChain9 wrappers
 - Depends on: System d3d9.dll (loaded from `%SystemRoot%\System32`), d3d12.lib, dxgi.lib
@@ -33,10 +33,17 @@
 - Depends on: D3D12 driver, DXGI
 - Used by: Proxy when backend=on12
 
+**Translation Layer (DXVK):**
+- Purpose: Translate D3D9 commands to Vulkan at runtime
+- Location: x86 `dxvk_d3d9.dll` renamed from DXVK's `d3d9.dll`, beside Bully.exe (third-party, not bundled)
+- Contains: DXVK D3D9 implementation
+- Depends on: Vulkan runtime/driver
+- Used by: Proxy when backend=dxvk
+
 **Configuration Layer:**
 - Purpose: Runtime behavior selection via INI
 - Location: `bully_d3d9proxy.ini` (sibling to Bully.exe)
-- Contains: Backend selection (native/on12), device mode (internal/explicit), presentation overrides, diagnostics
+- Contains: Backend selection (native/dxvk/on12), device mode (internal/explicit), presentation overrides, diagnostics
 - Depends on: Win32 GetPrivateProfileString API
 - Used by: Proxy initialization
 
@@ -59,21 +66,30 @@
 6. Proxy wraps returned IDirect3D9* in `ProxyIDirect3D9` for CreateDevice interception — `src/proxy/proxy.cpp:2199-2209`
 7. Game enumerates adapters, formats → forwarded to 9On12 enumerator
 
+**Initialization (dxvk backend):**
+
+1. Steps 1-3 same as on12
+2. Proxy reads `backend=dxvk` from the sibling INI
+3. Proxy resolves and loads the absolute sibling path `dxvk_d3d9.dll` — `InitDxvkD3D9Once()`
+4. Proxy resolves DXVK's `Direct3DCreate9` and calls it without routing through system 9On12
+5. Proxy wraps the returned IDirect3D9* in `ProxyIDirect3D9`; the DXVK module remains loaded for process lifetime
+6. Game creates a D3D9 device and renders through DXVK's Vulkan backend
+
 **Device Creation:**
 
 1. Game calls `IDirect3D9::CreateDevice(...)` → `ProxyIDirect3D9::CreateDevice()` — `src/proxy/proxy.cpp:1989-2076`
 2. Proxy applies presentation parameter overrides (swap effect, present interval) if configured — `ApplyPresentationOverrides()`
-3. Proxy forwards to inner 9On12 IDirect3D9::CreateDevice
+3. Proxy forwards to the selected inner IDirect3D9::CreateDevice implementation
 4. Proxy wraps returned IDirect3DDevice9* in `ProxyIDirect3DDevice9` for Present/method telemetry — device9_methods.generated.inc
-5. Proxy queries `IDirect3DDevice9On12` interface → verifies D3D12 backend active — `VerifyDeviceBackend()`
-6. Proxy logs D3D12 device identity, feature level (observable), device removed reason — `LogVerifiedOn12RuntimeIdentity()`
+5. For On12 only, proxy queries `IDirect3DDevice9On12` and verifies the D3D12 backend — `VerifyDeviceBackend()`
+6. Proxy logs backend-specific identity and device diagnostics; DXVK's module log records its Vulkan device
 
 **Rendering Loop:**
 
 1. Game issues D3D9 state/draw calls → forwarded through `ProxyIDirect3DDevice9` vtable (119 methods) — `device9_methods.generated.inc`
-2. 9On12 translates to D3D12 command lists + PSO changes
+2. The selected inner backend executes the D3D9 commands (native driver, DXVK-to-Vulkan, or On12-to-D3D12)
 3. Game calls `IDirect3DDevice9::Present()` or `IDirect3DSwapChain9::Present()` → logged by proxy wrappers — `ProxyIDirect3DSwapChain9::Present()`
-4. 9On12 executes D3D12 command queue, presents via DXGI swap chain
+4. The selected backend presents through its native graphics API
 5. At configured frame (default 60), proxy captures backbuffer before Present and frontbuffer after Present → writes `bully_renderprobe_backbuffer.bmp`, `bully_renderprobe_frontbuffer.bmp`
 
 **Initialization (on12 backend, explicit device mode):**
@@ -90,6 +106,11 @@
 2. Proxy reads backend=native from INI
 3. Proxy calls system `Direct3DCreate9(SDKVersion)` directly — no 9On12 translation
 4. Game uses native D3D9 driver → no D3D12 involvement
+
+**Backend fallback:**
+
+- Missing/unloadable DXVK module, missing `Direct3DCreate9`, or a null DXVK enumerator result → log the failure and use native D3D9.
+- On12 creation failure → retain the existing native fallback.
 
 ## Key Abstractions
 
@@ -123,7 +144,7 @@
 **proxy_Direct3DCreate9:**
 - Location: `src/proxy/proxy.cpp:2113-2212` (callable via export at offset in exports.def)
 - Triggers: Game's `GetProcAddress("Direct3DCreate9")` → game's call
-- Responsibilities: Read INI backend, create D3D9 enumerator (native or on12 internal/explicit), wrap in ProxyIDirect3D9, log backend identity
+- Responsibilities: Read INI backend, create a native, DXVK, or On12 D3D9 enumerator, wrap it in ProxyIDirect3D9, and log backend identity
 
 **DllMain:**
 - Location: `src/proxy/proxy.cpp:2215-2221`
@@ -146,6 +167,7 @@
 
 - Missing system d3d9.dll exports → `FailFastMissingExport()` with `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`
 - Direct3DCreate9On12 unavailable when backend=on12 → log error, fall back to native Direct3DCreate9, return native enumerator
+- DXVK sibling missing or `Direct3DCreate9` unavailable/returns NULL → log error, fall back to native Direct3DCreate9, return native enumerator
 - Explicit D3D12 device creation failure → log detailed HRESULT, fall back to internal mode, return 9On12 enumerator with internal device
 - D3D9 API call failures (CreateDevice, Present, etc.) → log HRESULT, forward to caller, no proxy-side error recovery
 - Device removed → logged via `GetDeviceRemovedReason()` at post-verify and final device release, not trapped
@@ -171,16 +193,16 @@
 - Render probe copies, hashes, and classifies these artifacts (blank-white/blank-black/low-information-uniform/nonblank)
 
 **Backend Verification:**
-- After CreateDevice, proxy queries `IDirect3DDevice9On12` interface
+- After CreateDevice, proxy queries `IDirect3DDevice9On12` only for the On12 backend
 - If successful, queries underlying `ID3D12Device` via `GetD3D12Device()`
-- Logs verified D3D12 backend identity, d3d9.dll path, device pointer
+- Logs verified D3D12 backend identity, d3d9.dll path, and device pointer for On12; DXVK logs its selected module separately
 - In explicit mode, compares returned D3D12 device against proxy-supplied device for identity match
 
 **Configuration:**
 - INI path resolved relative to Bully.exe via `GetModuleFileName(nullptr)` + sibling filename
 - Section `[renderer]`: backend, on12_device, force_swap_effect, force_present_interval
 - Section `[diagnostics]`: trace_device, capture_frames, capture_frontbuffer, capture_frame, d3d12_debug_layer
-- Defaults: backend=native, on12_device=internal, no overrides, trace=1, capture=1, frontbuffer=0, frame=60; On12 is explicit experimental mode
+- Defaults: backend=native, on12_device=internal, no overrides, trace=1, capture=1, frontbuffer=0, frame=60; DXVK requires an x86 sibling `dxvk_d3d9.dll`; On12 is explicit experimental mode
 
 **Render Probe:**
 - Display preflight checks: interactive desktop, non-remote session, non-virtual monitor, 1x1 CopyFromScreen probe

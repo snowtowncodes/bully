@@ -1,17 +1,17 @@
-# Bully DX12 Wrapper Platform
+# Bully Renderer / Mod Platform
 
-Modern rendering (DX12) and graphics mods on top of the native PC game
+Modern rendering and graphics mods on top of the native PC game
 (Bully: Scholarship Edition, Steam).
 
 Strategy: a `d3d9.dll` proxy in the game folder intercepts Gamebryo's
-`Direct3DCreate9` and redirects device creation to Microsoft's open-source
-**D3D9On12** translation layer, running the game's D3D9 on our D3D12 device.
-Enhancement passes hook in later via `IDirect3DDevice9On12` interop.
+`Direct3DCreate9`, keeps the interception surface for future mods, and selects a
+native D3D9, DXVK, or experimental D3D9On12 backend at runtime.
 
-Current status: the native proxy path is the safe default. The On12 path is
-available only when explicitly selected and is parked pending a targeted fix:
-it creates a verified D3D12-backed device and a varied backbuffer, but the
-visible game window remains white.
+Current status: `backend=dxvk` is the first verified translated path. Our proxy
+chainloads an x86 DXVK DLL renamed to `dxvk_d3d9.dll`; Bully renders visibly
+through Vulkan while the proxy's D3D9 wrappers and telemetry remain active.
+Native is still the dependency-free default. The On12 path is parked because it
+creates a D3D12-backed device and varied backbuffer but a white visible window.
 
 See [docs/architecture.md](docs/architecture.md) for the full plan.
 

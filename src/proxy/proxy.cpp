@@ -36,10 +36,19 @@ static const GUID kIID_IDirect3DDevice9 = {
 enum class RendererBackend {
     On12,
     Native,
+    Dxvk,
 };
 
 static const char* BackendName(RendererBackend backend) {
-    return backend == RendererBackend::On12 ? "on12" : "native";
+    switch (backend) {
+    case RendererBackend::On12:
+        return "on12";
+    case RendererBackend::Dxvk:
+        return "dxvk";
+    case RendererBackend::Native:
+        return "native";
+    }
+    return "native";
 }
 
 enum class On12DeviceMode {
@@ -160,6 +169,36 @@ static bool GetExeSiblingPath(const char* filename, char* path, size_t pathSize)
     return true;
 }
 
+// DXVK is loaded only from beside the executable and intentionally remains
+// loaded until process exit so returned COM objects retain valid code pointers.
+static HMODULE g_dxvkD3D9 = nullptr;
+static FARPROC g_DxvkDirect3DCreate9 = nullptr;
+static char g_dxvkD3D9Path[MAX_PATH] = {};
+static INIT_ONCE g_dxvkD3D9InitOnce = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK InitDxvkD3D9Once(PINIT_ONCE, PVOID, PVOID*) {
+    const bool resolved = GetExeSiblingPath(
+        "dxvk_d3d9.dll", g_dxvkD3D9Path, ARRAYSIZE(g_dxvkD3D9Path));
+    if (!resolved) {
+        Log("[dxvk] could not resolve executable path for module; load skipped (path=%s)\n",
+            g_dxvkD3D9Path);
+        return TRUE;
+    }
+
+    g_dxvkD3D9 = LoadLibraryA(g_dxvkD3D9Path);
+    Log("[dxvk] LoadLibrary: %s -> 0x%p\n", g_dxvkD3D9Path, g_dxvkD3D9);
+    if (!g_dxvkD3D9) return TRUE;
+
+    g_DxvkDirect3DCreate9 = GetProcAddress(g_dxvkD3D9, "Direct3DCreate9");
+    Log("[dxvk] GetProcAddress(Direct3DCreate9): %s -> 0x%p\n",
+        g_dxvkD3D9Path, g_DxvkDirect3DCreate9);
+    return TRUE;
+}
+
+static void EnsureDxvkD3D9Loaded() {
+    InitOnceExecuteOnce(&g_dxvkD3D9InitOnce, InitDxvkD3D9Once, nullptr, nullptr);
+}
+
 static bool GetRendererIniPath(char* path, size_t pathSize) {
     bool resolved = GetExeSiblingPath("bully_d3d9proxy.ini", path, pathSize);
     if (!resolved) {
@@ -183,6 +222,10 @@ static RendererBackend ReadRendererBackend() {
     if (_stricmp(value, "on12") == 0) {
         Log("[proxy] requested backend=on12 (ini=%s)\n", iniPath);
         return RendererBackend::On12;
+    }
+    if (_stricmp(value, "dxvk") == 0) {
+        Log("[proxy] requested backend=dxvk (ini=%s)\n", iniPath);
+        return RendererBackend::Dxvk;
     }
 
     Log("[proxy] requested backend=%s is unrecognized; using native default (ini=%s)\n",
@@ -689,6 +732,11 @@ static void LogExplicitDeviceIdentityMatch(ID3D12Device* returnedDevice,
 
 static bool VerifyDeviceBackend(IDirect3DDevice9* device, RendererBackend backend,
                                 ID3D12Device* suppliedExplicitDevice) {
+    if (backend == RendererBackend::Dxvk) {
+        Log("[d3d9] device backend probe skipped: effective=dxvk\n");
+        return false;
+    }
+
     if (!device) {
         Log("[d3d9] device backend: native/unverified (device pointer is NULL)\n");
         LogExplicitDeviceIdentityMatch(nullptr, suppliedExplicitDevice);
@@ -2108,7 +2156,7 @@ HRESULT ProxyIDirect3DDevice9::Intercept_GetDirect3D(IDirect3D9** ppD3D9) {
 }
 
 // ---------------------------------------------------------------------------
-// Direct3DCreate9 hook: select native or 9On12, then wrap the result.
+// Direct3DCreate9 hook: select native, DXVK, or 9On12, then wrap the result.
 // ---------------------------------------------------------------------------
 extern "C" IDirect3D9* WINAPI proxy_Direct3DCreate9(UINT SDKVersion) {
     Log("[d3d9] Direct3DCreate9(SDKVersion=%u)\n", SDKVersion);
@@ -2119,7 +2167,29 @@ extern "C" IDirect3D9* WINAPI proxy_Direct3DCreate9(UINT SDKVersion) {
     IDirect3D9* d = nullptr;
     ExplicitOn12Context* explicitOn12Context = nullptr;
 
-    if (requestedBackend == RendererBackend::On12) {
+    if (requestedBackend == RendererBackend::Dxvk) {
+        EnsureDxvkD3D9Loaded();
+        if (!g_DxvkDirect3DCreate9) {
+            Log("[dxvk] creation failed: Direct3DCreate9 unavailable (module=%s)\n",
+                g_dxvkD3D9Path[0] ? g_dxvkD3D9Path : "<unavailable>");
+        } else {
+            auto dxvkDirect3DCreate9 =
+                reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(g_DxvkDirect3DCreate9);
+            d = dxvkDirect3DCreate9(SDKVersion);
+            if (d) {
+                Log("[dxvk] creation succeeded: module=%s, IDirect3D9=0x%p\n",
+                    g_dxvkD3D9Path, d);
+            } else {
+                Log("[dxvk] creation failed: module=%s, Direct3DCreate9 returned NULL\n",
+                    g_dxvkD3D9Path);
+            }
+        }
+
+        if (!d) {
+            effectiveBackend = RendererBackend::Native;
+            Log("[d3d9] native fallback selected after DXVK load/create failure\n");
+        }
+    } else if (requestedBackend == RendererBackend::On12) {
         const On12DeviceMode on12DeviceMode = ReadOn12DeviceMode();
         if (!g_Direct3DCreate9On12) {
             Log("[d3d9] 9On12 creation failed: Direct3DCreate9On12 export unavailable\n");

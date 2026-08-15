@@ -2,7 +2,7 @@
 # This launcher intentionally has no side effects until it is invoked.
 [CmdletBinding()]
 param(
-    [ValidateSet('on12', 'native')]
+    [ValidateSet('on12', 'native', 'dxvk')]
     [string]$Backend = 'native',
 
     [ValidateSet('internal', 'explicit')]

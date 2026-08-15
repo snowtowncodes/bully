@@ -16,7 +16,7 @@ param(
     # Verifies this controller and its worker without creating a task.
     [switch]$ValidateBridgeOnly,
 
-    [ValidateSet('on12', 'native')]
+    [ValidateSet('on12', 'native', 'dxvk')]
     [string]$Backend = 'native',
 
     [ValidateRange(1, 3600)]

@@ -11,6 +11,7 @@ From the repository root, use Windows PowerShell or PowerShell 7 on Windows:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend native
+powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend dxvk
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -DurationSeconds 60 -CaptureAtSeconds 5,20,45
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device explicit -ForceSwapEffect copy -ForcePresentInterval one
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateOnly -CaptureAtSeconds 5,15,30
@@ -27,6 +28,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateI
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -ValidateBridgeOnly
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -ValidateDisplayOnly
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -Backend native -DurationSeconds 60 -CaptureAtSeconds 5,20,45 -AllowActiveDesktopLaunch
+powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -Backend dxvk -DurationSeconds 60 -CaptureAtSeconds 5,20,45 -AllowActiveDesktopLaunch
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_active.ps1 -Backend on12 -On12Device explicit -ForceSwapEffect copy -ForcePresentInterval one -DurationSeconds 60 -CaptureAtSeconds 5,20,45 -AllowActiveDesktopLaunch
 ```
 
@@ -38,7 +40,7 @@ Each bridge invocation leaves its request, result, controller cleanup record, an
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `-Backend` | `native` | Renderer INI backend: `native` or explicitly requested `on12`. |
+| `-Backend` | `native` | Renderer INI backend: `native`, `dxvk`, or explicitly requested experimental `on12`. |
 | `-On12Device` | `internal` | Explicit `[renderer] on12_device`: `internal` or `explicit`. Applied only when the harness stages its INI. |
 | `-ForceSwapEffect` | `none` | Explicit `[renderer] force_swap_effect`: `none`, `discard`, `flip`, or `copy`. Applied only when the harness stages its INI. |
 | `-ForcePresentInterval` | `none` | Explicit `[renderer] force_present_interval`: `none`, `immediate`, `default`, or `one`. Applied only when the harness stages its INI. |
@@ -69,6 +71,11 @@ Use `-ValidateDisplayOnly` to inspect a host without touching the game. `-AllowV
 ## Installation Safety
 
 Without `-NoInstall`, the launcher requires `build/proxy/Release/d3d9.dll`, `src/proxy/bully_d3d9proxy.ini`, and `Bully Scholarship Edition/Bully.exe`.
+
+`-Backend dxvk` additionally requires an x86 DXVK `d3d9.dll` renamed to
+`Bully Scholarship Edition/dxvk_d3d9.dll`. The harness stages only this
+project's proxy and generated INI; it does not download, install, or restore the
+third-party DXVK module.
 
 It records SHA-256 hashes before staging `d3d9.dll` and `bully_d3d9proxy.ini`, creates verified backups in the run report directory, and restores them in `finally`. The requested INI is produced with a section-aware line updater: it preserves comments and other sections, removes existing active renderer keys only inside `[renderer]`, and emits exactly one active `backend`, `on12_device`, `force_swap_effect`, and `force_present_interval` key. `proxy-hash-history.json`, ignored by Git, is a local allowlist of generated proxy SHA-256 values observed on prior runs.
 

@@ -1,10 +1,10 @@
-# Bully DX12 Wrapper Platform — Architecture v0.1
+# Bully Renderer Wrapper Platform - Architecture v0.2
 
-Status: draft (2026-08-12) · Track: DX12 wrapper first (user-approved)
+Status: active (2026-08-14) - Track: proxy-owned multi-backend renderer
 
 ## 1. Goal
 
-Modern rendering (DX12) and graphics mods **on top of the existing native PC game**
+Modern rendering (Vulkan now, D3D12 when viable) and graphics mods **on top of the existing native PC game**
 (Bully: Scholarship Edition, Steam AppID 12200, v154). Decompilation only where the
 renderer demands it — not the lead strategy.
 
@@ -51,40 +51,42 @@ Implications:
 
 ## 3. Chosen strategy
 
-**Proxy DLL + Microsoft D3D9On12 (open source).**
+**One proxy DLL with native, DXVK, and experimental D3D9On12 backends.**
 
 ```
 Bully.exe
   └─ LoadLibrary("D3D9.DLL")            ← resolves to OUR proxy (exe-dir search order)
        └─ our d3d9.dll (proxy)
-            ├─ exports Direct3DCreate9 (+ the handful of D3D9 exports we must pass through)
-            └─ Direct3DCreate9 hook:
-                 Create our D3D12 device + queues
-                 Direct3DCreate9On12(SDKVersion, overrides)   ← OS d3d9on12.dll
-                 return IDirect3D9* (9On12-backed)
+            ├─ exports the system D3D9 surface
+            └─ Direct3DCreate9 hook selects:
+                 native → system d3d9.dll
+                 dxvk   → sibling dxvk_d3d9.dll → Vulkan
+                 on12   → Direct3DCreate9On12 → D3D12 (experimental)
   └─ NiDX9Renderer::Initialize → CreateDevice(...) → D3D9 commands
-                 D3D9 runtime validates → D3D9 DDI → D3D9On12 → D3D12 driver
+                 our IDirect3D9/Device9 wrappers retain telemetry and hook points
 ```
 
 - **Injection**: drop `d3d9.dll` in the game folder (standard wrapper technique;
   no exe patching required for the renderer hook). ASI loader (ThirteenAG pattern)
   comes later for mod loading.
-- **Enhancement door**: the 9On12 device exposes `IDirect3DDevice9On12`, giving us
-  lightweight D3D9↔D3D12 interop — this is where post-processing / extra passes /
-  mod rendering will hook in later (M3+).
-- **Fallbacks if 9On12 is incomplete for Gamebryo**: (a) build our own D3D9On12 from
-  source (MS permits local builds; needs WDK + D3D12TranslationLayer + DxbcSigner
-  NuGet + WinPixEventRuntime.dll) and fix gaps; (b) DXVK (D3D9→Vulkan) as a
-  proven-completeness reference or interim backend.
+- **Working translated backend**: `backend=dxvk` absolute-loads an x86 DXVK
+  `d3d9.dll` renamed to `dxvk_d3d9.dll` beside `Bully.exe`. The module remains
+  loaded for process lifetime so returned COM objects retain valid code.
+- **D3D12 research door**: On12 still exposes `IDirect3DDevice9On12`, but its
+  visible presentation failure must be fixed before native D3D12 enhancement
+  passes are credible.
+- **Failure behavior**: DXVK load/create failure and On12 creation failure both
+  fall directly back to native D3D9 and record the reason in the proxy log.
 
 ## 4. Milestones
 
 - **M0 — Recon (done, this doc)**: game located, renderer identified as Gamebryo
   NiDX9Renderer, dynamic d3d9 load path found, strategy fixed.
-- **M1 — Proxy skeleton**: minimal `d3d9.dll` forwarding proxy; log which D3D9
-  exports Bully touches at startup; verify game still boots through proxy.
-- **M2 — D3D9On12 redirect**: hook `Direct3DCreate9` → `Direct3DCreate9On12`;
-  first successful in-game frame rendered via DX12 (user-visible: game runs).
+- **M1 — Proxy skeleton (done)**: forwarding proxy and wrapped D3D9 traffic surface.
+- **M2a — D3D9On12 redirect (parked)**: D3D12-backed device and real backbuffer
+  proven; visible window remains white, so the DX12 first-frame gate is open.
+- **M2b — DXVK compatibility backend (done)**: our proxy chainloads DXVK and
+  produces visible Vulkan-rendered game frames while wrappers remain active.
 - **M3 — Traffic profile**: capture the full D3D9 feature surface the game uses
   (render states, FVF, shader models, state blocks, queries, SWVP usage). Gate for
   deciding stock-9On12 vs custom build vs dxvk.
@@ -94,31 +96,38 @@ Bully.exe
 
 ### Current verification status (2026-08-14)
 
-The native proxy path is the safe default. A matched On12 run creates a verified
-D3D12-backed device and produces varied backbuffer pixels, but the visible game
-window remains white. The On12 path is parked until a specific compatibility
-lead appears; enhancement-pass work does not start from the current evidence.
+Native remains the dependency-free default. The verified DXVK chainload run
+`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` used proxy build SHA-256
+`f34120a0...`, loaded DXVK 3.0.2 as `dxvk_d3d9.dll`, kept the proxy wrappers
+active, survived the 35-second gate, and produced nonblank game-window captures.
+The DXVK log confirms an x86 D3D9 device and Vulkan swapchain on the RTX 4070
+SUPER. On12 remains parked with the documented white-window result.
 
 ## 5. Risks & open questions
 
-1. **9On12 completeness for Gamebryo**: Gamebryo 2008-era D3D9 uses fixed-function
+1. **DXVK packaging and support boundary**: the verified integration needs the
+   x86 DXVK `d3d9.dll` renamed to `dxvk_d3d9.dll`. DXVK is zlib-licensed and must
+   remain the final D3D9 implementation in the chain; the renamed load works in
+   this project but is not an upstream-supported chainloading configuration.
+2. **9On12 completeness for Gamebryo**: Gamebryo 2008-era D3D9 uses fixed-function
    fallbacks (`ShaderBinaries\Off`), state blocks, `D3DPOOL_MANAGED`, and possibly
    SW vertex processing. 9On12 is "complete and relatively performant" per MS but
    game-specific gaps are plausible. Mitigation: M3 traffic profile, custom build.
-2. **Device creation parameters**: `NiDX9Renderer` may request specific
+3. **Device creation parameters**: `NiDX9Renderer` may request specific
    D3DCREATE_* flags (PUREDEVICE, MULTITHREADED) that 9On12 rejects. We can sanitize
    flags in our CreateDevice passthrough hook if needed.
-3. **d3dx9_38**: unaffected — CPU-side math/util; system DLL provides it.
-4. **ddraw import**: Bully statically imports DDRAW.dll; need to confirm what for
+4. **d3dx9_38**: unaffected — CPU-side math/util; system DLL provides it.
+5. **ddraw import**: Bully statically imports DDRAW.dll; need to confirm what for
    (cursor/window mgmt?). Our proxy only needs d3d9; ddraw continues to resolve
    natively. Verify at M1.
-5. **Shader translation**: 9On12 converts SM1-3 shaders to SM4+ internally.
+6. **Shader translation**: 9On12 converts SM1-3 shaders to SM4+ internally.
    Gamebryo `.fxb` libraries are pre-compiled bytecode — 9On12 handles the
    resulting D3D9 shaders; recompiling `.fxb` is out of scope until M5 (mod API).
 
 ## 6. References
 
 - microsoft/D3D9On12 — https://github.com/microsoft/D3D9On12 (open source 2021; DDI mapping layer; build notes in README)
+- doitsujin/dxvk — https://github.com/doitsujin/dxvk (DXVK 3.0.2 used for the verified x86 D3D9-to-Vulkan path)
 - Direct3DCreate9On12 spec — https://microsoft.github.io/DirectX-Specs/d3d/TranslationLayerResourceInterop.html
 - elishacloud/dxwrapper (MIT) — proxy/ASI/detours reference — https://github.com/elishacloud/dxwrapper
 - CookiePLMonster/SilentPatchBully (MIT) — pattern-scan hook reference for this exe — https://github.com/CookiePLMonster/SilentPatchBully

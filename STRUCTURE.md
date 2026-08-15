@@ -26,12 +26,12 @@ bully/
 - Purpose: The d3d9.dll proxy that intercepts game rendering
 - Contains: proxy.cpp (main implementation), exports.def (DLL exports), generate_device9_methods.py (codegen), device9_methods.generated.inc (116 IDirect3DDevice9 forwarding methods, vtable slots 3-118), CMakeLists.txt (build), bully_d3d9proxy.ini (runtime config template)
 - Key files:
-  - `proxy.cpp` — COM wrappers, Direct3DCreate9 hook, 9On12 backend selection, logging, frame capture
+  - `proxy.cpp` — COM wrappers, Direct3DCreate9 hook, native/DXVK/9On12 backend selection, logging, frame capture
   - `exports.def` — 16 d3d9.dll exports mapped to proxy_ symbols
   - `generate_device9_methods.py` — generates device9_methods.generated.inc from IDirect3DDevice9 method list
   - `device9_methods.generated.inc` — 116 methods (TestCooperativeLevel through DrawIndexedPrimitiveUP) — vtable slots 3-118
   - `CMakeLists.txt` — x86-only build, links d3d12.lib + dxgi.lib, outputs d3d9.dll
-  - `bully_d3d9proxy.ini` — [renderer] backend/on12_device/overrides, [diagnostics] trace/capture/frame settings
+  - `bully_d3d9proxy.ini` — [renderer] backend (native/dxvk/on12), on12_device/overrides, [diagnostics] trace/capture/frame settings
 
 **tools/render_probe:**
 - Purpose: Automated visual verification with desktop capture and pixel analysis
@@ -51,8 +51,8 @@ bully/
 - Purpose: Architecture documentation and test plans
 - Contains: architecture.md (system design, renderer identification, strategy, milestones), m2_test_plan.md (M2 visual verification procedure)
 - Key files:
-  - `architecture.md` — goal, verified facts (Gamebryo NiDX9Renderer not RenderWare), proxy + D3D9On12 strategy, milestones M0-M5, risks
-  - `m2_test_plan.md` — preconditions, controls, test matrix (native/on12/internal/explicit/presentation variants), required evidence, failure interpretation
+  - `architecture.md` — goal, verified facts (Gamebryo NiDX9Renderer not RenderWare), proxy + native/DXVK/9On12 strategy, milestones, risks
+  - `m2_test_plan.md` — preconditions, controls, test matrix (native/DXVK/On12), required evidence, failure interpretation
 
 **build:**
 - Purpose: CMake build outputs
@@ -60,9 +60,9 @@ bully/
 - Exclusion: Gitignored; created by `cmake -B build/proxy -A Win32 src/proxy`
 
 **deps:**
-- Purpose: Read-only dependency sources for local inspection
-- Contains: D3D9On12/ (Microsoft's open-source reference implementation)
-- Exclusion: Gitignored; microsoft/D3D9On12 cloned for reference, not built by project
+- Purpose: Read-only dependency sources and third-party binaries for local inspection/testing
+- Contains: D3D9On12/ (Microsoft's open-source reference implementation), dxvk-3.0.2/ (official archive extraction)
+- Exclusion: Gitignored; dependencies are not built or bundled by the project
 
 **dump:**
 - Purpose: Generated analysis artifacts and test reports
@@ -71,8 +71,8 @@ bully/
 
 **Bully Scholarship Edition:**
 - Purpose: Local game copy (Steam AppID 12200, v154)
-- Contains: Bully.exe (8.2 MB, PE timestamp 2008-12-10), d3d9.dll (staged proxy), bully_d3d9proxy.ini (staged config), bully_d3d9proxy.log (append-only runtime log), game assets (Scripts/, Models/, Shaders/, ShaderBinaries/, TXD/, DAT/, Stream/, etc.)
-- Exclusion: Gitignored; untouched by default; render probe stages/restores proxy + INI
+- Contains: Bully.exe (8.2 MB, PE timestamp 2008-12-10), d3d9.dll (staged proxy), optional dxvk_d3d9.dll (renamed x86 DXVK), bully_d3d9proxy.ini (staged config), bully_d3d9proxy.log (append-only runtime log), game assets (Scripts/, Models/, Shaders/, ShaderBinaries/, TXD/, DAT/, Stream/, etc.)
+- Exclusion: Gitignored; untouched by default; render probe stages/restores proxy + INI, while DXVK dependencies must be staged separately
 
 ## Key File Locations
 
@@ -81,7 +81,7 @@ bully/
 - `tools/render_probe/run.ps1` — param block line 1, main workflow starts ~line 800
 
 **Configuration:**
-- `src/proxy/bully_d3d9proxy.ini` — template INI with defaults (backend=native, on12_device=internal, trace_device=1, capture_frames=1, capture_frontbuffer=0, capture_frame=60)
+- `src/proxy/bully_d3d9proxy.ini` — template INI with defaults (backend=native; optional dxvk/on12, on12_device=internal, trace_device=1, capture_frames=1, capture_frontbuffer=0, capture_frame=60)
 - `src/proxy/CMakeLists.txt` — x86-only build, d3d12 + dxgi link, /DEF exports.def
 
 **Core Logic:**
@@ -94,7 +94,7 @@ bully/
 
 **Tests:**
 - `tools/render_probe/run.ps1` — automated visual verification
-- `docs/m2_test_plan.md` — manual test matrix (native control, on12 internal/explicit, presentation variants)
+- `docs/m2_test_plan.md` — manual test matrix (native control, DXVK chainload, on12 internal/explicit, presentation variants)
 
 **Documentation:**
 - `README.md` — project overview, strategy summary, layout, quick recon commands
@@ -163,7 +163,7 @@ bully/
 
 **Enhancement pass (future M4):**
 - Location: New `src/enhancements/` directory for D3D12-native passes
-- Pattern: Access D3D12 device via IDirect3DDevice9On12::GetD3D12Device(), submit extra command lists
+- Pattern: For a future D3D12 pass, access the On12 device via IDirect3DDevice9On12::GetD3D12Device(), submit extra command lists
 - Integrate: Hook in ProxyIDirect3DDevice9::Present() before/after inner Present
 
 **Mod platform (future M5):**

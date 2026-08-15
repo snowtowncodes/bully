@@ -40,7 +40,7 @@ procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 
 | INI key | Values | Notes |
 | --- | --- | --- |
-| `renderer.backend` | `native`, `on12` | Backend selection. |
+| `renderer.backend` | `native`, `dxvk`, `on12` | Backend selection; `native` is the default and `on12` is experimental. |
 | `renderer.on12_device` | `internal`, `explicit` | Used for `on12`; `internal` is the default. |
 | `renderer.force_swap_effect` | `none`, `discard`, `flip`, `copy` | `none` preserves the game's requested value. |
 | `renderer.force_present_interval` | `none`, `immediate`, `default`, `one` | `none` preserves the game's requested value. |
@@ -63,13 +63,21 @@ Run cases in this order and stop on a stop condition below.
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend native -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    ```
 
-2. On12 internal control:
+2. DXVK chainload control. Before this case, place the x86 DXVK `d3d9.dll`
+   beside `Bully.exe` as `dxvk_d3d9.dll`; the normal harness does not install
+   third-party dependencies:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend dxvk -DurationSeconds 35 -CaptureAtSeconds 5,15,30
+   ```
+
+3. On12 internal control:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device internal -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    ```
 
-3. On12 internal presentation variants:
+4. On12 internal presentation variants:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device internal -ForceSwapEffect copy -ForcePresentInterval immediate -DurationSeconds 35 -CaptureAtSeconds 5,15,30
@@ -77,14 +85,14 @@ Run cases in this order and stop on a stop condition below.
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device internal -ForceSwapEffect discard -ForcePresentInterval one -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    ```
 
-4. On12 explicit device cases, first default presentation settings, then COPY:
+5. On12 explicit device cases, first default presentation settings, then COPY:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device explicit -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -Backend on12 -On12Device explicit -ForceSwapEffect copy -DurationSeconds 35 -CaptureAtSeconds 5,15,30
    ```
 
-5. Re-run the native control only when proxy source or the built DLL changed
+6. Re-run the native control only when proxy source or the built DLL changed
    after the initial native control. Record the changed source/build identity
    in the result row.
 
@@ -95,8 +103,10 @@ A visual pass needs all applicable evidence below.
 - At least one selected, active game-window PNG after startup is `nonblank`.
   Require `target=main-window`; `primary-monitor-fallback` is diagnostic only.
 - `artifacts/bully_d3d9proxy.log` proves the requested/effective backend. For
-  On12, retain the `IDirect3DDevice9On12`/D3D12 verification lines; for native,
-  retain the native/unverified backend line.
+  DXVK, retain the absolute module-load, symbol-resolution, and creation-success
+  lines plus DXVK's own `Bully_d3d9.log`. For On12, retain the
+  `IDirect3DDevice9On12`/D3D12 verification lines; for native, retain the
+  native/unverified backend line.
 - The proxy log records `CreateDevice` and `Present` HRESULTs. Retain both
   success/failure values and first-Present swap-chain parameters.
 - The pre-Present backbuffer artifact is varied/non-uniform rather than a blank
@@ -165,7 +175,8 @@ the harness.
 - Current native control: `20260814-094923-pid44584-native-se-none_pi-none_od-i`, proxy SHA-256 `0d7acd...`, `capture_frontbuffer=0`; the process survived 35 seconds and the main-window captures included nonblank output. This is the valid native control for the current proxy wrapper.
 - Matched On12 control: `20260814-095119-pid17544-on12-se-none_pi-none_od-i`, the same proxy SHA-256 and controls; all three main-window captures were blank-white. The log verified `IDirect3DDevice9On12`, `ID3D12Device`, `Present=S_OK`, and a nonblank pre-Present backbuffer.
 - DXCap artifact: `dump/render-probe/dxcap-manual-20260814-115504/bully-on12-frame60.vsglog` is 4,120 bytes and `dxcap -p -toXML` reports no DirectX activity. The append-only proxy log shows that DXCap's process entered `Direct3DCreate9On12` but stopped before device creation returned, so this capture is non-diagnostic for the normal runtime path.
-- Decision: park D3D9On12. Do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead. Native is now the safe default; On12 remains an explicit experimental selection.
+- Verified DXVK chainload: `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`, proxy SHA-256 `f34120a0...`; the proxy absolute-loaded `dxvk_d3d9.dll`, wrapped the returned D3D9 interfaces, recorded successful presents, and the main-window capture at 30 seconds visibly shows DXVK 3.0.2 rendering Bully through Vulkan. The outer evidence manifest records `restoreSucceeded=true`.
+- Decision: use DXVK as the working translated backend while retaining native as the dependency-free default. Park D3D9On12; do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead.
 
 ## Stop Conditions
 

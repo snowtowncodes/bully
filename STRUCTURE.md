@@ -82,7 +82,7 @@ bully/
 - `tools/render_probe/run.ps1` — param block line 1, main workflow starts ~line 800
 
 **Configuration:**
-- `src/proxy/bully_d3d9proxy.ini` — template INI with defaults (backend=native; optional dxvk/on12, on12_device=internal, trace_device=1, capture_frames=1, capture_frontbuffer=0, capture_frame=60)
+- `src/proxy/bully_d3d9proxy.ini` — template INI with defaults (backend=native; optional dxvk/on12, on12_device=internal, trace_device=1, capture_frames=1, capture_frontbuffer=0, capture_frame=60, mods.test_marker=0)
 - `src/proxy/CMakeLists.txt` — x86-only build, d3d12 + dxgi link, /DEF exports.def
 
 **Core Logic:**

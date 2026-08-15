@@ -115,6 +115,12 @@ Every written PNG gets deterministic metrics: dimensions, mean/min/max RGB, lumi
 
 The optional proxy-created `bully_renderprobe_backbuffer.bmp` and `bully_renderprobe_frontbuffer.bmp` are copied and analyzed separately when they changed during the run. Frontbuffer readback is opt-in and disabled by default because it can interfere with presentation. Both artifacts include the same deterministic metrics, classification, hashes, and pre/post provenance in the report. They are diagnostic evidence only and do not satisfy the success requirement for window/desktop PNG captures.
 
+The proxy's first mod vertical slice is configured in the source template's
+`[mods]` section: set `test_marker=1` to apply a magenta square through the
+existing device `Present` hook, then restore it to `0` after the bounded run.
+The in-process backbuffer artifact is the authoritative marker check; reject a
+desktop PNG when its pixels contain another visible window or terminal.
+
 ## Output And Exit Status
 
 Each invocation creates:

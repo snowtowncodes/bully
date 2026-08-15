@@ -13,6 +13,11 @@ through Vulkan while the proxy's D3D9 wrappers and telemetry remain active.
 Native is still the dependency-free default. The On12 path is parked because it
 creates a D3D12-backed device and varied backbuffer but a white visible window.
 
+The first graphics-mod vertical slice is an opt-in `mods.test_marker` applied
+through the stable device `Present` hook. It uses D3D9 `ColorFill` to modify the
+backbuffer without adding new vtable intercepts; the native backbuffer was
+verified with the marker enabled. It remains disabled by default.
+
 See [docs/architecture.md](docs/architecture.md) for the full plan.
 
 ## Layout

@@ -43,7 +43,7 @@
 **Configuration Layer:**
 - Purpose: Runtime behavior selection via INI
 - Location: `bully_d3d9proxy.ini` (sibling to Bully.exe)
-- Contains: Backend selection (native/dxvk/on12), device mode (internal/explicit), presentation overrides, diagnostics
+- Contains: Backend selection (native/dxvk/on12), device mode (internal/explicit), presentation overrides, diagnostics, and opt-in `[mods]` marker controls
 - Depends on: Win32 GetPrivateProfileString API
 - Used by: Proxy initialization
 
@@ -191,6 +191,10 @@
 - Post-Present frontbuffer retrieved via GetFrontBufferData when `capture_frontbuffer=1`
 - Both written as BMP to exe directory: `bully_renderprobe_backbuffer.bmp`, `bully_renderprobe_frontbuffer.bmp`
 - Render probe copies, hashes, and classifies these artifacts (blank-white/blank-black/low-information-uniform/nonblank)
+
+**Mod Vertical Slice:**
+- `mods.test_marker=1` uses the existing device Present hook and `ColorFill` to modify the current backbuffer without adding generated vtable intercepts
+- Default is disabled; native backbuffer proof is archived, while current active-window capture contamination and DXVK presentation state remain separate limitations
 
 **Backend Verification:**
 - After CreateDevice, proxy queries `IDirect3DDevice9On12` only for the On12 backend

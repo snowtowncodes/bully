@@ -48,6 +48,8 @@ procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 | `diagnostics.capture_frames` | `0`, `1` | Enables the pre-Present backbuffer BMP. |
 | `diagnostics.capture_frontbuffer` | `0`, `1` | Opt-in post-Present readback; default `0` because it can interfere with presentation. |
 | `diagnostics.capture_frame` | non-negative frame number | Current default is `60`. |
+| `mods.test_marker` | `0`, `1` | Opt-in native/D3D9 Present-hook vertical slice; default `0`. |
+| `mods.test_marker_size` | `8`-`512` | Magenta backbuffer marker size; default `64`. |
 
 The probe writes the four renderer controls into a staged INI. Do not use
 `-NoInstall` for an A/B case because requested controls are then not applied.
@@ -111,6 +113,10 @@ A visual pass needs all applicable evidence below.
   success/failure values and first-Present swap-chain parameters.
 - The pre-Present backbuffer artifact is varied/non-uniform rather than a blank
   or uniform image. This shows rendering reached the backbuffer.
+- For the test-marker slice, the backbuffer artifact must visibly contain the
+  magenta square and the proxy log must record `test marker applied` with
+  `hr=0x00000000`. A contaminated desktop/window capture does not establish
+  visible marker presentation.
 - When valid, retain the post-Present frontbuffer result and its
   `GetFrontBufferData` HRESULT as corroborating presentation evidence.
 
@@ -176,6 +182,7 @@ the harness.
 - Matched On12 control: `20260814-095119-pid17544-on12-se-none_pi-none_od-i`, the same proxy SHA-256 and controls; all three main-window captures were blank-white. The log verified `IDirect3DDevice9On12`, `ID3D12Device`, `Present=S_OK`, and a nonblank pre-Present backbuffer.
 - DXCap artifact: `dump/render-probe/dxcap-manual-20260814-115504/bully-on12-frame60.vsglog` is 4,120 bytes and `dxcap -p -toXML` reports no DirectX activity. The append-only proxy log shows that DXCap's process entered `Direct3DCreate9On12` but stopped before device creation returned, so this capture is non-diagnostic for the normal runtime path.
 - Verified DXVK chainload: `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`, proxy SHA-256 `f34120a0...`; the proxy absolute-loaded `dxvk_d3d9.dll`, wrapped the returned D3D9 interfaces, recorded successful presents, and the main-window capture at 30 seconds visibly shows DXVK 3.0.2 rendering Bully through Vulkan. The outer evidence manifest records `restoreSucceeded=true`.
+- Native marker slice: `20260814-211207-pid31140-native-se-none_pi-none_od-i`; `ColorFill` succeeded and the in-process backbuffer visibly contains the marker, while the active-window PNGs were rejected because they captured a PowerShell terminal.
 - Decision: use DXVK as the working translated backend while retaining native as the dependency-free default. Park D3D9On12; do not add presentation matrices, a custom 9On12 fork, or game patches without a new specific compatibility lead.
 
 ## Stop Conditions

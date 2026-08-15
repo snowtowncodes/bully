@@ -103,6 +103,13 @@ active, survived the 35-second gate, and produced nonblank game-window captures.
 The DXVK log confirms an x86 D3D9 device and Vulkan swapchain on the RTX 4070
 SUPER. On12 remains parked with the documented white-window result.
 
+The first mod vertical slice uses `mods.test_marker=1` at the existing device
+`Present` boundary. Run `20260814-211207-pid31140-native-se-none_pi-none_od-i`
+logged `ColorFill` success and its captured native backbuffer visibly contains
+the magenta marker over the Bully title screen. The active-window PNGs from that
+run were rejected as proof because the desktop capture included a PowerShell
+terminal; the in-process backbuffer is the qualifying evidence for this slice.
+
 ## 5. Risks & open questions
 
 1. **DXVK packaging and support boundary**: the verified integration needs the

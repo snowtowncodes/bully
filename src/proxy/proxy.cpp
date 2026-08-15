@@ -260,6 +260,8 @@ struct DeviceDiagnosticsConfig {
     bool captureFrames;
     bool captureFrontBuffer;
     UINT captureFrame;
+    bool testMarker;
+    UINT testMarkerSize;
     D3D12DebugLayerMode d3d12DebugLayer;
 
     // Presentation parameter overrides (empty/none = no override)
@@ -280,6 +282,12 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
         "diagnostics", "capture_frontbuffer", 0, iniPath) != 0;
     config.captureFrame = GetPrivateProfileIntA(
         "diagnostics", "capture_frame", 60, iniPath);
+    config.testMarker = GetPrivateProfileIntA(
+        "mods", "test_marker", 0, iniPath) != 0;
+    config.testMarkerSize = GetPrivateProfileIntA(
+        "mods", "test_marker_size", 64, iniPath);
+    if (config.testMarkerSize < 8) config.testMarkerSize = 8;
+    if (config.testMarkerSize > 512) config.testMarkerSize = 512;
 
     char d3d12DebugLayer[32] = {};
     GetPrivateProfileStringA("diagnostics", "d3d12_debug_layer", "none",
@@ -309,6 +317,8 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     }
     Log("[proxy] presentation overrides force_swap_effect=%s, force_present_interval=%s\n",
         config.forceSwapEffect, config.forcePresentInterval);
+    Log("[proxy] mod test_marker=%u, test_marker_size=%u\n",
+        config.testMarker ? 1u : 0u, config.testMarkerSize);
     return config;
 }
 
@@ -1095,7 +1105,7 @@ public:
                           const DeviceDiagnosticsConfig& config, bool on12DeviceVerified)
         : m_inner(inner), m_parent(parent), m_refs(1), m_config(config),
           m_presentCount(0), m_captureAttempted(false),
-          m_on12DeviceVerified(on12DeviceVerified) {
+          m_on12DeviceVerified(on12DeviceVerified), m_testMarkerLogged(false) {
         ZeroMemory(&m_counters, sizeof(m_counters));
         AddRefParent();
         Log("[device] IDirect3DDevice9 wrapped (inner=0x%p, parent=0x%p)\n", inner, parent);
@@ -1189,12 +1199,52 @@ private:
     UINT m_presentCount;
     bool m_captureAttempted;
     bool m_on12DeviceVerified;
+    bool m_testMarkerLogged;
 
     // Throttle routine telemetry: log every Nth call
     static const UINT kThrottleInterval = 1000;
 
     bool ShouldTrace(UINT counter) const {
         return m_config.traceDevice && (counter % kThrottleInterval == 0);
+    }
+
+    void ApplyTestMarker() {
+        if (!m_config.testMarker) return;
+
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = m_inner->GetBackBuffer(
+            0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            if (!m_testMarkerLogged) {
+                Log("[mod] test marker GetBackBuffer failed: hr=0x%08lx\n",
+                    static_cast<unsigned long>(hr));
+                m_testMarkerLogged = true;
+            }
+            return;
+        }
+
+        D3DSURFACE_DESC desc = {};
+        hr = backBuffer->GetDesc(&desc);
+        if (SUCCEEDED(hr)) {
+            const LONG width = static_cast<LONG>(desc.Width);
+            const LONG height = static_cast<LONG>(desc.Height);
+            const LONG markerSize = static_cast<LONG>(m_config.testMarkerSize);
+            const LONG margin = 8;
+            RECT rect = {
+                width > markerSize + margin ? width - markerSize - margin : 0,
+                height > markerSize + margin ? height - markerSize - margin : 0,
+                width > margin ? width - margin : width,
+                height > margin ? height - margin : height};
+            hr = m_inner->ColorFill(
+                backBuffer, &rect, D3DCOLOR_ARGB(255, 255, 0, 255));
+        }
+        backBuffer->Release();
+
+        if (!m_testMarkerLogged) {
+            Log("[mod] test marker %s: hr=0x%08lx, color=0xffff00ff\n",
+                SUCCEEDED(hr) ? "applied" : "failed", static_cast<unsigned long>(hr));
+            m_testMarkerLogged = true;
+        }
     }
 
     // Intercept implementations
@@ -1243,6 +1293,8 @@ private:
 
     HRESULT Intercept_Present(CONST RECT* pSourceRect, CONST RECT* pDestRect,
                               HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
+        ApplyTestMarker();
+
         // Backbuffer capture before present if configured
         bool doCapture = m_config.captureFrames && !m_captureAttempted &&
                          m_presentCount == m_config.captureFrame;

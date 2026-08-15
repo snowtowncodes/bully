@@ -49,8 +49,8 @@
 
 **Verification Layer:**
 - Purpose: Automated visual testing with desktop capture and pixel metrics
-- Location: `tools/render_probe/run.ps1`, `tools/render_probe/run_active.ps1`
-- Contains: PowerShell harness, display preflight, capture scheduling, pixel classification, report generation
+- Location: `tools/render_probe/run.ps1`, `tools/render_probe/run_active.ps1`, `tools/render_probe/run_dxvk.ps1`
+- Contains: PowerShell harness, hash-checked DXVK staging, display preflight, capture scheduling, pixel classification, report generation
 - Depends on: .NET WinForms for desktop capture, Windows Task Scheduler for session-0 bridge
 - Used by: Development workflow for A/B testing backends
 
@@ -63,7 +63,7 @@
 3. Game calls `GetProcAddress("Direct3DCreate9")` → resolves to `proxy_Direct3DCreate9` — `src/proxy/exports.def`
 4. Proxy reads INI → backend=on12, on12_device=internal — `ReadRendererBackend()`, `ReadOn12DeviceMode()`
 5. Proxy calls system `Direct3DCreate9On12(SDKVersion, nullptr, 0)` with internal device — 9On12 creates D3D12 device internally
-6. Proxy wraps returned IDirect3D9* in `ProxyIDirect3D9` for CreateDevice interception — `src/proxy/proxy.cpp:2199-2209`
+6. Proxy wraps returned IDirect3D9* in `ProxyIDirect3D9` for CreateDevice interception — `src/proxy/proxy.cpp:2270-2278`
 7. Game enumerates adapters, formats → forwarded to 9On12 enumerator
 
 **Initialization (dxvk backend):**
@@ -77,7 +77,7 @@
 
 **Device Creation:**
 
-1. Game calls `IDirect3D9::CreateDevice(...)` → `ProxyIDirect3D9::CreateDevice()` — `src/proxy/proxy.cpp:1989-2076`
+1. Game calls `IDirect3D9::CreateDevice(...)` → `ProxyIDirect3D9::CreateDevice()` — `src/proxy/proxy.cpp:2037-2124`
 2. Proxy applies presentation parameter overrides (swap effect, present interval) if configured — `ApplyPresentationOverrides()`
 3. Proxy forwards to the selected inner IDirect3D9::CreateDevice implementation
 4. Proxy wraps returned IDirect3DDevice9* in `ProxyIDirect3DDevice9` for Present/method telemetry — device9_methods.generated.inc
@@ -116,38 +116,38 @@
 
 **ProxyIDirect3D9:**
 - Purpose: Wrap IDirect3D9 enumerator to intercept CreateDevice
-- Location: `src/proxy/proxy.cpp:1885-2084`
+- Location: `src/proxy/proxy.cpp:1933-2132`
 - Pattern: COM wrapper with IUnknown + IDirect3D9 forwarding, special-case CreateDevice hook
 
 **ProxyIDirect3DDevice9:**
 - Purpose: Wrap IDirect3DDevice9 to log traffic and capture diagnostic frames
-- Location: `src/proxy/proxy.cpp:1041-1883` (class) + `src/proxy/device9_methods.generated.inc` (116 forwarding methods, vtable slots 3-118)
+- Location: `src/proxy/proxy.cpp:1089-1931` (class) + `src/proxy/device9_methods.generated.inc` (116 forwarding methods, vtable slots 3-118)
 - Pattern: COM wrapper with generated vtable forwarding via Python codegen (`src/proxy/generate_device9_methods.py`)
 
 **ProxyIDirect3DSwapChain9:**
 - Purpose: Wrap IDirect3DSwapChain9 to log Present calls and track frame count
-- Location: `src/proxy/proxy.cpp:945-1039`
+- Location: `src/proxy/proxy.cpp:993-1087`
 - Pattern: COM wrapper with Present telemetry
 
 **ExplicitOn12Context:**
 - Purpose: RAII container for proxy-owned D3D12 device + command queue in explicit mode
-- Location: `src/proxy/proxy.cpp:385-403`
+- Location: `src/proxy/proxy.cpp:428-446`
 - Pattern: Non-copyable RAII with Release() cleanup
 
 **DeviceDiagnosticsConfig:**
 - Purpose: Structured INI configuration for tracing, capture, and overrides
-- Location: `src/proxy/proxy.cpp:215-225`
+- Location: `src/proxy/proxy.cpp:258-268`
 - Pattern: POD struct populated from INI via GetPrivateProfileString/Int
 
 ## Entry Points
 
 **proxy_Direct3DCreate9:**
-- Location: `src/proxy/proxy.cpp:2113-2212` (callable via export at offset in exports.def)
+- Location: `src/proxy/proxy.cpp:2161-2282` (callable via export at offset in exports.def)
 - Triggers: Game's `GetProcAddress("Direct3DCreate9")` → game's call
 - Responsibilities: Read INI backend, create a native, DXVK, or On12 D3D9 enumerator, wrap it in ProxyIDirect3D9, and log backend identity
 
 **DllMain:**
-- Location: `src/proxy/proxy.cpp:2215-2221`
+- Location: `src/proxy/proxy.cpp:2285-2291`
 - Triggers: LoadLibrary, FreeLibrary
 - Responsibilities: No-op; all initialization deferred to lazy INIT_ONCE in EnsureRealD3D9Loaded
 
@@ -211,3 +211,4 @@
 - Classification: blank-white (≥99.5% pixels all channels ≥245), blank-black (≥99.5% all channels ≤10), low-information-uniform (low luminance stddev + coarse-color diversity), nonblank
 - Exit 0 only when process alive at deadline and ≥1 nonblank capture
 - Session-0 bridge via run_active.ps1: schedules task in active console session with user SID, runs run.ps1, collects artifacts
+- DXVK helper via run_dxvk.ps1: verifies an x86 source DLL, stages `dxvk_d3d9.dll`/`dxvk.conf`, invokes the bridge, and restores its artifacts

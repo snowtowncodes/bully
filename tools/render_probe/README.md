@@ -18,6 +18,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateO
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateHistory
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateDisplayOnly
 powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run.ps1 -ValidateIniOnly -On12Device explicit -ForceSwapEffect flip -ForcePresentInterval immediate
+powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_dxvk.ps1 -AllowActiveDesktopLaunch
+powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_dxvk.ps1 -DxvkDllPath C:\path\to\x32\d3d9.dll -ExpectedSha256 <sha256> -DurationSeconds 35 -CaptureAtSeconds 5,15,30 -AllowActiveDesktopLaunch
+powershell -ExecutionPolicy Bypass -File .\tools\render_probe\run_dxvk.ps1 -ValidateOnly -DxvkDllPath C:\path\to\x32\d3d9.dll
 ```
 
 ## Active Console Bridge
@@ -37,6 +40,16 @@ The bridge intentionally launches a runtime probe into the currently unlocked ph
 Each bridge invocation leaves its request, result, controller cleanup record, and child stdout/stderr under `dump/render-probe/bridge/<guid>/`. Runtime bridge metadata includes the normal `report.json` path parsed from that exact child output; it never guesses from the newest dump directory. The task name is unique and starts with `BullyRenderProbeActive-`. The wrapper unregisters only its exact task in `finally`. If a controller is forcibly interrupted, inspect tasks with that recognizable prefix and manually unregister the specific orphaned task name after confirming it belongs to the interrupted invocation. The task has a bounded execution limit and a disabled expiry trigger: it cannot later start by itself, while Task Scheduler has an expiry path for stale registrations.
 
 `-ValidateBridgeOnly` creates no task and does not invoke the game or `run.ps1`; it validates argument normalization, per-invocation task-name construction, PowerShell parsing of the controller/worker/launcher, and the active-console interop helper compilation.
+
+## DXVK Chainload Helper
+
+`run_dxvk.ps1` is the tracked wrapper for a DXVK chainload probe. It stages only `Bully Scholarship Edition/dxvk_d3d9.dll`, a one-line temporary `dxvk.conf`, and a fresh `Bully_d3d9.log`. It leaves the project's `d3d9.dll` and renderer INI lifecycle entirely to `run_active.ps1 -Backend dxvk` and the normal harness.
+
+The helper uses `deps/dxvk-3.0.2/x32/d3d9.dll` when that ignored local dependency exists. Pass `-DxvkDllPath` to select another DLL; relative paths resolve from the repository root. Before it stages anything, the helper verifies an `I386` PE32 header (`Machine=0x014c`, optional-header magic `0x010b`) and hashes the source. `-ExpectedSha256` is optional, but when supplied it must exactly match the source SHA-256. `-ValidateOnly` performs these source and control checks without creating output, changing the game folder, scheduling a task, or launching the game.
+
+Runtime calls require `-AllowActiveDesktopLaunch`, refuse to start while `Bully.exe` is already running, and accept a bounded `-DurationSeconds` value from 1 to 3600. `-CaptureAtSeconds` accepts comma-, semicolon-, or whitespace-separated non-negative integers; every capture time must be within the selected duration. `-ForceInstall` is passed through only when explicitly supplied, preserving the harness's protection for an unknown existing project proxy.
+
+Each runtime invocation writes ignored evidence under `dump/render-probe/dxvk-.../`, including `dxvk-manifest.json`, bridge stdout/stderr, the run's captured `Bully_d3d9.log` when produced, and backups of pre-existing DXVK files. The manifest records the actual source SHA-256, staged paths, child exit code, restoration outcome, and the child report path only when that path appears in the bridge's final JSON output; it never guesses from dump directories. Cleanup runs in `finally`, terminates a new `Bully.exe` left by a failed child, and restores the pre-run DLL/config/log. DLL and config restoration first require the current file to still match the helper-installed hash, so an unrelated replacement is left intact and reported as a failed restoration instead of being overwritten.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -75,7 +88,8 @@ Without `-NoInstall`, the launcher requires `build/proxy/Release/d3d9.dll`, `src
 `-Backend dxvk` additionally requires an x86 DXVK `d3d9.dll` renamed to
 `Bully Scholarship Edition/dxvk_d3d9.dll`. The harness stages only this
 project's proxy and generated INI; it does not download, install, or restore the
-third-party DXVK module.
+third-party DXVK module. Use `run_dxvk.ps1` to stage and restore that module for
+a bounded active-console probe rather than placing it manually.
 
 It records SHA-256 hashes before staging `d3d9.dll` and `bully_d3d9proxy.ini`, creates verified backups in the run report directory, and restores them in `finally`. The requested INI is produced with a section-aware line updater: it preserves comments and other sections, removes existing active renderer keys only inside `[renderer]`, and emits exactly one active `backend`, `on12_device`, `force_swap_effect`, and `force_present_interval` key. `proxy-hash-history.json`, ignored by Git, is a local allowlist of generated proxy SHA-256 values observed on prior runs.
 

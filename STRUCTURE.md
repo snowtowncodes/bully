@@ -35,10 +35,11 @@ bully/
 
 **tools/render_probe:**
 - Purpose: Automated visual verification with desktop capture and pixel analysis
-- Contains: run.ps1 (main harness), run_active.ps1 (session-0 bridge), run_active_worker.ps1 (bridge worker), NativeMethods.cs (P/Invoke helpers), proxy-hash-history.json (local allowlist), README.md (usage, safety, interpretation)
+- Contains: run.ps1 (main harness), run_active.ps1 (session-0 bridge), run_dxvk.ps1 (DXVK staging helper), run_active_worker.ps1 (bridge worker), NativeMethods.cs (P/Invoke helpers), proxy-hash-history.json (local allowlist), README.md (usage, safety, interpretation)
 - Key files:
   - `run.ps1` — display preflight, proxy/INI staging, game launch, timed capture, pixel metrics, report generation, restore
   - `run_active.ps1` — session-0 to active-console bridge via scheduled task
+  - `run_dxvk.ps1` — x86/hash-checked DXVK DLL staging, bridge invocation, manifest, and restoration
   - `README.md` — comprehensive usage guide, parameter reference, preflight checks, exit status, artifact structure
 
 **tools:**
@@ -85,11 +86,11 @@ bully/
 - `src/proxy/CMakeLists.txt` — x86-only build, d3d12 + dxgi link, /DEF exports.def
 
 **Core Logic:**
-- `src/proxy/proxy.cpp` lines 1-768 — logging, INI parsing, D3D12 device creation (explicit mode), backend verification
-- `src/proxy/proxy.cpp` lines 769-937 — export forwarding trampolines (asm naked functions)
-- `src/proxy/proxy.cpp` lines 945-1039 — ProxyIDirect3DSwapChain9 (Present telemetry)
-- `src/proxy/proxy.cpp` lines 1041-1883 — ProxyIDirect3DDevice9 (traffic logging, frame capture)
-- `src/proxy/proxy.cpp` lines 1885-2084 — ProxyIDirect3D9 (CreateDevice interception)
+- `src/proxy/proxy.cpp` lines 1-823 — logging, INI parsing, D3D12 device creation (explicit mode), backend verification
+- `src/proxy/proxy.cpp` lines 825-985 — export forwarding trampolines (asm naked functions)
+- `src/proxy/proxy.cpp` lines 993-1087 — ProxyIDirect3DSwapChain9 (Present telemetry)
+- `src/proxy/proxy.cpp` lines 1089-1931 — ProxyIDirect3DDevice9 (traffic logging, frame capture)
+- `src/proxy/proxy.cpp` lines 1933-2132 — ProxyIDirect3D9 (CreateDevice interception)
 - `src/proxy/device9_methods.generated.inc` — 116 forwarding method implementations (vtable slots 3-118)
 
 **Tests:**
@@ -127,19 +128,19 @@ bully/
 ## Where to Add New Code
 
 **New proxy feature (logging, interception, diagnostics):**
-- Location: `src/proxy/proxy.cpp` — add to appropriate section (config parsing ~lines 140-270, backend logic ~lines 469-735, wrapper classes ~lines 945-2084)
+- Location: `src/proxy/proxy.cpp` — add to appropriate section (config parsing ~lines 210-313, backend logic ~lines 428-815, wrapper classes ~lines 993-2132)
 - Pattern: Follow existing INI config + wrapper method pattern
 - Register: Update DeviceDiagnosticsConfig struct if adding INI key, ReadDeviceDiagnosticsConfig() for parsing
 
 **New IDirect3DDevice9 method interception (beyond forwarding):**
-- Location: `src/proxy/proxy.cpp` ProxyIDirect3DDevice9 class (~lines 1041-1883)
+- Location: `src/proxy/proxy.cpp` ProxyIDirect3DDevice9 class (~lines 1089-1931)
 - Pattern: Override specific method in class definition, add special-case logic, call m_inner->Method() to forward
-  - Example: Intercept_Present() already overridden for frame capture at lines 1196-1236
+  - Example: Intercept_Present() already overridden for frame capture at lines 1244-1284
 
 **New D3D9 export forwarding:**
 - Location: `src/proxy/exports.def` — add export mapping
 - Location: `src/proxy/proxy.cpp` — add FARPROC g_<ExportName>, GetProcAddress in InitRealD3D9Once(), naked trampoline function
-  - Pattern: Follow existing export pattern (lines 769-937)
+  - Pattern: Follow existing export pattern (lines 825-985)
 
 **New verification test:**
 - Location: `tools/render_probe/run.ps1` — call from new PowerShell script or add to existing harness

@@ -142,6 +142,8 @@ The run ID retains the backend and adds concise renderer metadata, for example `
 
 The JSON and summary record requested backend/on12-device/swap-effect/present-interval controls, the requested INI artifact SHA-256 and effective keys, and whether the controls were applied to the active INI. They also record installation hashes and restoration status, process liveness observations, capture methods and metrics, front/backbuffer artifact hashes and classifications, proxy-log pre/post lengths plus extraction method, session/remote status, device names/bounds, preflight checks and errors, override/trust flags, display state before launch/after termination/after cleanup, restore decision/result, exit code, WER records, and known crash signatures. It specifically recognizes Application Error evidence for `Bully.exe`, exception `0xc0000005`, fault offset `0x3487DB`.
 
+The report includes optional immutable identity fields: `installation.gameExecutableSha256` is the lowercase SHA-256 identity of `Bully.exe` when it is available, and `run.repositoryCommit` is the lowercase 40-character Git `HEAD` identity when the checkout and Git are available. `run.repositoryCommit=null` is valid outside a Git checkout; neither field is required for probe success.
+
 The launcher returns zero only when the launched process was alive at the duration deadline and at least one selected PNG was classified `nonblank`. It returns nonzero for early exit/crash evidence, no analyzable captures, or when all analyzable captures are blank or low-information. A process is killed after a successful deadline observation to keep the test bounded; that is recorded as `terminatedByHarness`, not classified as an early crash.
 
 ## Display Recovery

@@ -268,6 +268,7 @@ $script:Installation = [ordered]@{
     forceInstall              = [bool]$ForceInstall
     generatedProxyPath        = $GeneratedProxyPath
     generatedProxySha256      = $null
+    gameExecutableSha256      = $null
     sourceIniPath             = $SourceIniPath
     sourceIniSha256           = $null
     gameD3D9BeforeSha256      = $null
@@ -379,6 +380,36 @@ function Get-Sha256 {
     }
 
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-RepositoryCommit {
+    try {
+        $gitMetadataPath = Join-Path $ProjectRoot '.git'
+        if (-not (Test-Path -LiteralPath $gitMetadataPath)) {
+            return $null
+        }
+
+        $gitCommand = Get-Command -Name 'git.exe' -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (($null -eq $gitCommand) -or [string]::IsNullOrWhiteSpace([string]$gitCommand.Path)) {
+            return $null
+        }
+
+        $commitOutput = & $gitCommand.Path -C $ProjectRoot rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+
+        $commit = ($commitOutput -join '').Trim()
+        if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
+            return $null
+        }
+
+        return $commit.ToLowerInvariant()
+    }
+    catch {
+        return $null
+    }
 }
 
 function Get-FileSnapshot {
@@ -2683,6 +2714,13 @@ function Write-HumanSummary {
 function Write-FinalReport {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$Outcome)
 
+    try {
+        $script:Installation['gameExecutableSha256'] = Get-Sha256 -Path $GameExePath
+    }
+    catch {
+        $script:Installation['gameExecutableSha256'] = $null
+    }
+
     $report = [ordered]@{
         schemaVersion = 1
         run = [ordered]@{
@@ -2691,6 +2729,7 @@ function Write-FinalReport {
             finishedUtc      = if ($null -ne $script:RunEnd) { $script:RunEnd.ToUniversalTime().ToString('o') } else { (Get-Date).ToUniversalTime().ToString('o') }
             projectRoot      = $ProjectRoot
             runDirectory     = $RunDirectory
+            repositoryCommit = Get-RepositoryCommit
             backend          = $Backend
             on12Device       = $On12Device
             forceSwapEffect  = $ForceSwapEffect

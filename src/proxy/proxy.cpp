@@ -33,6 +33,14 @@ static const GUID kIID_IDirect3D9 = {
 static const GUID kIID_IDirect3DDevice9 = {
     0xd0223b96, 0xbf7a, 0x43fd, {0x92, 0xbd, 0xa4, 0x3b, 0x0d, 0x82, 0xb9, 0xeb}};
 
+// IID_IDirect3D9Ex {02177241-69FC-400C-8FF1-93A44DF6861D}
+static const GUID kIID_IDirect3D9Ex = {
+    0x02177241, 0x69fc, 0x400c, {0x8f, 0xf1, 0x93, 0xa4, 0x4d, 0xf6, 0x86, 0x1d}};
+
+// IID_IDirect3DDevice9Ex {B18B10CE-2649-405A-870F-95F777D4313A}
+static const GUID kIID_IDirect3DDevice9Ex = {
+    0xb18b10ce, 0x2649, 0x405a, {0x87, 0x0f, 0x95, 0xf7, 0x77, 0xd4, 0x31, 0x3a}};
+
 enum class RendererBackend {
     On12,
     Native,
@@ -1150,10 +1158,14 @@ public:
     // IUnknown
     STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
         if (ppvObj == nullptr) return E_POINTER;
+        *ppvObj = nullptr;
         if (riid == IID_IUnknown || riid == kIID_IDirect3DDevice9) {
             AddRef();
             *ppvObj = static_cast<IDirect3DDevice9*>(this);
             return S_OK;
+        }
+        if (riid == kIID_IDirect3DDevice9Ex) {
+            return E_NOINTERFACE;
         }
         // Forward other IIDs (including IDirect3DDevice9On12) to inner
         return m_inner->QueryInterface(riid, ppvObj);
@@ -2021,10 +2033,14 @@ public:
     // IUnknown
     STDMETHOD(QueryInterface)(REFIID riid, void** ppvObj) {
         if (ppvObj == nullptr) return E_POINTER;
+        *ppvObj = nullptr;
         if (riid == IID_IUnknown || riid == kIID_IDirect3D9) {
             AddRef();
             *ppvObj = static_cast<IDirect3D9*>(this);
             return S_OK;
+        }
+        if (riid == kIID_IDirect3D9Ex) {
+            return E_NOINTERFACE;
         }
         return m_inner->QueryInterface(riid, ppvObj);
     }

@@ -1005,13 +1005,17 @@ class ProxyIDirect3DDevice9;
 // ---------------------------------------------------------------------------
 class ProxyIDirect3DSwapChain9 : public IDirect3DSwapChain9 {
 public:
-    ProxyIDirect3DSwapChain9(IDirect3DSwapChain9* inner, UINT swapChainIndex)
-        : m_inner(inner), m_refs(1), m_swapChainIndex(swapChainIndex), m_presentCount(0) {
+    ProxyIDirect3DSwapChain9(IDirect3DSwapChain9* inner, IDirect3DDevice9* parentDevice,
+                             UINT swapChainIndex)
+        : m_inner(inner), m_parentDevice(parentDevice), m_refs(1),
+          m_swapChainIndex(swapChainIndex), m_presentCount(0) {
+        if (m_parentDevice) m_parentDevice->AddRef();
         Log("[swapchain] IDirect3DSwapChain9 wrapped (inner=0x%p, index=%u)\n", inner, swapChainIndex);
     }
 
     ~ProxyIDirect3DSwapChain9() {
         Log("[swapchain] destroyed (index=%u, presents=%u)\n", m_swapChainIndex, m_presentCount);
+        if (m_parentDevice) m_parentDevice->Release();
     }
 
     // IUnknown
@@ -1077,6 +1081,13 @@ public:
     }
 
     STDMETHOD(GetDevice)(IDirect3DDevice9** ppDevice) {
+        if (!ppDevice) return D3DERR_INVALIDCALL;
+        *ppDevice = nullptr;
+        if (m_parentDevice) {
+            m_parentDevice->AddRef();
+            *ppDevice = m_parentDevice;
+            return D3D_OK;
+        }
         return m_inner->GetDevice(ppDevice);
     }
 
@@ -1091,6 +1102,7 @@ public:
 
 private:
     IDirect3DSwapChain9* m_inner;
+    IDirect3DDevice9* m_parentDevice;
     volatile LONG m_refs;
     UINT m_swapChainIndex;
     UINT m_presentCount;
@@ -1607,7 +1619,7 @@ private:
 
         if (SUCCEEDED(hr) && innerSwapChain) {
             ProxyIDirect3DSwapChain9* proxySwapChain = new (std::nothrow) ProxyIDirect3DSwapChain9(
-                innerSwapChain, iSwapChain);
+                innerSwapChain, this, iSwapChain);
             if (!proxySwapChain) {
                 Log("[device] swap chain wrapper allocation failed\n");
                 innerSwapChain->Release();
@@ -1633,7 +1645,7 @@ private:
 
         if (SUCCEEDED(hr) && innerSwapChain) {
             ProxyIDirect3DSwapChain9* proxySwapChain = new (std::nothrow) ProxyIDirect3DSwapChain9(
-                innerSwapChain, 999); // Additional chains don't have fixed indices
+                innerSwapChain, this, 999); // Additional chains don't have fixed indices
             if (!proxySwapChain) {
                 Log("[device] swap chain wrapper allocation failed\n");
                 innerSwapChain->Release();

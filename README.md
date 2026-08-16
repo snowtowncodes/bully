@@ -23,6 +23,7 @@ active-window PNGs do not prove visible-window presentation. It remains disabled
 by default.
 
 See [docs/architecture.md](docs/architecture.md) for the full plan.
+See [docs/playability_test_plan.md](docs/playability_test_plan.md) for the no-launch playability qualification plan.
 
 ## Layout
 - `docs/` — architecture + RE notes

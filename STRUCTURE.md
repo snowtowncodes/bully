@@ -11,7 +11,9 @@ bully/
 │   └── pe_scan.py          # PE reconnaissance script
 ├── docs/
 │   ├── architecture.md     # System design and renderer identification
-│   └── m2_test_plan.md     # M2 verification procedure
+│   ├── dxvk_evidence_ledger.md  # Retained DXVK visual proof and evidence classification
+│   ├── m2_test_plan.md     # M2 verification procedure
+│   └── playability_test_plan.md  # No-launch backend qualification gates
 ├── build/                  # CMake build outputs (gitignored)
 ├── deps/                   # Read-only dependency sources (gitignored)
 ├── dump/                   # Analysis artifacts and test reports (gitignored)
@@ -39,7 +41,7 @@ bully/
 - Key files:
   - `run.ps1` — display preflight, proxy/INI staging, game launch, timed capture, pixel metrics, report generation, restore
   - `run_active.ps1` — session-0 to active-console bridge via scheduled task
-  - `run_dxvk.ps1` — x86/hash-checked DXVK DLL staging, bridge invocation, manifest, and restoration
+  - `run_dxvk.ps1` — x86/hash-checked DXVK DLL staging (verifies SHA-256, stages dxvk_d3d9.dll + dxvk.conf), invokes run_active.ps1, restores artifacts
   - `README.md` — comprehensive usage guide, parameter reference, preflight checks, exit status, artifact structure
 
 **tools:**
@@ -50,10 +52,12 @@ bully/
 
 **docs:**
 - Purpose: Architecture documentation and test plans
-- Contains: architecture.md (system design, renderer identification, strategy, milestones), m2_test_plan.md (M2 visual verification procedure)
+- Contains: architecture.md (system design, renderer identification, strategy, milestones), dxvk_evidence_ledger.md (retained DXVK visual proof and evidence classification), m2_test_plan.md (M2 visual verification procedure), playability_test_plan.md (no-launch backend qualification gates)
 - Key files:
   - `architecture.md` — goal, verified facts (Gamebryo NiDX9Renderer not RenderWare), proxy + native/DXVK/9On12 strategy, milestones, risks
+  - `dxvk_evidence_ledger.md` — retained repository evidence, DXVK visual proof checkpoint, evidence boundary definitions (observed/inferred/unresolved/not-yet-tested)
   - `m2_test_plan.md` — preconditions, controls, test matrix (native/DXVK/On12), required evidence, failure interpretation
+  - `playability_test_plan.md` — fully-playable definition, M1-V visible-runtime prerequisite gate, native-first then DXVK qualification sequence, campaign matrix
 
 **build:**
 - Purpose: CMake build outputs
@@ -100,7 +104,9 @@ bully/
 **Documentation:**
 - `README.md` — project overview, strategy summary, layout, quick recon commands
 - `docs/architecture.md` — detailed system design, renderer identity (Gamebryo vs RenderWare), strategy justification, milestones
+- `docs/dxvk_evidence_ledger.md` — retained DXVK visual proof checkpoint (historical dump/render-probe/), evidence boundary, status terms (observed/inferred/unresolved/not-yet-tested)
 - `docs/m2_test_plan.md` — M2 verification plan with preconditions, controls, evidence requirements
+- `docs/playability_test_plan.md` — fully-playable definition, M1-V visible-runtime prerequisite, native-first then DXVK qualification, campaign matrix
 - `tools/render_probe/README.md` — comprehensive probe usage, display preflight, installation safety, capture interpretation
 
 ## Naming Conventions

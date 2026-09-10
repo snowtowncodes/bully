@@ -208,6 +208,13 @@
 - Section `[diagnostics]`: trace_device, capture_frames, capture_frontbuffer, capture_frame, d3d12_debug_layer
 - Defaults: backend=native, on12_device=internal, no overrides, trace=1, capture=1, frontbuffer=0, frame=60; DXVK requires an x86 sibling `dxvk_d3d9.dll`; On12 is explicit experimental mode
 
+**Interface Wrapping Boundary:**
+- Proxy wraps only base D3D9 interfaces (IDirect3D9, IDirect3DDevice9, IDirect3DSwapChain9)
+- Ex exports (Direct3DCreate9Ex, Direct3DCreate9On12Ex) are forwarded unwrapped to system d3d9.dll
+- ProxyIDirect3D9 and ProxyIDirect3DDevice9 QueryInterface explicitly blocks IDirect3D9Ex and IDirect3DDevice9Ex with E_NOINTERFACE
+- Prevents games from QueryInterface-ing to Ex interfaces and bypassing the wrapper layer
+- Bully.exe (2008 Gamebryo) uses base D3D9 only; Ex blocking is defensive correctness
+
 **Render Probe:**
 - Display preflight checks: interactive desktop, non-remote session, non-virtual monitor, 1x1 CopyFromScreen probe
 - Timed window capture via PrintWindow + CopyFromScreen fallback at configured seconds (default 5,15,30)

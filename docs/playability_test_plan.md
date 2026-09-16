@@ -283,6 +283,15 @@ they must reference the run root rather than replace the existing artifacts.
 | `D-C` DXVK campaign | DXVK independently passes smoke, corpus/main-story completion, controls, UI/subtitles, cutscenes, audio, save/load/restart, lifecycle, performance, two-hour smoke, and four-to-eight-hour endurance | Native results or cross-loads cannot repair a DXVK failure; any hard stop fails |
 | `Fully playable(B)` claim | The applicable backend gate is passed and all definition items in Section 2 have retained evidence | Claim remains unproven if any item is not tested, unresolved, or only inferred from another backend |
 
-No gate in this document has a completed result. The orchestrator records the
-first authorized outcome as pass, fail, or not tested with the retained evidence
-references.
+Recorded outcomes on this machine (2026-09-16), operator-signed unless noted:
+
+- `P0`: followed for the authorized launches (explicit approval, physical display).
+- `M1-V`: **pass** — probe `20260916-160549-pid34040-native-se-none_pi-none_od-i`
+  plus operator start-menu confirmation. 15s capture was contaminated and is not
+  used as proof.
+- `N-S`: **pass** for keyboard/mouse. Controller: **not tested**.
+- `N-C`: **not yet tested**.
+- DXVK gameplay smoke (not `D-V`): **pass** by operator report, two boots, HUD
+  visible. Controller: **not tested**.
+- `D-V`: **not yet tested** (no current probe capture packet).
+- `D-C` / `Fully playable(B)`: **not yet tested**.

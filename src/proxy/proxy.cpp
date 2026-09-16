@@ -80,9 +80,13 @@ static FILE* g_log = nullptr;
 static INIT_ONCE g_logInitOnce = INIT_ONCE_STATIC_INIT;
 static CRITICAL_SECTION g_logCS;
 
+static bool GetExeSiblingPath(const char* filename, char* path, size_t pathSize);
+
 static BOOL CALLBACK InitLogOnce(PINIT_ONCE, PVOID, PVOID*) {
     InitializeCriticalSection(&g_logCS);
-    g_log = _fsopen("bully_d3d9proxy.log", "a", _SH_DENYNO);
+    char logPath[MAX_PATH] = {};
+    GetExeSiblingPath("bully_d3d9proxy.log", logPath, ARRAYSIZE(logPath));
+    g_log = _fsopen(logPath, "a", _SH_DENYNO);
     return TRUE;
 }
 
@@ -275,7 +279,7 @@ struct DeviceDiagnosticsConfig {
     // Presentation parameter overrides (empty/none = no override)
     char forceSwapEffect[16];      // "none", "discard", "flip", "copy"
     char forcePresentInterval[16]; // "none", "immediate", "default", "one"
-};;
+};
 
 static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     char iniPath[MAX_PATH] = {};
@@ -285,7 +289,7 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     config.traceDevice = GetPrivateProfileIntA(
         "diagnostics", "trace_device", 1, iniPath) != 0;
     config.captureFrames = GetPrivateProfileIntA(
-        "diagnostics", "capture_frames", 1, iniPath) != 0;
+        "diagnostics", "capture_frames", 0, iniPath) != 0;
     config.captureFrontBuffer = GetPrivateProfileIntA(
         "diagnostics", "capture_frontbuffer", 0, iniPath) != 0;
     config.captureFrame = GetPrivateProfileIntA(
@@ -847,6 +851,7 @@ __declspec(noreturn) static void FailFastMissingExport(const char* name) {
 
 // Direct3DCreate9Ex: HRESULT WINAPI Direct3DCreate9Ex(UINT, IDirect3D9Ex**)
 extern "C" HRESULT WINAPI proxy_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D9Ex) {
+    Log("[proxy] Direct3DCreate9Ex hit: forwarded unwrapped (no backend selection, no device wrapper)\n");
     EnsureRealD3D9Loaded();
     if (!g_Direct3DCreate9Ex) return E_NOTIMPL;
     if (!ppD3D9Ex) return E_POINTER;
@@ -857,6 +862,7 @@ extern "C" HRESULT WINAPI proxy_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex*
 
 // Direct3DCreate9On12: IDirect3D9* WINAPI Direct3DCreate9On12(UINT, D3D9ON12_ARGS*, UINT)
 extern "C" IDirect3D9* WINAPI proxy_Direct3DCreate9On12(UINT SDKVersion, D3D9ON12_ARGS* pArgs, UINT NumArgs) {
+    Log("[proxy] Direct3DCreate9On12 hit: forwarded unwrapped (no backend selection, no device wrapper)\n");
     EnsureRealD3D9Loaded();
     if (!g_Direct3DCreate9On12) return nullptr;
     auto fn = reinterpret_cast<IDirect3D9*(WINAPI*)(UINT, D3D9ON12_ARGS*, UINT)>(g_Direct3DCreate9On12);
@@ -865,6 +871,7 @@ extern "C" IDirect3D9* WINAPI proxy_Direct3DCreate9On12(UINT SDKVersion, D3D9ON1
 
 // Direct3DCreate9On12Ex: HRESULT WINAPI Direct3DCreate9On12Ex(UINT, D3D9ON12_ARGS*, UINT, IDirect3D9Ex**)
 extern "C" HRESULT WINAPI proxy_Direct3DCreate9On12Ex(UINT SDKVersion, D3D9ON12_ARGS* pArgs, UINT NumArgs, IDirect3D9Ex** ppD3D9Ex) {
+    Log("[proxy] Direct3DCreate9On12Ex hit: forwarded unwrapped (no backend selection, no device wrapper)\n");
     EnsureRealD3D9Loaded();
     if (!g_Direct3DCreate9On12Ex) return E_NOTIMPL;
     if (!ppD3D9Ex) return E_POINTER;

@@ -1,6 +1,6 @@
 # Bully Renderer Wrapper Platform - Architecture v0.2
 
-Status: active (2026-08-14) - Track: proxy-owned multi-backend renderer
+Status: active (2026-09-16) - Track: proxy-owned multi-backend renderer
 
 ## 1. Goal
 
@@ -87,42 +87,38 @@ Bully.exe
 - **M1 — Proxy skeleton (done)**: forwarding proxy and wrapped D3D9 traffic
   surface.
 - **M2 — Backend evidence and qualification (active)**: native is the
-  dependency-free control and default. The retained
-  `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
-  environment-specific visible DXVK proof. Later direct and proxy DXVK runs
-  produced blank-white selected `main-window` captures; the later proxy runs
-  retained varied pre-Present backbuffers. Current visible DXVK qualification
-  is unresolved, so DXVK remains opt-in qualification work rather than a
-  release claim.
+  dependency-free control and default. On this machine (2026-09-16), proxy-native
+  `M1-V` and `N-S` passed, and proxy-DXVK 3.0.2 is operator-visible with a
+  two-boot gameplay smoke. That is not a `D-V` probe capture packet and not a
+  fully-playable/campaign claim. The retained
+  `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical
+  environment-specific visible DXVK proof. Later 20260814 blank-white selected
+  `main-window` captures remain environment-specific; a white PNG is not proof of
+  a white screen. DXVK stays opt-in, not the shipped default.
 
 ### Next critical work
 
-1. **Evidence integrity**: preserve authoritative reports, backend logs, capture
-   targets, and contamination decisions.
-2. **Bounded DXVK diagnosis**: isolate the white-window condition with matched,
-   minimal cases; do not generalize from API or backbuffer success.
-3. **Proxy contract**: define and verify supported load, fallback, wrapper,
-   cleanup, and evidence behavior.
-4. **Native gameplay smoke/campaign**: establish the native control across startup,
-   smoke coverage, and a bounded campaign path.
-5. **Optional DXVK qualification**: revisit only after the preceding evidence and
-   contract gates pass.
+1. **Optional `D-V` probe**: current-machine DXVK capture packet for the ledger.
+   Operator eyeball still owns visible proof; white PNG is not a white screen.
+2. **Restore staged game-folder files** after evidence collection (`d3d9.dll`,
+   `dxvk_d3d9.dll`, INI, logs).
+3. **Campaign / endurance** only if a fully-playable claim is the next product
+   goal. Controller remains `not tested` until someone runs it.
 
-On12, traffic profiling, and mod-platform work remain deferred; they are not
-current next steps.
+On12, traffic profiling, ASI/mod SDK, and shader replacement remain deferred;
+they are not current next steps.
 
-### Current verification status (2026-08-14)
+### Current verification status (2026-09-16)
 
-Native remains the dependency-free default and control. The retained
-`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
-environment-specific visible DXVK proof: its proxy and DXVK records show
-chainloading, successful presentation calls, and selected nonblank
-`main-window` captures. Later direct and proxy DXVK runs produced blank-white
-selected `main-window` captures; the later proxy runs also recorded varied
-pre-Present backbuffers. Current visible DXVK qualification is unresolved, and
-DXVK remains opt-in qualification work rather than a release claim. See the
-[DXVK evidence ledger](dxvk_evidence_ledger.md) for the authoritative
-classification. On12 remains parked.
+Native remains the dependency-free default and control. This machine signed
+proxy-native `M1-V` (probe run `20260916-160549-pid34040-native-se-none_pi-none_od-i`
+plus operator start-menu confirmation) and native `N-S` (keyboard/mouse;
+controller not tested). Proxy-chainloaded DXVK 3.0.2 was operator-visible with
+the DXVK HUD and completed a two-boot gameplay smoke; logs showed
+`requested backend=dxvk` and `dxvk_d3d9.dll` Create9 success. No current `D-V`
+probe capture packet is retained, so ledger visible-output-by-PNG stays on the
+historical `20260814-175037` run plus this operator observation. See the
+[DXVK evidence ledger](dxvk_evidence_ledger.md). On12 remains parked.
 
 The first mod vertical slice uses `mods.test_marker=1` at the existing device
 `Present` boundary. Run `20260814-211207-pid31140-native-se-none_pi-none_od-i`

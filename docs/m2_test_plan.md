@@ -10,14 +10,14 @@ procedure. Sources: [render probe](../tools/render_probe/run.ps1),
 
 ## Current Evidence Boundary
 
-The ledger is authoritative for current classification. The run
-`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` is retained as historical,
-environment-specific visible DXVK proof only. Later direct and proxy DXVK runs
-produced blank-white selected `main-window` captures; the later proxy runs also
-retained varied pre-Present backbuffers. Current visible DXVK qualification is
-unresolved. Native remains the default/control, and DXVK remains opt-in
-qualification work rather than a current release claim. A backbuffer artifact,
-API success, or contaminated capture does not by itself prove visible output.
+The ledger is authoritative for current classification. Native remains the
+default/control. On this machine (2026-09-16), proxy-native `M1-V`/`N-S` and
+operator-visible proxy-DXVK smoke passed; that is not a `D-V` capture packet.
+The run `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` remains historical
+visible DXVK proof. Later 20260814 blank-white selected `main-window` captures
+are environment-specific; a white PNG is not proof of a white screen. DXVK
+remains opt-in, not the shipped default. A backbuffer artifact, API success, or
+contaminated capture does not by itself prove visible output.
 
 ## Preconditions
 

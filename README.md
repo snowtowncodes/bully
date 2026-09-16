@@ -7,14 +7,16 @@ Strategy: a `d3d9.dll` proxy in the game folder intercepts Gamebryo's
 `Direct3DCreate9`, keeps the interception surface for future mods, and selects a
 native D3D9, DXVK, or experimental D3D9On12 backend at runtime.
 
-Current status: native D3D9 is the dependency-free default and control. DXVK is
-an opt-in qualification path, not a current release claim. The retained
-`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run is historical and
-environment-specific visible DXVK proof. Later direct and proxy DXVK runs
-produced blank-white selected `main-window` captures; later proxy runs also had
-varied pre-Present backbuffers. Current visible DXVK qualification is unresolved.
-See the [DXVK evidence ledger](docs/dxvk_evidence_ledger.md) for the evidence
-boundary and classification.
+Current status (2026-09-16, this machine): native D3D9 is the dependency-free
+default and control. Proxy-native visible runtime (`M1-V`) and native smoke
+(`N-S`) passed (keyboard/mouse; controller not tested). Proxy-chainloaded DXVK
+3.0.2 is operator-visible (game plus DXVK HUD) and completed a two-boot gameplay
+smoke. That is not a `D-V` probe capture packet and not a fully-playable or
+campaign claim. The retained
+`20260814-175037-pid44752-dxvk-se-none_pi-none_od-i` run remains historical.
+Later 20260814 blank-white selected `main-window` captures are
+environment-specific; a white PNG is not proof of a white screen. On12 stays
+parked. See the [DXVK evidence ledger](docs/dxvk_evidence_ledger.md).
 
 The retained graphics-mod marker experiment is an opt-in `mods.test_marker`
 applied through the stable device `Present` hook. D3D9 `ColorFill` proves the
@@ -27,7 +29,7 @@ See [docs/playability_test_plan.md](docs/playability_test_plan.md) for the no-la
 
 ## Layout
 - `docs/` — architecture + RE notes
-- `tools/` — python tooling (`tools/pe_scan.py`, format parsers)
+- `tools/` — python tooling (`tools/pe_scan.py`) and the render probe
 - `src/` — C++ wrapper/mod platform
 - `dump/` — generated analysis artifacts (gitignored)
 - `Bully Scholarship Edition/` — local game copy (gitignored)

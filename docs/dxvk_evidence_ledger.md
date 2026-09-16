@@ -1,8 +1,9 @@
 # DXVK Evidence Ledger
 
-Scope: M0 documentation artifact. This ledger records retained repository
-evidence and history; it does not report a new runtime probe. The source
-checkpoint is `da5831d` (`feat(mods): add Present-hook backbuffer marker`).
+Scope: M0 documentation artifact plus the 2026-09-16 operator-signed runtime
+status on this machine. Probe PNG packets remain historical unless a new `D-V`
+run is archived. The source checkpoint for the historical packet is `da5831d`
+(`feat(mods): add Present-hook backbuffer marker`).
 
 ## Architecture And Evidence Boundary
 
@@ -82,10 +83,48 @@ produce qualifying visible output. The direct and proxy records show a later
 white-window condition; they do not, by themselves, identify a common cause.
 
 **Unresolved** --
-Why the later DXVK runs produced white selected window captures after the
-historical visible run is not established. No conclusion should attribute the
-condition to DXVK, the proxy, the window/capture path, or a particular source
-change without matched evidence.
+Why the later 20260814 DXVK runs produced white selected window captures after the
+historical visible run is not established for those runs. No conclusion should
+attribute that historical condition to DXVK, the proxy, the window/capture path,
+or a particular source change without matched evidence. A white PNG is not proof
+of a white screen.
+
+### 2026-09-16 Operator-Signed Status (This Machine)
+
+**Observed** --
+C0 evidence hygiene landed in the proxy: the log opens next to the exe via
+`GetExeSiblingPath`, shipped/missing INI defaults `capture_frames=0`, and the
+unwrapped Ex/On12 exports log before forwarding.
+
+**Observed** --
+Proxy-native `M1-V` used probe run
+`dump/render-probe/20260916-160549-pid34040-native-se-none_pi-none_od-i/`.
+The report recorded effective native, CreateDevice/Present, process survival,
+and restoration. Selected captures included a nonblank 5s CopyFromScreen title/
+loading frame and a 30s PrintWindow loading frame. The 15s CopyFromScreen frame
+was contaminated (white client plus taskbar) and is rejected. PrintWindow at 5s
+and 15s was blank-white; that is a capture-path lie for those frames, not a
+white game. The operator confirmed the actual Bully start menu on the physical
+display.
+
+**Observed** --
+Native `N-S` passed on this machine for keyboard and mouse: title/menu, first
+playable, first cutscene, audio, save/exit/load across two boots. Controller
+was not tested.
+
+**Observed** --
+Proxy-chainloaded DXVK 3.0.2 was operator-visible with the DXVK HUD (devinfo/
+version/api) on NVIDIA RTX 4070 SUPER. Proxy log recorded `requested backend=dxvk`
+and `dxvk_d3d9.dll` Create9 success (pid 36440 and later smoke pids). A two-boot
+DXVK gameplay smoke passed by operator report (title/menu, playable, cutscene,
+keyboard, audio, save/load). Controller was not tested. No current `D-V` probe
+capture packet is retained in this ledger, so PNG visible-output proof for DXVK
+stays on the historical `20260814-175037` run plus this operator observation.
+
+**Inferred** --
+On this machine, later-20260814 blank-white selected `main-window` captures are
+not the current DXVK presentation state. They remain environment-specific
+history.
 
 ### Desktop-Capture Contamination And Native Marker
 
@@ -134,7 +173,7 @@ patches without a new compatibility lead.
 | M0: renderer architecture and evidence boundary are documented | Dynamic D3D9 load/proxy architecture, backend roles, and capture limits recorded without treating code or logs as visual proof | **Observed** in repository architecture and this ledger |
 | M1: the proxy is in the D3D9 path | Proxy load plus `Direct3DCreate9`/`CreateDevice` records and wrapper or `Present` telemetry for the effective backend | **Observed** historically; the M1 proxy milestone is recorded in commit `ce861c0` |
 | Proxy-DXVK backend execution | DXVK module/symbol/creation evidence, proxy wrappers, and successful `Present` records | **Observed** for the historical and later proxy-DXVK runs above |
-| Visible DXVK output | Backend evidence plus a selected, uncontaminated, nonblank `main-window` capture | **Observed** historically at `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`; later behavior is **Unresolved** |
+| Visible DXVK output | Backend evidence plus a selected, uncontaminated, nonblank `main-window` capture | **Observed** historically at `20260814-175037-pid44752-dxvk-se-none_pi-none_od-i`; **Observed** as operator-visible HUD/gameplay on this machine 2026-09-16; current `D-V` PNG packet is **Not yet tested** |
 | Rendering reached a backbuffer | Pre-Present backbuffer artifact that is nonblank/non-uniform, with matching proxy evidence | **Observed** for the noted proxy-DXVK, native-marker, and On12 cases; it is not a visible-output gate |
 | Visible native marker | Successful marker log, marker in backbuffer, and uncontaminated selected `main-window` image containing the marker | **Not yet tested**; the retained active-window image is contaminated |
 | Visible D3D9On12 output | Verified On12/D3D12 identity, successful `Present`, nonblank backbuffer, and uncontaminated selected nonblank `main-window` capture | **Unresolved**; the retained matched run has blank-white window captures |

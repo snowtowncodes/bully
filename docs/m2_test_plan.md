@@ -62,6 +62,7 @@ contaminated capture does not by itself prove visible output.
 | `renderer.force_height` | non-negative integer | Backbuffer height; applied at CreateDevice/Reset only when `force_width` is also `>0`; `0` is off. |
 | `renderer.force_windowed` | `0`, `1`, `2` | `0` preserves the game's `Windowed` flag, `1` forces windowed, `2` forces fullscreen. |
 | `renderer.force_refresh_hz` | non-negative integer | `FullScreen_RefreshRateInHz`; applied only in fullscreen; `0` is off. |
+| `renderer.borderless` | `0`, `1` | Strips chrome, pins window to nearest monitor at backbuffer size. |
 | `diagnostics.trace_device` | `0`, `1` | Device-call trace logging. |
 | `diagnostics.capture_frames` | `0`, `1` | Enables the pre-Present backbuffer BMP. |
 | `diagnostics.capture_frontbuffer` | `0`, `1` | Opt-in post-Present readback; default `0` because it can interfere with presentation. |

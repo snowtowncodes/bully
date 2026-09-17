@@ -108,6 +108,34 @@ Bully.exe
 On12, traffic profiling, ASI/mod SDK, and shader replacement remain deferred;
 they are not current next steps.
 
+### Modern-display program (2026-09-16, all operator-signed on this machine)
+
+The active program is the drop-in modern Bully SE: proxy-owned borderless
+windowing plus third-party ASIs, not more backend qualification.
+
+1. **`W1` pixel path (pass)**: `force_width`/`force_height`/`force_windowed`/
+   `force_refresh_hz` applied at CreateDevice and Reset, with a
+   requested/forced/created backbuffer honesty log. Boot-proven forcing
+   1920x1080 (requested=800x600, forced=1920x1080, created=1920x1080).
+2. **`W2` ASI coexistence stack (pass)**: proxy `d3d9.dll` + `dinput8.dll`
+   Ultimate ASI Loader + `plugins\Bully.WidescreenFix.asi` (resolution unlock
+   operator-confirmed) + `plugins\SilentPatchBully.asi`; multiple boots, no load
+   conflicts.
+3. **`W5` borderless display contract (pass)**: `borderless=1` strips window
+   chrome, pins the window to the whole monitor (`rcMonitor`; the backbuffer
+   scales to fit — 1080p fills a 2048x1152 monitor, 2560x1440 supersamples),
+   re-asserts after Reset, re-pins on drift every 10th Present, IAT-neutralizes
+   the exe's `ChangeDisplaySettingsA` import (fullscreen mode-change calls return
+   success without touching the desktop), and forces a windowed device with a
+   refresh-rate=0 guard. Alt-tab survives; the earlier DEVICELOST/Reset
+   INVALIDCALL death spiral is gone. Known residue: the game rewrites its
+   registry `WIN=0` preference at exit (launches re-set `WIN=1`), and the
+   WidescreenFix unlocked mode list on this machine excludes 2048x1152.
+4. **Remaining**: `W4` (DXVK as default with the full stack) and `W6` (drop-in
+   package) are not yet tested; adapter mode enumeration is still a blind
+   forward (the options-menu mode list comes from the game/WidescreenFix, not
+   the proxy).
+
 ### Current verification status (2026-09-16)
 
 Native remains the dependency-free default and control. This machine signed

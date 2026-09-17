@@ -204,7 +204,7 @@
 
 **Configuration:**
 - INI path resolved relative to Bully.exe via `GetModuleFileName(nullptr)` + sibling filename
-- Section `[renderer]`: backend, on12_device, force_swap_effect, force_present_interval, force_multisample, force_multisample_quality, force_width, force_height, force_windowed, force_refresh_hz
+- Section `[renderer]`: backend, on12_device, force_swap_effect, force_present_interval, force_multisample, force_multisample_quality, force_width, force_height, force_windowed, force_refresh_hz, borderless
 - Section `[diagnostics]`: trace_device, capture_frames, capture_frontbuffer, capture_frame, d3d12_debug_layer
 - Defaults: backend=native, on12_device=internal, no overrides, trace=1, capture=0, frontbuffer=0, frame=60; DXVK requires an x86 sibling `dxvk_d3d9.dll`; On12 is explicit experimental mode
 

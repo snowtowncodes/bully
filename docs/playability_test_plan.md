@@ -295,3 +295,23 @@ Recorded outcomes on this machine (2026-09-16), operator-signed unless noted:
   visible. Controller: **not tested**.
 - `D-V`: **not yet tested** (no current probe capture packet).
 - `D-C` / `Fully playable(B)`: **not yet tested**.
+- Modern-display program (2026-09-16, same day, this machine):
+  - `W1` pixel path: **pass** — `force_width/force_height/force_windowed/force_refresh_hz`
+    applied at CreateDevice and Reset with requested/forced/created backbuffer honesty
+    log; forced 1920x1080 boot-proven (log: requested=800x600, forced=1920x1080,
+    created=1920x1080).
+  - `W2` ASI coexistence stack: **pass** — proxy `d3d9.dll` + `dinput8.dll` Ultimate
+    ASI Loader + `plugins\Bully.WidescreenFix.asi` (resolution unlock operator-confirmed)
+    + `plugins\SilentPatchBully.asi`; multiple boots, no load conflicts.
+  - `W5` borderless display contract: **pass** (operator: "everything works") —
+    `borderless=1` strips chrome, pins the window to the whole monitor (`rcMonitor`,
+    backbuffer scales to fit; 1080p backbuffer fills 2048x1152, 2560x1440
+    supersamples), re-asserts after Reset, re-pins on drift every 10th Present,
+    IAT-neutralizes the exe's `ChangeDisplaySettingsA` import (CDS_FULLSCREEN calls
+    return success without changing the desktop), and forces windowed with a
+    refresh-rate=0 guard. Alt-tab survives; the DEVICELOST/Reset-INVALIDCALL death
+    spiral observed on earlier boots is gone. Known residue: the game rewrites its
+    registry `WIN=0` preference at exit (launches re-set `WIN=1`); WidescreenFix's
+    unlocked mode list on this machine excludes 2048x1152 (2560x1440 is present).
+  - `W4` (DXVK as default with full stack) / `W6` (drop-in package): **not yet
+    tested**.

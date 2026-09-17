@@ -289,6 +289,9 @@ struct DeviceDiagnosticsConfig {
     int forceHeight = 0;      // backbuffer height, applied only with forceWidth > 0
     int forceWindowed = 0;    // 0=off, 1=windowed, 2=fullscreen
     int forceRefreshRate = 0; // FullScreen_RefreshRateInHz, fullscreen only
+
+    // Borderless window management (0 = off, 1 = on)
+    int borderlessMode = 0;
 };
 
 static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
@@ -344,10 +347,13 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
         "renderer", "force_windowed", 0, iniPath);
     config.forceRefreshRate = GetPrivateProfileIntA(
         "renderer", "force_refresh_hz", 0, iniPath);
+    config.borderlessMode = GetPrivateProfileIntA(
+        "renderer", "borderless", 0, iniPath);
     if (config.forceWidth < 0) config.forceWidth = 0;
     if (config.forceHeight < 0) config.forceHeight = 0;
     if (config.forceWindowed < 0) config.forceWindowed = 0;
     if (config.forceRefreshRate < 0) config.forceRefreshRate = 0;
+    if (config.borderlessMode < 0) config.borderlessMode = 0;
 
     Log("[proxy] diagnostics trace_device=%u, capture_frames=%u, capture_frontbuffer=%u, "
         "capture_frame=%u, d3d12_debug_layer=%s\n",
@@ -361,10 +367,12 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     }
     Log("[proxy] presentation overrides force_swap_effect=%s, force_present_interval=%s, "
         "force_multisample=%d, force_multisample_quality=%d, force_width=%d, force_height=%d, "
-        "force_windowed=%d (0=off/1=windowed/2=fullscreen), force_refresh_hz=%d\n",
+        "force_windowed=%d (0=off/1=windowed/2=fullscreen), force_refresh_hz=%d, "
+        "borderless=%d\n",
         config.forceSwapEffect, config.forcePresentInterval,
         config.forceMultiSampleType, config.forceMultiSampleQuality,
-        config.forceWidth, config.forceHeight, config.forceWindowed, config.forceRefreshRate);
+        config.forceWidth, config.forceHeight, config.forceWindowed, config.forceRefreshRate,
+        config.borderlessMode);
     Log("[proxy] mod test_marker=%u, test_marker_size=%u\n",
         config.testMarker ? 1u : 0u, config.testMarkerSize);
     return config;
@@ -445,6 +453,14 @@ static bool ApplyPresentationOverrides(const DeviceDiagnosticsConfig& config,
         anyOverride = true;
     }
 
+    // D3D9 rejects a nonzero refresh rate with Windowed=TRUE (INVALIDCALL),
+    // which can feed a Reset death spiral. Clear it whenever the effective
+    // mode is windowed and a stale refresh value is still present.
+    if (pDest->Windowed == TRUE && pDest->FullScreen_RefreshRateInHz != 0) {
+        pDest->FullScreen_RefreshRateInHz = 0;
+        anyOverride = true;
+    }
+
     // Refresh rate is only meaningful in fullscreen
     if (config.forceRefreshRate > 0 && pDest->Windowed == FALSE) {
         pDest->FullScreen_RefreshRateInHz = static_cast<UINT>(config.forceRefreshRate);
@@ -495,6 +511,263 @@ static void LogBackBufferDimensions(const char* stage, IDirect3DDevice9* device,
         forced ? forced->BackBufferWidth : 0,
         forced ? forced->BackBufferHeight : 0,
         createdWidth, createdHeight);
+}
+
+// ---------------------------------------------------------------------------
+// Borderless window management: strip the window chrome and pin the game
+// window to cover the entire monitor it currently occupies. Applied once at
+// CreateDevice and re-asserted after each successful Reset. Every user32 call
+// is tolerant of an invalid HWND; never fails device creation.
+// ---------------------------------------------------------------------------
+static void QueryBorderlessPlacement(HWND hwnd, int* x, int* y,
+                                     unsigned* width, unsigned* height) {
+    *x = 0;
+    *y = 0;
+
+    HMONITOR monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : nullptr;
+    if (!monitor) {
+        POINT origin = {0, 0};
+        monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+    }
+
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (monitor && GetMonitorInfoA(monitor, &mi)) {
+        *x = mi.rcMonitor.left;
+        *y = mi.rcMonitor.top;
+        *width = static_cast<unsigned>(mi.rcMonitor.right - mi.rcMonitor.left);
+        *height = static_cast<unsigned>(mi.rcMonitor.bottom - mi.rcMonitor.top);
+    } else {
+        *width = static_cast<unsigned>(GetSystemMetrics(SM_CXSCREEN));
+        *height = static_cast<unsigned>(GetSystemMetrics(SM_CYSCREEN));
+    }
+}
+
+struct BorderlessRect {
+    int x;
+    int y;
+    unsigned width;
+    unsigned height;
+};
+
+// Compute the pinned rect for hwnd: the full rcMonitor of the monitor it
+// currently occupies (primary fallback). The window always covers the whole
+// monitor; D3D9 windowed presentation scales the backbuffer to fit.
+static BorderlessRect ComputeBorderlessRect(HWND hwnd) {
+    BorderlessRect rect = {};
+    QueryBorderlessPlacement(hwnd, &rect.x, &rect.y, &rect.width, &rect.height);
+    if (rect.width == 0) rect.width = 1;
+    if (rect.height == 0) rect.height = 1;
+    return rect;
+}
+
+static bool ApplyBorderlessWindow(HWND hwnd, const BorderlessRect& rect) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        Log("[proxy] borderless: no hwnd to manage, skipped\n");
+        return false;
+    }
+
+    LONG oldStyle = GetWindowLongA(hwnd, GWL_STYLE);
+    LONG newStyle = oldStyle;
+    newStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+    newStyle |= (WS_POPUP | WS_VISIBLE);
+    SetWindowLongA(hwnd, GWL_STYLE, newStyle);
+
+    SetWindowPos(hwnd, nullptr, rect.x, rect.y,
+                 static_cast<int>(rect.width), static_cast<int>(rect.height),
+                 SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    Log("[proxy] borderless: hwnd=0x%p style=0x%08X -> 0x%08X, window pos=(%d,%d) size=%ux%u\n",
+        hwnd, static_cast<unsigned>(oldStyle), static_cast<unsigned>(newStyle),
+        rect.x, rect.y, rect.width, rect.height);
+    return true;
+}
+
+static void ReAssertBorderlessWindowSize(HWND hwnd, const BorderlessRect& rect) {
+    if (!hwnd || !IsWindow(hwnd)) return;
+
+    RECT current = {};
+    if (GetWindowRect(hwnd, &current) &&
+        current.left == rect.x && current.top == rect.y &&
+        (current.right - current.left) == static_cast<int>(rect.width) &&
+        (current.bottom - current.top) == static_cast<int>(rect.height)) {
+        return;
+    }
+
+    SetWindowPos(hwnd, nullptr, rect.x, rect.y,
+                 static_cast<int>(rect.width), static_cast<int>(rect.height),
+                 SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
+    Log("[proxy] borderless: re-asserted window %ux%u at (%d,%d)\n",
+        rect.width, rect.height, rect.x, rect.y);
+}
+
+// ---------------------------------------------------------------------------
+// ChangeDisplaySettings* neutralization. When borderless=1 our window IS the
+// fullscreen representation, so the game's display-mode changes must not alter
+// the real desktop mode. These stubs are patched into the main executable's
+// import table before the game performs its display setup.
+// ---------------------------------------------------------------------------
+static bool s_displayNeutralized = false;
+
+static void LogNeutralizedDisplayChangeA(const char* functionName,
+                                         const DEVMODEA* devMode, DWORD dwflags,
+                                         UINT call) {
+    UINT width = 0;
+    UINT height = 0;
+    UINT refresh = 0;
+    if (devMode) {
+        if (devMode->dmFields & DM_PELSWIDTH) width = devMode->dmPelsWidth;
+        if (devMode->dmFields & DM_PELSHEIGHT) height = devMode->dmPelsHeight;
+        if (devMode->dmFields & DM_DISPLAYFREQUENCY) refresh = devMode->dmDisplayFrequency;
+    }
+    Log("[proxy] borderless: neutralized %s call #%u (mode %ux%u @ %u Hz, flags 0x%lX)\n",
+        functionName, call, width, height, refresh,
+        static_cast<unsigned long>(dwflags));
+}
+
+static void LogNeutralizedDisplayChangeW(const char* functionName,
+                                         const DEVMODEW* devMode, DWORD dwflags,
+                                         UINT call) {
+    UINT width = 0;
+    UINT height = 0;
+    UINT refresh = 0;
+    if (devMode) {
+        if (devMode->dmFields & DM_PELSWIDTH) width = devMode->dmPelsWidth;
+        if (devMode->dmFields & DM_PELSHEIGHT) height = devMode->dmPelsHeight;
+        if (devMode->dmFields & DM_DISPLAYFREQUENCY) refresh = devMode->dmDisplayFrequency;
+    }
+    Log("[proxy] borderless: neutralized %s call #%u (mode %ux%u @ %u Hz, flags 0x%lX)\n",
+        functionName, call, width, height, refresh,
+        static_cast<unsigned long>(dwflags));
+}
+
+static LONG WINAPI Neutralized_ChangeDisplaySettingsA(DEVMODEA* lpDevMode, DWORD dwflags) {
+    static UINT calls = 0;
+    calls++;
+    if (calls == 1 || (calls % 10) == 0) {
+        LogNeutralizedDisplayChangeA("ChangeDisplaySettingsA", lpDevMode, dwflags, calls);
+    }
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+static LONG WINAPI Neutralized_ChangeDisplaySettingsW(DEVMODEW* lpDevMode, DWORD dwflags) {
+    static UINT calls = 0;
+    calls++;
+    if (calls == 1 || (calls % 10) == 0) {
+        LogNeutralizedDisplayChangeW("ChangeDisplaySettingsW", lpDevMode, dwflags, calls);
+    }
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+static LONG WINAPI Neutralized_ChangeDisplaySettingsExA(LPCSTR lpszDeviceName,
+                                                        DEVMODEA* lpDevMode, HWND hwnd,
+                                                        DWORD dwflags, LPVOID lParam) {
+    (void)lpszDeviceName;
+    (void)hwnd;
+    (void)lParam;
+    static UINT calls = 0;
+    calls++;
+    if (calls == 1 || (calls % 10) == 0) {
+        LogNeutralizedDisplayChangeA("ChangeDisplaySettingsExA", lpDevMode, dwflags, calls);
+    }
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+static LONG WINAPI Neutralized_ChangeDisplaySettingsExW(LPCWSTR lpszDeviceName,
+                                                        DEVMODEW* lpDevMode, HWND hwnd,
+                                                        DWORD dwflags, LPVOID lParam) {
+    (void)lpszDeviceName;
+    (void)hwnd;
+    (void)lParam;
+    static UINT calls = 0;
+    calls++;
+    if (calls == 1 || (calls % 10) == 0) {
+        LogNeutralizedDisplayChangeW("ChangeDisplaySettingsExW", lpDevMode, dwflags, calls);
+    }
+    return DISP_CHANGE_SUCCESSFUL;
+}
+
+// Patch the main executable's IAT entries for ChangeDisplaySettings* so the
+// stubs above run instead of the real user32 functions. Only the exe is walked.
+static void InstallDisplaySettingsNeutralizer() {
+    if (s_displayNeutralized) return;
+    s_displayNeutralized = true;
+
+    UINT patched = 0;
+    __try {
+        HMODULE exe = GetModuleHandleA(nullptr);
+        if (!exe) return;
+
+        BYTE* base = reinterpret_cast<BYTE*>(exe);
+        PIMAGE_DOS_HEADER dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+
+        PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+
+        const DWORD importRva =
+            nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        if (importRva == 0) {
+            Log("[proxy] borderless: no ChangeDisplaySettings imports found in exe IAT\n");
+            return;
+        }
+
+        PIMAGE_IMPORT_DESCRIPTOR descriptor =
+            reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(base + importRva);
+        for (; descriptor->Name != 0; ++descriptor) {
+            const char* dllName = reinterpret_cast<const char*>(base + descriptor->Name);
+            if (_stricmp(dllName, "user32.dll") != 0) continue;
+            if (descriptor->OriginalFirstThunk == 0) continue;
+
+            PIMAGE_THUNK_DATA oft =
+                reinterpret_cast<PIMAGE_THUNK_DATA>(base + descriptor->OriginalFirstThunk);
+            PIMAGE_THUNK_DATA ft =
+                reinterpret_cast<PIMAGE_THUNK_DATA>(base + descriptor->FirstThunk);
+            for (; oft->u1.Function != 0; ++oft, ++ft) {
+                if (oft->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
+                PIMAGE_IMPORT_BY_NAME importName = reinterpret_cast<PIMAGE_IMPORT_BY_NAME>(
+                    base + oft->u1.AddressOfData);
+                const char* functionName = reinterpret_cast<const char*>(importName->Name);
+
+                FARPROC replacement = nullptr;
+                if (strcmp(functionName, "ChangeDisplaySettingsA") == 0) {
+                    replacement = reinterpret_cast<FARPROC>(&Neutralized_ChangeDisplaySettingsA);
+                } else if (strcmp(functionName, "ChangeDisplaySettingsW") == 0) {
+                    replacement = reinterpret_cast<FARPROC>(&Neutralized_ChangeDisplaySettingsW);
+                } else if (strcmp(functionName, "ChangeDisplaySettingsExA") == 0) {
+                    replacement = reinterpret_cast<FARPROC>(&Neutralized_ChangeDisplaySettingsExA);
+                } else if (strcmp(functionName, "ChangeDisplaySettingsExW") == 0) {
+                    replacement = reinterpret_cast<FARPROC>(&Neutralized_ChangeDisplaySettingsExW);
+                }
+                if (!replacement) continue;
+
+                void** slot = reinterpret_cast<void**>(&ft->u1.Function);
+                DWORD oldProtect = 0;
+                if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect)) continue;
+                *slot = reinterpret_cast<void*>(replacement);
+                VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+                patched++;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[proxy] borderless: IAT walk faulted; display-settings neutralizer incomplete\n");
+        return;
+    }
+
+    if (patched == 0) {
+        Log("[proxy] borderless: no ChangeDisplaySettings imports found in exe IAT\n");
+    } else {
+        Log("[proxy] borderless: neutralized %u ChangeDisplaySettings IAT entr%s in main exe\n",
+            patched, patched == 1 ? "y" : "ies");
+    }
+}
+
+// Focused INI read for the borderless flag; avoids a second full
+// ReadDeviceDiagnosticsConfig (and its duplicate config log) at entry point.
+static bool IsBorderlessModeEnabled() {
+    char iniPath[MAX_PATH] = {};
+    GetRendererIniPath(iniPath, ARRAYSIZE(iniPath));
+    return GetPrivateProfileIntA("renderer", "borderless", 0, iniPath) == 1;
 }
 
 template <typename T>
@@ -1236,10 +1509,13 @@ private:
 class ProxyIDirect3DDevice9 : public IDirect3DDevice9 {
 public:
     ProxyIDirect3DDevice9(IDirect3DDevice9* inner, ProxyIDirect3D9* parent,
-                          const DeviceDiagnosticsConfig& config, bool on12DeviceVerified)
+                          const DeviceDiagnosticsConfig& config, bool on12DeviceVerified,
+                          HWND borderlessWindow, const BorderlessRect& borderlessRect)
         : m_inner(inner), m_parent(parent), m_refs(1), m_config(config),
           m_presentCount(0), m_captureAttempted(false),
-          m_on12DeviceVerified(on12DeviceVerified), m_testMarkerLogged(false) {
+          m_on12DeviceVerified(on12DeviceVerified), m_testMarkerLogged(false),
+          m_borderlessWindow(borderlessWindow), m_borderlessRect(borderlessRect),
+          m_borderlessRepins(0) {
         ZeroMemory(&m_counters, sizeof(m_counters));
         AddRefParent();
         Log("[device] IDirect3DDevice9 wrapped (inner=0x%p, parent=0x%p)\n", inner, parent);
@@ -1338,6 +1614,9 @@ private:
     bool m_captureAttempted;
     bool m_on12DeviceVerified;
     bool m_testMarkerLogged;
+    HWND m_borderlessWindow;
+    BorderlessRect m_borderlessRect; // pinned x/y/width/height
+    UINT m_borderlessRepins;         // telemetry: number of drift re-pins
 
     // Throttle routine telemetry: log every Nth call
     static const UINT kThrottleInterval = 1000;
@@ -1385,6 +1664,44 @@ private:
         }
     }
 
+    // Borderless drift enforcement: the game may reposition/resize its own
+    // window after CreateDevice. Check every 10th Present (one GetWindowRect
+    // when there is no drift) and re-pin if the window moved. Never affects
+    // the Present result; any user32 failure just skips.
+    void EnforceBorderlessWindow() {
+        if (m_config.borderlessMode != 1 || !m_borderlessWindow) return;
+        if (!IsWindow(m_borderlessWindow)) return;
+        if (m_presentCount % 10 != 0) return;
+
+        RECT current = {};
+        if (!GetWindowRect(m_borderlessWindow, &current)) return;
+        if (current.left == m_borderlessRect.x && current.top == m_borderlessRect.y &&
+            (current.right - current.left) == static_cast<int>(m_borderlessRect.width) &&
+            (current.bottom - current.top) == static_cast<int>(m_borderlessRect.height)) {
+            return;
+        }
+
+        if (!SetWindowPos(m_borderlessWindow, nullptr,
+                          m_borderlessRect.x, m_borderlessRect.y,
+                          static_cast<int>(m_borderlessRect.width),
+                          static_cast<int>(m_borderlessRect.height),
+                          SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE)) {
+            return;
+        }
+
+        m_borderlessRepins++;
+        if (m_borderlessRepins == 1 || (m_borderlessRepins % 50) == 0) {
+            Log("[proxy] borderless: re-pinned window %ux%u at (%d,%d) "
+                "(was (%d,%d,%ux%u), repin #%u)\n",
+                m_borderlessRect.width, m_borderlessRect.height,
+                m_borderlessRect.x, m_borderlessRect.y,
+                current.left, current.top,
+                static_cast<unsigned>(current.right - current.left),
+                static_cast<unsigned>(current.bottom - current.top),
+                m_borderlessRepins);
+        }
+    }
+
     // Intercept implementations
     HRESULT Intercept_TestCooperativeLevel() {
         HRESULT hr = m_inner->TestCooperativeLevel();
@@ -1428,6 +1745,12 @@ private:
         if (SUCCEEDED(hr)) {
             LogBackBufferDimensions("Reset", m_inner, pPresentationParameters,
                                     pParamsToUse);
+            if (m_config.borderlessMode == 1 && pParamsToUse && pParamsToUse->Windowed) {
+                // Monitor topology can change across a reset; recompute the
+                // pinned rect so enforcement always targets the current monitor.
+                m_borderlessRect = ComputeBorderlessRect(m_borderlessWindow);
+                ReAssertBorderlessWindowSize(m_borderlessWindow, m_borderlessRect);
+            }
         }
         if (FAILED(hr) || m_counters.reset <= 8) {
             Log("[device] Reset: hr=0x%08lx, bb=%ux%u fmt=%u (call %u)\n",
@@ -1446,6 +1769,7 @@ private:
     HRESULT Intercept_Present(CONST RECT* pSourceRect, CONST RECT* pDestRect,
                               HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion) {
         ApplyTestMarker();
+        EnforceBorderlessWindow();
 
         // Backbuffer capture before present if configured
         bool doCapture = m_config.captureFrames && !m_captureAttempted &&
@@ -2279,6 +2603,19 @@ public:
             }
         }
 
+        // Borderless window management: strip chrome and cover the whole
+        // monitor. Applied once here (not per Reset).
+        HWND borderlessWindow = nullptr;
+        BorderlessRect borderlessRect = {};
+        if (m_diagConfig.borderlessMode == 1 && pParamsToUse && pParamsToUse->Windowed) {
+            borderlessWindow = pPresentationParameters &&
+                                       pPresentationParameters->hDeviceWindow
+                                   ? pPresentationParameters->hDeviceWindow
+                                   : hFocusWindow;
+            borderlessRect = ComputeBorderlessRect(borderlessWindow);
+            ApplyBorderlessWindow(borderlessWindow, borderlessRect);
+        }
+
         HRESULT hr = m_inner->CreateDevice(Adapter, DeviceType, hFocusWindow,
                                            BehaviorFlags, pParamsToUse,
                                            &innerDevice);
@@ -2320,7 +2657,8 @@ public:
 
             // Wrap the device
             ProxyIDirect3DDevice9* proxyDevice = new (std::nothrow) ProxyIDirect3DDevice9(
-                innerDevice, this, m_diagConfig, on12DeviceVerified);
+                innerDevice, this, m_diagConfig, on12DeviceVerified, borderlessWindow,
+                borderlessRect);
             if (!proxyDevice) {
                 Log("[d3d9] device wrapper allocation failed\n");
                 innerDevice->Release();
@@ -2371,6 +2709,12 @@ HRESULT ProxyIDirect3DDevice9::Intercept_GetDirect3D(IDirect3D9** ppD3D9) {
 extern "C" IDirect3D9* WINAPI proxy_Direct3DCreate9(UINT SDKVersion) {
     Log("[d3d9] Direct3DCreate9(SDKVersion=%u)\n", SDKVersion);
     EnsureRealD3D9Loaded();
+
+    // Neutralize the game's ChangeDisplaySettings* imports before any enumerator
+    // or device exists, so its display setup can no longer change the desktop mode.
+    if (IsBorderlessModeEnabled()) {
+        InstallDisplaySettingsNeutralizer();
+    }
 
     RendererBackend requestedBackend = ReadRendererBackend();
     RendererBackend effectiveBackend = requestedBackend;

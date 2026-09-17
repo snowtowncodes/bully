@@ -279,6 +279,16 @@ struct DeviceDiagnosticsConfig {
     // Presentation parameter overrides (empty/none = no override)
     char forceSwapEffect[16];      // "none", "discard", "flip", "copy"
     char forcePresentInterval[16]; // "none", "immediate", "default", "one"
+
+    // MSAA override (0 = off)
+    int forceMultiSampleType = 0;
+    int forceMultiSampleQuality = 0;
+
+    // Backbuffer/window overrides (0 = no override)
+    int forceWidth = 0;       // backbuffer width, applied only with forceHeight > 0
+    int forceHeight = 0;      // backbuffer height, applied only with forceWidth > 0
+    int forceWindowed = 0;    // 0=off, 1=windowed, 2=fullscreen
+    int forceRefreshRate = 0; // FullScreen_RefreshRateInHz, fullscreen only
 };
 
 static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
@@ -317,6 +327,28 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
     GetPrivateProfileStringA("renderer", "force_present_interval", "none",
                             config.forcePresentInterval, ARRAYSIZE(config.forcePresentInterval), iniPath);
 
+    // MSAA override (0 = off). Same [renderer] section as swap/interval overrides.
+    config.forceMultiSampleType = GetPrivateProfileIntA(
+        "renderer", "force_multisample", 0, iniPath);
+    config.forceMultiSampleQuality = GetPrivateProfileIntA(
+        "renderer", "force_multisample_quality", 0, iniPath);
+    if (config.forceMultiSampleType < 0) config.forceMultiSampleType = 0;
+    if (config.forceMultiSampleQuality < 0) config.forceMultiSampleQuality = 0;
+
+    // Backbuffer/window overrides (0 = off). Same [renderer] section.
+    config.forceWidth = GetPrivateProfileIntA(
+        "renderer", "force_width", 0, iniPath);
+    config.forceHeight = GetPrivateProfileIntA(
+        "renderer", "force_height", 0, iniPath);
+    config.forceWindowed = GetPrivateProfileIntA(
+        "renderer", "force_windowed", 0, iniPath);
+    config.forceRefreshRate = GetPrivateProfileIntA(
+        "renderer", "force_refresh_hz", 0, iniPath);
+    if (config.forceWidth < 0) config.forceWidth = 0;
+    if (config.forceHeight < 0) config.forceHeight = 0;
+    if (config.forceWindowed < 0) config.forceWindowed = 0;
+    if (config.forceRefreshRate < 0) config.forceRefreshRate = 0;
+
     Log("[proxy] diagnostics trace_device=%u, capture_frames=%u, capture_frontbuffer=%u, "
         "capture_frame=%u, d3d12_debug_layer=%s\n",
         config.traceDevice ? 1u : 0u, config.captureFrames ? 1u : 0u,
@@ -327,8 +359,12 @@ static DeviceDiagnosticsConfig ReadDeviceDiagnosticsConfig() {
             "registry or enable a D3D12 debug layer; set the active HKLM D3D9On12 "
             "UseDebugLayer control externally before device creation.\n");
     }
-    Log("[proxy] presentation overrides force_swap_effect=%s, force_present_interval=%s\n",
-        config.forceSwapEffect, config.forcePresentInterval);
+    Log("[proxy] presentation overrides force_swap_effect=%s, force_present_interval=%s, "
+        "force_multisample=%d, force_multisample_quality=%d, force_width=%d, force_height=%d, "
+        "force_windowed=%d (0=off/1=windowed/2=fullscreen), force_refresh_hz=%d\n",
+        config.forceSwapEffect, config.forcePresentInterval,
+        config.forceMultiSampleType, config.forceMultiSampleQuality,
+        config.forceWidth, config.forceHeight, config.forceWindowed, config.forceRefreshRate);
     Log("[proxy] mod test_marker=%u, test_marker_size=%u\n",
         config.testMarker ? 1u : 0u, config.testMarkerSize);
     return config;
@@ -346,6 +382,12 @@ static bool ApplyPresentationOverrides(const DeviceDiagnosticsConfig& config,
     bool anyOverride = false;
     DWORD originalSwapEffect = pSource->SwapEffect;
     UINT originalPresentInterval = pSource->PresentationInterval;
+    D3DMULTISAMPLE_TYPE originalMultiSampleType = pSource->MultiSampleType;
+    DWORD originalMultiSampleQuality = pSource->MultiSampleQuality;
+    UINT originalWidth = pSource->BackBufferWidth;
+    UINT originalHeight = pSource->BackBufferHeight;
+    BOOL originalWindowed = pSource->Windowed;
+    UINT originalRefreshRate = pSource->FullScreen_RefreshRateInHz;
 
     // Apply swap effect override
     if (_stricmp(config.forceSwapEffect, "none") != 0) {
@@ -381,13 +423,78 @@ static bool ApplyPresentationOverrides(const DeviceDiagnosticsConfig& config,
         }
     }
 
+    // Apply MSAA override
+    if (config.forceMultiSampleType > 0) {
+        pDest->MultiSampleType =
+            static_cast<D3DMULTISAMPLE_TYPE>(config.forceMultiSampleType);
+        pDest->MultiSampleQuality =
+            static_cast<DWORD>(config.forceMultiSampleQuality);
+        anyOverride = true;
+    }
+
+    // Apply backbuffer size override (only when both dimensions are non-zero)
+    if (config.forceWidth > 0 && config.forceHeight > 0) {
+        pDest->BackBufferWidth = static_cast<UINT>(config.forceWidth);
+        pDest->BackBufferHeight = static_cast<UINT>(config.forceHeight);
+        anyOverride = true;
+    }
+
+    // Apply windowed/fullscreen override (0 = off, 1 = windowed, 2 = fullscreen)
+    if (config.forceWindowed != 0) {
+        pDest->Windowed = (config.forceWindowed == 1) ? TRUE : FALSE;
+        anyOverride = true;
+    }
+
+    // Refresh rate is only meaningful in fullscreen
+    if (config.forceRefreshRate > 0 && pDest->Windowed == FALSE) {
+        pDest->FullScreen_RefreshRateInHz = static_cast<UINT>(config.forceRefreshRate);
+        anyOverride = true;
+    }
+
     if (anyOverride) {
         Log("[proxy] presentation parameter overrides applied:\n");
         Log("  SwapEffect: %u -> %u\n", originalSwapEffect, pDest->SwapEffect);
         Log("  PresentationInterval: 0x%08x -> 0x%08x\n", originalPresentInterval, pDest->PresentationInterval);
+        Log("  MultiSampleType: %u -> %u, MultiSampleQuality: %u -> %u\n",
+            originalMultiSampleType, pDest->MultiSampleType,
+            originalMultiSampleQuality, pDest->MultiSampleQuality);
+        Log("  BackBuffer: %ux%u -> %ux%u\n",
+            originalWidth, originalHeight,
+            pDest->BackBufferWidth, pDest->BackBufferHeight);
+        Log("  Windowed: %d -> %d\n",
+            originalWindowed ? 1 : 0, pDest->Windowed ? 1 : 0);
+        Log("  FullScreen_RefreshRateInHz: %u -> %u\n",
+            originalRefreshRate, pDest->FullScreen_RefreshRateInHz);
     }
 
     return anyOverride;
+}
+
+// Honesty gate: log requested vs forced vs actually created backbuffer dimensions.
+static void LogBackBufferDimensions(const char* stage, IDirect3DDevice9* device,
+                                    const D3DPRESENT_PARAMETERS* requested,
+                                    const D3DPRESENT_PARAMETERS* forced) {
+    UINT createdWidth = 0;
+    UINT createdHeight = 0;
+    IDirect3DSurface9* backBuffer = nullptr;
+    if (device &&
+        SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) &&
+        backBuffer) {
+        D3DSURFACE_DESC desc = {};
+        if (SUCCEEDED(backBuffer->GetDesc(&desc))) {
+            createdWidth = desc.Width;
+            createdHeight = desc.Height;
+        }
+        backBuffer->Release();
+    }
+
+    Log("[proxy] %s backbuffer dimensions: requested=%ux%u, forced=%ux%u, created=%ux%u\n",
+        stage,
+        requested ? requested->BackBufferWidth : 0,
+        requested ? requested->BackBufferHeight : 0,
+        forced ? forced->BackBufferWidth : 0,
+        forced ? forced->BackBufferHeight : 0,
+        createdWidth, createdHeight);
 }
 
 template <typename T>
@@ -1306,14 +1413,28 @@ private:
     }
 
     HRESULT Intercept_Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
-        HRESULT hr = m_inner->Reset(pPresentationParameters);
+        // Apply presentation parameter overrides (MSAA, swap effect, interval) on Reset too
+        D3DPRESENT_PARAMETERS overriddenParams = {};
+        D3DPRESENT_PARAMETERS* pParamsToUse = pPresentationParameters;
+        if (pPresentationParameters) {
+            bool hasOverride = ApplyPresentationOverrides(m_config, pPresentationParameters, &overriddenParams);
+            if (hasOverride) {
+                pParamsToUse = &overriddenParams;
+            }
+        }
+
+        HRESULT hr = m_inner->Reset(pParamsToUse);
         m_counters.reset++;
+        if (SUCCEEDED(hr)) {
+            LogBackBufferDimensions("Reset", m_inner, pPresentationParameters,
+                                    pParamsToUse);
+        }
         if (FAILED(hr) || m_counters.reset <= 8) {
             Log("[device] Reset: hr=0x%08lx, bb=%ux%u fmt=%u (call %u)\n",
                 static_cast<unsigned long>(hr),
-                pPresentationParameters ? pPresentationParameters->BackBufferWidth : 0,
-                pPresentationParameters ? pPresentationParameters->BackBufferHeight : 0,
-                pPresentationParameters ? pPresentationParameters->BackBufferFormat : 0,
+                pParamsToUse ? pParamsToUse->BackBufferWidth : 0,
+                pParamsToUse ? pParamsToUse->BackBufferHeight : 0,
+                pParamsToUse ? pParamsToUse->BackBufferFormat : 0,
                 m_counters.reset);
             if (SUCCEEDED(hr)) {
                 m_captureAttempted = false;
@@ -2165,6 +2286,8 @@ public:
         Log("  -> hr=0x%08x, device=0x%p\n", hr, innerDevice);
 
         if (SUCCEEDED(hr) && innerDevice) {
+            LogBackBufferDimensions("CreateDevice", innerDevice, pPresentationParameters,
+                                    pParamsToUse);
             const bool on12DeviceVerified = VerifyDeviceBackend(
                 innerDevice, m_backend,
                 m_explicitOn12Context ? m_explicitOn12Context->device : nullptr);

@@ -10,6 +10,7 @@
 #include <bx/bx.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <dirent.h>
 #include <memory>
 #include <string>
@@ -58,7 +59,25 @@ size_t Engine::LoadWorldGeometry(const char* dir, size_t maxMeshes) {
             names.push_back(n);
     }
     ::closedir(dp);
-    std::sort(names.begin(), names.end());
+
+    // Deterministic order, demo set first: the verified test meshes named in
+    // the task spec (room interior + car barrier + 1950 fridge) render as a
+    // coherent little scene; the remaining slots fill alphabetically.
+    static const char* kDemoMeshes[] = {
+        "JimmysRoom01.nif",
+        "3_06CarBarr01.nif",
+        "1950Fridge.nif",
+    };
+    auto rank = [](const std::string& n) {
+        for (size_t i = 0; i < sizeof(kDemoMeshes) / sizeof(kDemoMeshes[0]); i++)
+            if (n == kDemoMeshes[i]) return static_cast<int>(i);
+        return 1000;
+    };
+    std::sort(names.begin(), names.end(), [&rank](const std::string& a, const std::string& b) {
+        const int ra = rank(a), rb = rank(b);
+        if (ra != rb) return ra < rb;
+        return a < b;
+    });
 
     size_t loaded = 0, skippedSmall = 0, failed = 0;
     for (const std::string& name : names) {
@@ -76,6 +95,36 @@ size_t Engine::LoadWorldGeometry(const char* dir, size_t maxMeshes) {
         if (!MeshFromNif(nif, mesh)) {
             failed++;
             continue;
+        }
+
+        // Bake each geometry's world transform (NiNode hierarchy) into the
+        // vertices: positions move through the full chain, normals through
+        // rotation only (uniform scale assumed for level geometry).
+        // MeshFromNif concatenates geometries in order; recompute the vertex
+        // ranges per geometry from the sub-mesh list.
+        {
+            size_t vertBase = 0;
+            size_t geomIdx = 0;
+            for (const NifGeometryData& geo : nif.geometries) {
+                float wm[16];
+                if (NifWorldTransform(nif, geo.nodeIndex, wm)) {
+                    for (size_t v = 0; v < geo.vertices.size(); v++) {
+                        MeshVertex& mv = mesh.vertices[vertBase + v];
+                        const NifVector3& p = geo.vertices[v];
+                        const float x = wm[0]*p.x + wm[4]*p.y + wm[8]*p.z + wm[12];
+                        const float y = wm[1]*p.x + wm[5]*p.y + wm[9]*p.z + wm[13];
+                        const float z = wm[2]*p.x + wm[6]*p.y + wm[10]*p.z + wm[14];
+                        mv.x = x; mv.y = y; mv.z = z;
+                        const NifVector3& nrm = geo.normals[v];
+                        const float nx = wm[0]*nrm.x + wm[4]*nrm.y + wm[8]*nrm.z;
+                        const float ny = wm[1]*nrm.x + wm[5]*nrm.y + wm[9]*nrm.z;
+                        const float nz = wm[2]*nrm.x + wm[6]*nrm.y + wm[10]*nrm.z;
+                        mv.nx = nx; mv.ny = ny; mv.nz = nz;
+                    }
+                }
+                vertBase += geo.vertices.size();
+                ++geomIdx;
+            }
         }
 
         GpuMesh gpu = m_renderer->UploadMeshGpu(mesh);
@@ -147,29 +196,44 @@ bool Engine::Init(const Window& window) {
     // to the executable (deployed by the build) or the source-tree fallback.
     // Loaded AFTER the renderer so GPU handles are valid; capped for the
     // Phase-3 milestone (full streaming comes later).
-    size_t worldLoaded = LoadWorldGeometry("data/extracted/world", 32);
+    // OPENBULLY_DEMO_ONLY=1 restricts the scene to the verified demo trio
+    // (JimmysRoom01 + 3_06CarBarr01 + 1950Fridge) for focused screenshots.
+    const bool demoOnly = std::getenv("OPENBULLY_DEMO_ONLY") != nullptr;
+    const size_t meshCap = demoOnly ? 3 : 32;
+    size_t worldLoaded = LoadWorldGeometry("data/extracted/world", meshCap);
     if (worldLoaded == 0) {
         // Fallback: source-tree relative path (running from a dev shell).
-        worldLoaded = LoadWorldGeometry("../data/extracted/world", 32);
+        worldLoaded = LoadWorldGeometry("../data/extracted/world", meshCap);
     }
+    if (demoOnly) Logger::Info("Demo-only mode: restricted to the 3 test meshes");
     if (worldLoaded == 0) {
         Logger::Info("No World.img geometry loaded; triangle-only mode");
+        // Default spawn: spec fallback (0, 5, -10) looking toward origin.
+        m_camera = Camera(glm::vec3(0.0f, 5.0f, -10.0f), 0.0f, -0.46f);
     } else {
-        // Fit camera to the union of loaded mesh bounds.
-        float bmin[3] = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
-        float bmax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        // Union of loaded mesh bounds; spawn outside the bounds looking at
+        // the scene center so geometry fills the frame on startup.
+        glm::vec3 bmin( FLT_MAX,  FLT_MAX,  FLT_MAX);
+        glm::vec3 bmax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
         for (const WorldMesh& wm : m_worldMeshes) {
-            for (int i = 0; i < 3; i++) {
-                bmin[i] = std::min(bmin[i], wm.boundsMin[i]);
-                bmax[i] = std::max(bmax[i], wm.boundsMax[i]);
-            }
+            bmin = glm::min(bmin, glm::make_vec3(wm.boundsMin));
+            bmax = glm::max(bmax, glm::make_vec3(wm.boundsMax));
         }
-        for (int i = 0; i < 3; i++) m_sceneCenter[i] = 0.5f * (bmin[i] + bmax[i]);
-        const float dx = bmax[0] - bmin[0];
-        const float dy = bmax[1] - bmin[1];
-        const float dz = bmax[2] - bmin[2];
-        m_camDistance = std::max(10.0f, 2.4f * std::sqrt(dx*dx + dy*dy + dz*dz));
-        m_camPitch = 0.9f; // look down from above so ground planes dominate
+        const glm::vec3 center = 0.5f * (bmin + bmax);
+        const float radius = glm::length(bmax - bmin) * 0.5f;
+
+        // Back off along -Z from the center, outside the bounds, at 40%
+        // height for a three-quarter view of the level.
+        glm::vec3 spawn = center + glm::vec3(0.0f, radius * 0.2f, -(radius * 1.6f + 10.0f));
+
+        // Aim at the center: yaw/pitch for LH +Z-forward convention.
+        const glm::vec3 to = center - spawn;
+        const float yaw   = std::atan2(to.x, to.z);
+        const float pitch = std::atan2(to.y, glm::length(glm::vec2(to.x, to.z)));
+
+        m_camera = Camera(spawn, yaw, pitch);
+        Logger::Info("Camera spawn (%.1f, %.1f, %.1f) -> center (%.1f, %.1f, %.1f)",
+                     spawn.x, spawn.y, spawn.z, center.x, center.y, center.z);
     }
 
     m_initialized = true;
@@ -186,8 +250,11 @@ void Engine::Update() {
     m_lastPerf = now;
     m_time += deltaTime;
 
-    // Slow orbit so the level geometry is visible from multiple angles.
-    m_camYaw += float(deltaTime) * 0.15f;
+    // Input snapshot + camera integration (Track 10). Escape is surfaced by
+    // Input; main.cpp also checks it via Engine::QuitRequested().
+    m_input.Poll();
+    if (m_input.QuitRequested()) m_quitRequested = true;
+    m_camera.Update(float(deltaTime), m_input);
 
     ++m_framesAccum;
     m_frameMsAccum += deltaTime * 1000.0;

@@ -4,6 +4,8 @@
 
 #include "rendering/renderer.h"
 #include "rendering/mesh.h"
+#include "game/camera.h"
+#include "game/input.h"
 
 #include <cstdint>
 #include <memory>
@@ -56,11 +58,12 @@ private:
     void* m_nativeWindowHandle = nullptr;
     uint64_t m_frameCount = 0;
 
-    // Orbit camera state (Update integrates yaw/pitch; Render builds matrices)
-    float m_camYaw = 0.0f;
-    float m_camPitch = 0.0f;
-    float m_camDistance = 50.0f;
-    float m_sceneCenter[3] = {0, 0, 0};
+    // FPS free camera (Track 10). Spawn outside the geometry bounds,
+    // looking at the scene center; Update integrates input, Render builds
+    // matrices.
+    Camera m_camera;
+    Input  m_input;
+    bool   m_quitRequested = false;
 
     std::unique_ptr<Renderer> m_renderer;
 };

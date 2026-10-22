@@ -111,14 +111,26 @@ private:
 
 // NiAVObject body after NiObjectNET: flags u16, translation 3f, rotation 9f,
 // scale f, properties (u32 count + refs), collision i32. (bully-re/docs/nif.md)
-bool ReadAVObjectBody(Reader& r) {
+// When `out` is non-null the transform components are captured as well; when
+// `outProps` is non-null the property block references are captured too.
+bool ReadAVObjectBody(Reader& r, NifNode* out = nullptr,
+                      std::vector<int32_t>* outProps = nullptr) {
     r.U16(); // flags
-    r.Vec3(); // translation
-    for (int k = 0; k < 9; k++) r.F32(); // rotation 3x3, row-major
-    r.F32(); // scale
+    const NifVector3 t = r.Vec3();
+    float rot[9];
+    for (int k = 0; k < 9; k++) rot[k] = r.F32(); // rotation 3x3, row-major
+    const float s = r.F32();
+    if (out) {
+        out->translation = t;
+        for (int k = 0; k < 9; k++) out->rotation[k] = rot[k];
+        out->scale = s;
+    }
     int32_t numProps = r.I32();
     if (numProps < 0 || numProps > 10000) return false;
-    for (int32_t p = 0; p < numProps && r.Ok(); p++) r.I32();
+    for (int32_t p = 0; p < numProps && r.Ok(); p++) {
+        const int32_t ref = r.I32();
+        if (outProps) outProps->push_back(ref);
+    }
     r.I32(); // collision object
     return r.Ok();
 }
@@ -227,6 +239,54 @@ void ReadTriStripsData(Reader& r, NifGeometryData& out) {
     }
 }
 
+// NiTexDesc: source ref i32, flags u16 (low byte = UV set), then an optional
+// 4x4 transform (u8 + 40 bytes). (bully-re NifFile.cpp LireTexDesc)
+void ReadTexDesc(Reader& r, int32_t* sourceRef) {
+    const int32_t s = r.I32();
+    r.U16();
+    if (r.U8()) {
+        for (int k = 0; k < 9; k++) r.F32(); // transform: 2x2 + offset/scale
+        r.U32();                              // transform method
+        r.F32(); r.F32();                     // center
+    }
+    if (sourceRef) *sourceRef = s;
+}
+
+// NiTexturingProperty in 20.3.0.9: NiObjectNET header, flags u16, slot count
+// u32, then per slot an u8 "present" + TexDesc; slot 5 (bump) carries 6 extra
+// floats, slot 7 (parallax) 1 float; then shader-texture count u32 with 4+1
+// bytes each. Returns the base-map (slot 0) NiSourceTexture block reference,
+// or -1. (bully-re NifFile.cpp LireTexturing)
+int32_t ReadTexturingProperty(Reader& r) {
+    r.I32();                       // name
+    int32_t numExtra = r.I32();
+    if (numExtra < 0 || numExtra > 100000) return -1;
+    for (int32_t e = 0; e < numExtra && r.Ok(); e++) r.I32();
+    r.I32();                       // controller
+    r.U16();                       // flags
+    const uint32_t numSlots = r.U32();
+    if (numSlots > 12) return -1;
+    int32_t baseSource = -1;
+    for (uint32_t s = 0; s < numSlots && r.Ok(); s++) {
+        if (r.U8()) {
+            int32_t src = -1;
+            ReadTexDesc(r, &src);
+            if (s == 0) baseSource = src;
+            if (s == 5) { for (int k = 0; k < 6; k++) r.F32(); }
+            if (s == 7) r.F32();
+        }
+    }
+    uint32_t numShaderTex = r.U32();
+    if (numShaderTex > 32) return -1;
+    for (uint32_t s = 0; s < numShaderTex && r.Ok(); s++) {
+        if (r.U8()) {
+            ReadTexDesc(r, nullptr);
+            r.U32();               // shader map id
+        }
+    }
+    return r.Ok() ? baseSource : -1;
+}
+
 } // namespace
 
 NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
@@ -314,11 +374,13 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
     }
 
     // --- Blocks ------------------------------------------------------------
-    // Each block's declared size lets us skip unknown blocks exactly. Geometry
-    // data blocks are decoded inside their declared range; shape nodes are
-    // decoded far enough to capture the node name (matched with the geometry
-    // that follows). Everything else is skipped by size.
+    // Each block's declared size lets us skip unknown blocks exactly. Node
+    // blocks (NiNode / NiTriShape / NiTriStrips) build the hierarchy table;
+    // geometry data blocks are decoded inside their declared range. Everything
+    // else is skipped by size.
     std::string lastShapeName;
+
+    result.nodes.reserve(numBlocks);
 
     for (uint32_t i = 0; i < numBlocks && header.Ok(); i++) {
         const uint32_t blockSize = blockSizes[i];
@@ -332,63 +394,90 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
         const std::string typeName =
             blockTypes[i] < typeNames.size() ? typeNames[blockTypes[i]] : "";
 
-        bool decodeBlock =
-            (typeName == "NiTriShape" || typeName == "NiTriStrips" ||
-             typeName == "NiTriShapeData" || typeName == "NiTriStripsData");
+        const bool isShape = (typeName == "NiTriShape" || typeName == "NiTriStrips");
+        const bool isNode = isShape || typeName == "NiNode";
+        const bool isGeomData = (typeName == "NiTriShapeData" || typeName == "NiTriStripsData");
 
-        if (decodeBlock) {
+        if (isNode) {
             Reader block(blockStart, blockSize);
             block.SetBigEndian(result.bigEndian);
 
-            if (typeName == "NiTriShape" || typeName == "NiTriStrips") {
-                // NiTriShape/NiTriStrips = NiObjectNET + NiAVObject +
-                // NiGeometry tail: name (i32 string index), extra data
-                // (u32 count + refs), controller i32, then flags/transform/
-                // properties, data ref, skin ref, materials, active material,
-                // dirty flag.
-                const int32_t nameIndex = block.I32();
-                int32_t numExtra = block.I32();
-                if (numExtra < 0 || numExtra > 100000) numExtra = 0;
-                for (int32_t e = 0; e < numExtra && block.Ok(); e++)
-                    block.I32();
-                block.I32(); // controller
+            // Every node gets a hierarchy entry in block order, even when the
+            // decode fails (children refs stay consistent).
+            NifNode node;
+            const int32_t nameIndex = block.I32();
+            if (nameIndex >= 0 && static_cast<uint32_t>(nameIndex) < strings.size())
+                node.name = strings[nameIndex];
+            int32_t numExtra = block.I32();
+            if (numExtra < 0 || numExtra > 100000) numExtra = 0;
+            for (int32_t e = 0; e < numExtra && block.Ok(); e++)
+                block.I32();
+            block.I32(); // controller
 
-                if (ReadAVObjectBody(block)) {
-                    block.I32(); // data reference
-                    block.I32(); // skin reference
-                    int32_t numMaterials = block.I32();
-                    if (numMaterials < 0 || numMaterials > 10000) numMaterials = 0;
-                    for (int32_t m = 0; m < numMaterials && block.Ok(); m++) {
-                        block.I32(); // material name (string index)
-                        block.I32(); // material extra data
-                    }
-                    block.I32(); // active material
-                    block.U8();  // "dirty" flag
-                    if (block.Ok() && nameIndex >= 0 &&
-                        static_cast<uint32_t>(nameIndex) < strings.size())
-                        lastShapeName = strings[nameIndex];
+            bool avOk = ReadAVObjectBody(block, &node);
+
+            if (!isShape) {
+                // NiNode tail: child refs (i32 count + i32 refs).
+                int32_t numChildren = block.I32();
+                if (numChildren < 0 || numChildren > 100000) numChildren = 0;
+                for (int32_t c = 0; c < numChildren && block.Ok(); c++) {
+                    const int32_t ref = block.I32();
+                    if (ref >= 0) node.children.push_back(static_cast<uint32_t>(ref));
                 }
             } else {
-                // NiTriShapeData / NiTriStripsData start directly with the
-                // NiGeometryData body — NO NiObjectNET header in 20.3.0.9
-                // (verified on cube.nif; see bully-re LireTriShapeData).
-                NifGeometryData geo;
-                geo.nodeName = lastShapeName;
-                if (typeName == "NiTriShapeData")
-                    ReadTriShapeData(block, geo);
-                else
-                    ReadTriStripsData(block, geo);
-                if (block.Ok()) {
-                    result.totalVertices += geo.vertices.size();
-                    result.totalTriangles += geo.triangles.size();
-                    result.geometries.push_back(std::move(geo));
+                // NiTriShape/NiTriStrips tail: data ref, skin ref, materials,
+                // active material, dirty flag.
+                block.I32(); // data reference
+                block.I32(); // skin reference
+                int32_t numMaterials = block.I32();
+                if (numMaterials < 0 || numMaterials > 10000) numMaterials = 0;
+                for (int32_t m = 0; m < numMaterials && block.Ok(); m++) {
+                    block.I32(); // material name (string index)
+                    block.I32(); // material extra data
                 }
+                block.I32(); // active material
+                block.U8();  // "dirty" flag
+            }
+
+            if (avOk && block.Ok()) {
+                if (isShape) lastShapeName = node.name;
+                result.nodes.push_back(std::move(node));
+            } else {
+                result.nodes.push_back(NifNode{}); // placeholder keeps indices
+            }
+        } else if (isGeomData) {
+            Reader block(blockStart, blockSize);
+            block.SetBigEndian(result.bigEndian);
+
+            // NiTriShapeData / NiTriStripsData start directly with the
+            // NiGeometryData body - NO NiObjectNET header in 20.3.0.9
+            // (verified on cube.nif; see bully-re LireTriShapeData).
+            NifGeometryData geo;
+            geo.nodeName = lastShapeName;
+            geo.nodeIndex = result.nodes.empty()
+                ? 0 : static_cast<uint32_t>(result.nodes.size() - 1);
+            if (typeName == "NiTriShapeData")
+                ReadTriShapeData(block, geo);
+            else
+                ReadTriStripsData(block, geo);
+            if (block.Ok()) {
+                result.totalVertices += geo.vertices.size();
+                result.totalTriangles += geo.triangles.size();
+                result.geometries.push_back(std::move(geo));
             }
         }
 
         // Advance exactly one declared block, decode success or not.
         header.SeekTo(blockEnd);
     }
+
+
+    // Fill parent links from the children refs (NIF stores one side only).
+    for (uint32_t n = 0; n < result.nodes.size(); n++)
+        for (uint32_t c : result.nodes[n].children)
+            if (c < result.nodes.size() &&
+                result.nodes[c].parent < 0)
+                result.nodes[c].parent = static_cast<int32_t>(n);
 
     result.ok = !result.geometries.empty();
     if (!result.ok)
@@ -419,6 +508,55 @@ NifLoadResult LoadNifFile(const std::string& path) {
         return result;
     }
     return LoadNifFromMemory(buffer.data(), buffer.size());
+}
+
+bool NifWorldTransform(const NifLoadResult& nif, uint32_t index, float out[16]) {
+    if (index >= nif.nodes.size()) return false;
+
+    // Local transform: T * R * S, column-major 4x4 (bgfx convention).
+    // NIF stores the 3x3 rotation row-major; R_col[c*4+r] = rotation[r*3+c].
+    auto local = [](const NifNode& n, float m[16]) {
+        for (int k = 0; k < 16; k++) m[k] = 0.0f;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                m[c * 4 + r] = n.rotation[r * 3 + c] * n.scale;
+        m[12] = n.translation.x;
+        m[13] = n.translation.y;
+        m[14] = n.translation.z;
+        m[15] = 1.0f;
+    };
+
+    auto mul = [](const float* a, const float* b, float* o) { // o = a * b
+        float r[16];
+        for (int c = 0; c < 4; c++)
+            for (int row = 0; row < 4; row++) {
+                float s = 0.0f;
+                for (int k = 0; k < 4; k++)
+                    s += a[k * 4 + row] * b[c * 4 + k];
+                r[c * 4 + row] = s;
+            }
+        for (int k = 0; k < 16; k++) o[k] = r[k];
+    };
+
+    float acc[16];
+    local(nif.nodes[index], acc);
+
+    // Compose child-to-root up the parent chain (cycle-capped defensively).
+    int32_t parent = nif.nodes[index].parent;
+    int depth = 0;
+    while (parent >= 0 &&
+           static_cast<uint32_t>(parent) < nif.nodes.size() && depth < 64) {
+        float pm[16];
+        local(nif.nodes[parent], pm);
+        float res[16];
+        mul(pm, acc, res);
+        for (int k = 0; k < 16; k++) acc[k] = res[k];
+        parent = nif.nodes[parent].parent;
+        ++depth;
+    }
+
+    for (int k = 0; k < 16; k++) out[k] = acc[k];
+    return true;
 }
 
 } // namespace OpenBully

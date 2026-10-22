@@ -6,6 +6,8 @@
 #include "physics/collision.h"
 #include "rendering/mesh.h"
 #include "entities/entity.h"
+#include "entities/ai_events.h" // Track 28: NPC reaction events
+#include "game/schedule.h" // Track 29: NPC schedules
 #include "animation/animation_controller.h"
 #include "game/camera.h"
 #include "game/input.h"
@@ -13,6 +15,7 @@
 #include "game/weapon.h" // Track 26: WeaponType + WeaponData
 #include "../combat/combat.h" // Track 23: melee combat core
 #include "../mission/mission.h"
+#include "../dialogue/dialogue.h" // Track 30: DialogueManager
 #include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
 #include <cstdint>
 #include <memory>
@@ -24,6 +27,9 @@ namespace OpenBully {
 
 class Window;
 class AudioManager; // Track 21: audio device + procedural SFX + mixer
+
+// Track 29: global time-of-day (24h clock, hour 0-23 / minute 0-59).
+struct GameTime { int hour = 0; int minute = 0; };
 
 // One World.img NIF mesh loaded, uploaded to the GPU and tracked for the
 // debug camera fit. Kept alive for the engine's lifetime.
@@ -61,6 +67,12 @@ public:
     // Track 20 (UI): HUD snapshot, refreshed each Update() and consumed by
     // UIRenderer::DrawHUD (health / wanted / clock / money / minimap dots).
     const HUDState& GetHUDState() const { return m_hudState; }
+
+    // Track 29: global game time, advancing at 60x real time (1 real second
+    // = 1 game minute). The HUD clock reads the same accumulator.
+    GameTime GetGameTime() const {
+        return { (m_clockMinutes / 60) % 24, m_clockMinutes % 60 };
+    }
 
 private:
     void LogFrameTiming();
@@ -148,6 +160,39 @@ private:
     void   SpawnNpcs(const glm::vec3& center);
     void   UpdateNpcs(float dt);
 
+    // Track 28: NPC reaction system. Combat and projectile damage funnel
+    // through DamageNpc, which queues AIEvents; UpdateNpcs drains the queue
+    // and runs the reaction state machine (fight back / flee / help call /
+    // crowd watch / prefect bust). Fights are registered hot-spots that
+    // witnesses react to while active.
+    struct FightInfo {
+        glm::vec3 pos{0.0f};            // last hit location
+        EntityID  aggressor{};          // who dealt the last hit here
+        double    lastActivity = 0.0;   // engine time of the last hit
+    };
+    void     QueueAIEvent(const AIEvent& e);
+    void     ProcessAIEvents();            // drain m_aiEvents -> state changes
+    void     ScanFightWitnesses();         // LOS + range -> WITNESSED_FIGHT
+    void     RegisterFight(const glm::vec3& pos, EntityID aggressor);
+    void     DamageNpc(EntityID npc, EntityID attacker, int dmg,
+                       const glm::vec3& hitPos, float stunTime);
+    void     KnockOutNpc(EntityID npc, EntityID attacker);
+    void     NpcAttackHit(EntityID attacker, EntityID target);
+    bool     HasLineOfSight(const glm::vec3& from, const glm::vec3& to) const;
+    void     Busted();                     // stub: prefect defeated the player
+    void     RespawnNpc(EntityID id, AIComponent& ai, Transform& t); // KO timer expiry
+
+    // Track 27: NPC combat helpers. StartNpcAttack is the NPC-side twin of
+    // StartMeleeAttack (locks the melee state, plays the clip, faces the
+    // target); ProgressNpcAttack advances the NPC's own attack (hit window ->
+    // ResolveNpcMeleeHit, which routes player damage through DamagePlayer so
+    // dodge i-frames and blocking apply).
+    void StartNpcAttack(EntityID npc, Melee::AttackType type, float targetYaw);
+    void ProgressNpcAttack(EntityID npc, Melee::CombatComponent* mc, float dt);
+    void ResolveNpcMeleeHit(Melee::CombatComponent* mc,
+                            const Melee::AttackData& atk, EntityID attacker);
+    void DriveNpcDemo(float dt);  // OPENBULLY_NPC_DEMO scripted chase/combat
+
     // Track 20 (UI): debug keys (H damage / J,K wanted) + HUDState refresh.
     void HandleHudDebugKeys();
     void UpdateHUD(float dt);
@@ -172,6 +217,20 @@ private:
     bool InitMissions();
     void RenderObjectiveMarker();
     void DriveMissionDemo(); // OPENBULLY_MISSION_DEMO scripted objective walk
+
+    // Track 30: dialogue system. Loads data/dialogue/demo_dialogue.json
+    // (hand-authored Bully-flavored trees; .lur/XACT sources are deferred),
+    // starts conversations with E near an NPC (2.5u, not in combat), drives
+    // the typewriter + input (E/Space advance, 1-4 / arrows+Enter choices),
+    // freezes the player and the dialogue NPC, and completes TALK_TO_NPC
+    // objectives on conversation end.
+    bool InitDialogue();
+    void UpdateDialogue(float dt);
+    void TryStartDialogue();            // E-press path (also the demo hook)
+    void OnDialogueEnded();             // fires via DialogueManager::SetOnEnd
+    DialogueManager m_dialogue;
+    EntityID        m_dialogueNpc{};    // NPC currently in conversation
+    int             m_dialogueChoiceSel = 0; // arrow-key selection highlight
 
     // Loads up to maxMeshes NIFs from `dir` into GPU meshes. Returns the
     // number loaded. Skips files that fail to parse, logs a summary.
@@ -274,6 +333,38 @@ private:
     // Track 16: NPC model collection (character NIFs from World.img).
     std::vector<NpcModel> m_npcModels;
     uint32_t              m_npcCount = 0;
+
+    // Track 28: reaction state. m_aiEvents is drained once per frame by
+    // UpdateNpcs; m_fights tracks recent hit locations for witness scans.
+    std::vector<AIEvent>   m_aiEvents;
+    std::vector<FightInfo> m_fights;
+    EntityID               m_prefectIds[2] = {{}, {}}; // authority NPCs
+
+    // Track 29: NPC schedules. Each scheduled NPC slot pairs one NPC model
+    // with one named schedule; UpdateSchedules spawns/despawns its entity as
+    // the game clock crosses window boundaries (data/schedules/
+    // npc_schedules.json). Spawned slots re-use their cached rig clone so
+    // repeated day cycles do not accumulate rigs.
+    struct ScheduledNpc {
+        int       scheduleIndex = -1;
+        uint32_t  modelIndex    = 0;
+        uint32_t  rigIndex      = 0xFFFFFFFF; // cached clone (reused on respawn)
+        uint32_t  seed          = 0;          // deterministic per-slot variation
+        glm::vec3 spawnPoint{0.0f};             // home base (JSON spawn_point)
+        EntityID  entity{};                     // invalid while despawned
+        int       lastWindowIndex   = -1;       // behavior applied per window
+        bool      walkToSpawnLogged = false;    // 10-min transition log flag
+    };
+    void     UpdateGameTime(float dt);   // 60x advance + HUD clock sync
+    void     SyncGameClock();            // m_gameTimeMinutes -> m_clockMinutes
+    void     HandleScheduleKeys();       // T: fast-forward 1 hour
+    bool     LoadSchedules();            // JSON load + reference points
+    void     UpdateSchedules();          // spawn/despawn/behavior per window
+    EntityID SpawnScheduledNpc(ScheduledNpc& sn, const ScheduleWindow& w);
+    void     DespawnScheduledNpc(ScheduledNpc& sn, const char* reason);
+    std::vector<ScheduledNpc> m_scheduledNpcs;
+    ScheduleManager           m_schedules;
+    double m_gameTimeMinutes = 8.0 * 60.0; // fractional game minutes since midnight
 
     // Track 24: grapple state. m_grappleTarget is invalid when no grapple is
     // active. The grapple idle clip comes from a "grap*" .agr group in the

@@ -1,0 +1,222 @@
+{
+  "_comment": "Track 30: hand-authored demo dialogue. Bully keeps dialogue audio in XACT banks and script in .lur bytecode (both deferred/unparseable), so content mimics the game's flavor. Trees are selected per NPC by model index (Engine: npcModelIndex % tree count); 'voice' paths are placeholders for the deferred wav hookup.",
+  "trees": [
+    {
+      "id": "student",
+      "root": "greeting",
+      "nodes": {
+        "greeting": {
+          "speaker": "Student",
+          "lines": [
+            "Oh. Hey. You're the new kid, right?",
+            "Word travels fast around here. Mostly because Gary talks."
+          ],
+          "voice": "",
+          "next": "menu"
+        },
+        "menu": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "So what's the deal with this school?", "next": "school" },
+            { "text": "Who's Gary?", "next": "gary" },
+            { "text": "Never mind. See ya.", "next": "" }
+          ]
+        },
+        "school": {
+          "speaker": "Student",
+          "lines": [
+            "It's Bullworth. Rules are more like... suggestions.",
+            "Keep your head down in class, watch your back in the yard.",
+            "And whatever you do, don't step on the prefect's shoes."
+          ],
+          "next": "menu_return"
+        },
+        "gary": {
+          "speaker": "Student",
+          "lines": [
+            "Gary? Gary Smith. Wheelchair-evil, allegedly walking now.",
+            "He'll call you 'friend' and mean 'minion'.",
+            "Do his errands if you want. Just don't turn your back."
+          ],
+          "next": "menu_return"
+        },
+        "menu_return": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "Back to questions...", "next": "menu" },
+            { "text": "Alright, thanks.", "next": "farewell" }
+          ]
+        },
+        "farewell": {
+          "speaker": "Student",
+          "lines": [
+            "Catch you around, new kid.",
+            "Try not to end up in the headmaster's office on day one."
+          ],
+          "next": ""
+        }
+      }
+    },
+    {
+      "id": "prefect",
+      "root": "greeting",
+      "nodes": {
+        "greeting": {
+          "speaker": "Prefect",
+          "lines": [
+            "Halt. I don't recognize you.",
+            "That uniform says 'new enrollment'. That face says 'trouble'."
+          ],
+          "next": "menu"
+        },
+        "menu": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "Just transfer student, officer. Sir.", "next": "innocent" },
+            { "text": "Where can a guy get a soda around here?", "next": "soda" },
+            { "text": "Take it easy, I'm leaving.", "next": "" }
+          ]
+        },
+        "innocent": {
+          "speaker": "Prefect",
+          "lines": [
+            "'Sir.' I like that. Respect is rare in this school.",
+            "Stay clean, keep moving, and we won't have a problem.",
+            "Break one rule and I'll be faster than you think."
+          ],
+          "next": "farewell"
+        },
+        "soda": {
+          "speaker": "Prefect",
+          "lines": [
+            "Vending machine by the gym. It eats quarters, not students.",
+            "And no, I will not write you a hall pass for it."
+          ],
+          "next": "farewell"
+        },
+        "farewell": {
+          "speaker": "Prefect",
+          "lines": [
+            "Move along. And walk, don't run."
+          ],
+          "next": ""
+        }
+      }
+    },
+    {
+      "id": "bully",
+      "root": "greeting",
+      "nodes": {
+        "greeting": {
+          "speaker": "Bully",
+          "lines": [
+            "Well, well. Fresh meat walks right up to ME.",
+            "You lost, new kid? Or just stupid?"
+          ],
+          "next": "menu"
+        },
+        "menu": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "Beat it, dork.", "next": "tough" },
+            { "text": "Easy, pal. Just passing through.", "next": "pass" },
+            { "text": "Your shoelace is untied.", "next": "shoelace" }
+          ]
+        },
+        "tough": {
+          "speaker": "Bully",
+          "lines": [
+            "Ha! Big words from a little transfer.",
+            "Tell you what: survive the yard at lunch, and we'll talk.",
+            "Till then, scram before I get bored."
+          ],
+          "next": "farewell"
+        },
+        "pass": {
+          "speaker": "Bully",
+          "lines": [
+            "Passing through MY hallway?",
+            "Toll's a dollar. Or your lunch. Or a black eye. Dealer's choice."
+          ],
+          "next": "farewell"
+        },
+        "shoelace": {
+          "speaker": "Bully",
+          "lines": [
+            "What? No way, I double-knotted th---",
+            "...You almost got me. Okay. You're funny, new kid. Funny keeps you alive here."
+          ],
+          "next": "farewell"
+        },
+        "farewell": {
+          "speaker": "Bully",
+          "lines": [
+            "Get outta here before I change my mind."
+          ],
+          "next": ""
+        }
+      }
+    },
+    {
+      "id": "nerd",
+      "root": "greeting",
+      "nodes": {
+        "greeting": {
+          "speaker": "Nerd",
+          "lines": [
+            "Whoa! You startled me. I'm calibrating the telescope mount.",
+            "You're the new student! Fascinating. What's your GPA?"
+          ],
+          "next": "menu"
+        },
+        "menu": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "What are you working on?", "next": "project" },
+            { "text": "How do I stay out of trouble here?", "next": "advice" },
+            { "text": "Forget it. I don't speak nerd.", "next": "" }
+          ]
+        },
+        "project": {
+          "speaker": "Nerd",
+          "lines": [
+            "A radio telescope! Well... a broken satellite dish and hope.",
+            "Last week I picked up the cafeteria radio. Progress!",
+            "The jocks threw my last one off the roof. Twice."
+          ],
+          "next": "menu_return"
+        },
+        "advice": {
+          "speaker": "Nerd",
+          "lines": [
+            "Statistically? Avoid hallways between 12:05 and 12:15.",
+            "That's when the bullies optimize for ambush density.",
+            "Also, befriending the shop teacher helps. He owns a kiln."
+          ],
+          "next": "menu_return"
+        },
+        "menu_return": {
+          "speaker": "Jimmy",
+          "lines": [],
+          "choices": [
+            { "text": "Back to questions...", "next": "menu" },
+            { "text": "Good luck with the dish thing.", "next": "farewell" }
+          ]
+        },
+        "farewell": {
+          "speaker": "Nerd",
+          "lines": [
+            "Thanks! If you hear strange beeps at night, that's us. Not aliens.",
+            "...Probably not aliens."
+          ],
+          "next": ""
+        }
+      }
+    }
+  ]
+}

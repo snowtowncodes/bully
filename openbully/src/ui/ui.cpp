@@ -544,4 +544,122 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
     }
 }
 
+// --- Track 30: dialogue box ------------------------------------------------------
+
+namespace {
+
+// Word-wraps `text` into lines no wider than maxWidth (bitmap-font metrics).
+// Single words longer than maxWidth overflow (no mid-word split).
+std::vector<std::string> WrapDialogueText(const UIRenderer& ui,
+                                          const std::string& text,
+                                          float maxWidth) {
+    std::vector<std::string> out;
+    std::string line;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t end = text.find(' ', pos);
+        if (end == std::string::npos) end = text.size();
+        const std::string word = text.substr(pos, end - pos);
+        if (!word.empty()) {
+            if (!line.empty()) {
+                if (ui.MeasureText(line + " " + word) > maxWidth) {
+                    out.push_back(line);
+                    line = word;
+                } else {
+                    line += " " + word;
+                }
+            } else {
+                line = word;
+            }
+        }
+        if (end == text.size()) break;
+        pos = end + 1;
+    }
+    if (!line.empty() || out.empty()) out.push_back(line);
+    return out;
+}
+
+} // namespace
+
+void UIRenderer::DrawDialogueBox(const char* speaker,
+                                 const std::string& text,
+                                 bool showAdvanceHint,
+                                 const std::vector<std::string>& choices,
+                                 int selectedChoice) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+
+    // Bottom-center panel: ~800x200 at the 1280x720 reference layout.
+    const float boxW = std::min(800.0f * s, W - 32.0f * s);
+    const float boxH = 200.0f * s;
+    const float bx   = 0.5f * (W - boxW);
+    const float by   = H - boxH - 24.0f * s;
+    const float padX = 20.0f * s;
+
+    // Semi-transparent black panel + subtle border.
+    DrawRect(bx, by, boxW, boxH, PackRGBA(8, 8, 12, 200));
+    const uint32_t border = PackRGBA(190, 190, 200, 160);
+    const float bw = 2.0f * s;
+    DrawRect(bx, by, boxW, bw, border);
+    DrawRect(bx, by + boxH - bw, boxW, bw, border);
+    DrawRect(bx, by, bw, boxH, border);
+    DrawRect(bx + boxW - bw, by, bw, boxH, border);
+
+    // Speaker name: top of the box on an accent strip.
+    const std::string name(speaker ? speaker : "");
+    const float nameY = by + 10.0f * s;
+    if (!name.empty()) {
+        const float nameW = MeasureText(name) + 12.0f * s;
+        DrawRect(bx + padX - 6.0f * s, nameY - 4.0f * s, nameW,
+                 kGlyphHeight + 8.0f * s, PackRGBA(70, 110, 170, 230));
+        DrawText(bx + padX, nameY, name, PackRGBA(255, 255, 255, 255));
+    }
+
+    // Body text: word-wrapped under the speaker strip.
+    const float textMaxW = boxW - 2.0f * padX;
+    const float textY = nameY + (kGlyphHeight + 10.0f) * s;
+    const float lineH = (kGlyphHeight + 4.0f) * s;
+    const uint32_t white = PackRGBA(240, 240, 245, 255);
+    const std::vector<std::string> wrapped = WrapDialogueText(*this, text, textMaxW);
+    float y = textY;
+    for (const std::string& ln : wrapped) {
+        if (y + lineH > by + boxH - 6.0f * s) break; // box overflow guard
+        DrawText(bx + padX, y, ln, white);
+        y += lineH;
+    }
+
+    // Choices as button rows (numbered); the selected row is highlighted.
+    if (!choices.empty()) {
+        const float rowH   = 16.0f * s;
+        const float rowGap = 4.0f * s;
+        // Rows sit at the bottom of the box, below the body text area.
+        float cy = by + boxH - 10.0f * s - rowH * float(choices.size())
+                   - rowGap * float(std::max(0, int(choices.size()) - 1));
+        for (int i = 0; i < int(choices.size()); ++i) {
+            char prefix[8];
+            std::snprintf(prefix, sizeof(prefix), "%d. ", i + 1);
+            const std::string label = std::string(prefix) + choices[i];
+            const bool selected = (i == selectedChoice);
+            const float rowW = std::min(textMaxW, MeasureText(label) + 16.0f * s);
+            if (selected)
+                DrawRect(bx + padX - 4.0f * s, cy - 2.0f * s, rowW, rowH,
+                         PackRGBA(60, 100, 160, 220));
+            DrawText(bx + padX, cy + (rowH - kGlyphHeight) * 0.5f - 2.0f * s, label,
+                     selected ? PackRGBA(255, 240, 160, 255)
+                              : PackRGBA(210, 210, 220, 230));
+            cy += rowH + rowGap;
+        }
+        DrawText(bx + boxW - padX - MeasureText("ARROWS+ENTER"),
+                 by + boxH - (kGlyphHeight + 8.0f) * s, "ARROWS+ENTER",
+                 PackRGBA(160, 160, 170, 200));
+    } else if (showAdvanceHint) {
+        DrawText(bx + boxW - padX - MeasureText("E: NEXT"),
+                 by + boxH - (kGlyphHeight + 8.0f) * s, "E: NEXT",
+                 PackRGBA(255, 220, 120, 220));
+    }
+}
+
 } // namespace OpenBully

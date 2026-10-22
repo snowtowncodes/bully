@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace OpenBully {
 
@@ -103,6 +104,18 @@ public:
     // the snapshot. Scales widget placement off the backbuffer height so the
     // 1280x720 reference layout holds at other resolutions.
     void DrawHUD(const HUDState& hud);
+
+    // Track 30: dialogue box. Bottom-center panel (~800x200 at 1280x720,
+    // scaled by the same convention as DrawHUD), semi-transparent black,
+    // speaker name at the top, typewriter-revealed text below (word-wrapped
+    // to the box width), and choices rendered as button rows when present
+    // (selectedChoice highlighted; -1 = no selection). An advance hint shows
+    // while text remains ("E: NEXT").
+    void DrawDialogueBox(const char* speaker,
+                         const std::string& text,
+                         bool showAdvanceHint,
+                         const std::vector<std::string>& choices,
+                         int selectedChoice);
 
     // Glyph metrics (pixels).
     static constexpr float kGlyphWidth   = 5.0f;

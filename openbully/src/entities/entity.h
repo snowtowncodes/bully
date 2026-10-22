@@ -11,6 +11,7 @@
 // Collision / Physics) indexed through the record. Component lookup is a
 // single array index; iteration over a component is cache-friendly.
 
+#include "entity_id.h" // EntityID (own header: shared with npc.h / ai_events.h)
 #include "../rendering/mesh.h"
 #include "../rendering/renderer.h"
 #include "../game/player.h"
@@ -28,17 +29,8 @@
 namespace OpenBully {
 
 // --- Entity handle ----------------------------------------------------------
-
-struct EntityID {
-    uint32_t index      = 0xFFFFFFFF; // slot in the manager
-    uint32_t generation = 0;          // bumped on destroy (stale-handle guard)
-
-    bool IsValid() const { return index != 0xFFFFFFFF; }
-    bool operator==(const EntityID& o) const {
-        return index == o.index && generation == o.generation;
-    }
-    bool operator!=(const EntityID& o) const { return !(*this == o); }
-};
+// EntityID now lives in entity_id.h (Track 27: break the npc.h <-> entity.h
+// include cycle for AIComponent's targetEntity handle).
 
 // --- Components ---------------------------------------------------------------
 

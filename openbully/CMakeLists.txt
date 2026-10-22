@@ -66,6 +66,8 @@ add_executable(openbully
     src/combat/combat.cpp
     src/engine/resource_manager.cpp
     src/mission/mission.cpp
+    src/game/schedule.cpp
+    src/dialogue/dialogue.cpp
     src/engine/formats/nif_loader.cpp
     src/engine/formats/nft_loader.cpp
     src/engine/formats/agr_loader.cpp
@@ -247,6 +249,24 @@ add_custom_command(TARGET openbully POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/data/missions/demo_missions.json"
         "$<TARGET_FILE_DIR:openbully>/data/missions/demo_missions.json"
     COMMENT "Copying demo_missions.json next to openbully.exe")
+
+# Track 29: NPC schedule data next to the executable (same probing
+# convention as missions).
+add_custom_command(TARGET openbully POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openbully>/data/schedules"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/schedules/npc_schedules.json"
+        "$<TARGET_FILE_DIR:openbully>/data/schedules/npc_schedules.json"
+    COMMENT "Copying npc_schedules.json next to openbully.exe")
+
+# Track 30: dialogue data next to the executable (same probe convention as
+# missions: data/dialogue/demo_dialogue.json, then the source tree).
+add_custom_command(TARGET openbully POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openbully>/data/dialogue"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/dialogue/demo_dialogue.json"
+        "$<TARGET_FILE_DIR:openbully>/data/dialogue/demo_dialogue.json"
+    COMMENT "Copying demo_dialogue.json next to openbully.exe")
 
 # Aggregate target for shader compilation: builds every per-shader stamp
 # produced by the custom commands above. openbully depends on it so shader

@@ -50,6 +50,40 @@ static float nextRandom01() {
     return float(x % 10000u) / 10000.0f;
 }
 
+// Track 28: reaction tuning. File scope so UpdateNpcs (KO fall + flinch) and
+// the reaction system below share one definition set.
+static constexpr float kWitnessRadius     = 15.0f; // LOS fight-detection range
+static constexpr float kHelpCallRadius    = 20.0f; // same-type help-call range
+static constexpr int   kCrowdCap          = 8;     // watchers per fight
+static constexpr float kCrowdRadiusMin    = 4.0f;  // crowd formation slot radii
+static constexpr float kCrowdRadiusMax    = 6.0f;
+static constexpr float kFightActiveTime   = 10.0f; // fight stays hot (watch)
+static constexpr float kRespawnDelay      = 10.0f; // KO -> respawn at home
+static constexpr float kFleeHealthFrac28  = 0.5f;  // flee threshold (health %)
+static constexpr float kFleeChance        = 0.5f;
+static constexpr float kAlertTimeMin      = 0.4f;  // deciding-pause range
+static constexpr float kAlertTimeMax      = 0.8f;
+static constexpr float kFallTime          = 0.5f;  // KO fall-over duration
+static constexpr float kFlinchTime        = 0.35f; // procedural flinch lean
+
+// Track 27: state names for the AI transition log (verification aid).
+static const char* AiStateName(AIState s) {
+    switch (s) {
+    case AIState::Idle:       return "IDLE";
+    case AIState::Wander:     return "WANDER";
+    case AIState::FacePlayer: return "FACE_PLAYER";
+    case AIState::Patrol:     return "PATROL";
+    case AIState::Alert:      return "ALERT";
+    case AIState::Chase:      return "CHASE";
+    case AIState::Attack:     return "ATTACK";
+    case AIState::Flee:       return "FLEE";
+    case AIState::Return:     return "RETURN";
+    case AIState::Watch:      return "WATCH"; // Track 28
+    case AIState::Ko:         return "KO";    // Track 28
+    }
+    return "?";
+}
+
 // Phase-2 test triangle in NDC, built with Track 3's Mesh/MeshVertex layout:
 // pos(x,y,z) + normal(nx,ny,nz) + uv(u,v). The shader derives color from uv.
 Mesh MakeTestTriangle() {
@@ -727,6 +761,9 @@ void Engine::UpdateJimmy(float dt) {
     // both characters; input is ignored until the grapple ends).
     if (CombatComponent* cc = m_entities.GetCombat(m_jimmyId))
         if (cc->state != CombatState::None) wishMove = glm::vec3(0.0f);
+    // Track 30: movement is held while a conversation is active (both
+    // parties freeze; the NPC side is frozen in UpdateNpcs).
+    if (m_dialogue.IsActive()) wishMove = glm::vec3(0.0f);
 
     const bool wantsMove = wishMove.x != 0.0f || wishMove.z != 0.0f;
 
@@ -936,7 +973,8 @@ void Engine::UpdateJimmyCombat(float dt) {
     // --- 2. Attack (LMB) ------------------------------------------------------
     // Can't attack during a dodge roll; otherwise costs 10 stamina. A
     // counter-armed attack consumes the armed flag for 4x damage.
-    if (m_input.IsPressed(Button::Attack)) {
+    // Track 30: no attacks while a conversation is active.
+    if (m_input.IsPressed(Button::Attack) && !m_dialogue.IsActive()) {
         // Track 26: an equipped weapon replaces the unarmed punch entirely
         // (dodge still blocks it; the weapon's own cooldown governs the rate
         // and counter-arming is honored inside WeaponTryAttack).
@@ -1201,11 +1239,50 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
 
     // Deterministic PRNG (xorshift) so the scatter is reproducible.
     uint32_t rng = 0x1234ABCDu;
+    uint32_t patrolCount = 0;  // Track 27: NPCs with a patrol route
+    uint32_t prefectCount = 0; // Track 28: authority NPCs
     auto next = [&rng]() {
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
         return rng;
     };
     auto unit = [&next]() { return float(next() % 10000u) / 10000.0f; }; // [0,1)
+
+    // Track 29: with schedules loaded, the crowd is schedule-driven — each
+    // NPC slot adopts one schedule and UpdateSchedules creates/destroys the
+    // entity as windows open/close (spawn/despawn events are logged). The
+    // legacy instant crowd below stays as the fallback when schedules are
+    // unavailable, preserving Phase-5 behavior.
+    if (m_schedules.ScheduleCount() > 0) {
+        const size_t schedCount = m_schedules.ScheduleCount();
+        m_scheduledNpcs.clear();
+        m_scheduledNpcs.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            ScheduledNpc sn;
+            sn.scheduleIndex = int(i % schedCount);
+            sn.modelIndex    = i % m_npcModels.size();
+            sn.seed = 0x9E3779B9u * (i + 1u) ^ 0x1234ABCDu;
+            // Home base: the schedule's first SPAWNED window's spawn_point
+            // (JSON refs resolved at load); jitter spreads the crowd.
+            sn.spawnPoint = center;
+            if (const NPCSchedule* sched =
+                    m_schedules.GetSchedule(size_t(sn.scheduleIndex))) {
+                for (const ScheduleWindow& w : sched->windows)
+                    if (w.state == SpawnState::Spawned && w.hasSpawnPoint) {
+                        sn.spawnPoint = w.spawnPoint;
+                        break;
+                    }
+            }
+            const float jAng  = unit() * 6.2831853f;
+            const float jDist = 1.0f + unit() * 4.0f;
+            sn.spawnPoint += glm::vec3(std::cos(jAng) * jDist, 0.0f,
+                                       std::sin(jAng) * jDist);
+            m_scheduledNpcs.push_back(sn);
+        }
+        Logger::Info("NPCs: %u schedule slots across %zu schedule types",
+                     count, schedCount);
+        UpdateSchedules(); // spawn whoever's window is active right now
+        return;
+    }
 
     for (uint32_t i = 0; i < count; ++i) {
         // Scatter on a ring + jitter around the anchor center: spreads the
@@ -1271,12 +1348,53 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
         AIComponent ai;
         ai.homePos = pos;
         ai.facingYaw = t.rotation.y;
+        ai.lastPos = pos; // Track 27: stuck-detection baseline
         // Mix: ~1/3 linger idle, 2/3 head out after a short pause (targets
         // are picked through the normal IDLE path so ground checks apply).
         ai.state = (i % 3 == 0) ? AIState::Idle : AIState::Wander;
         ai.timer = 0.2f + unit() * 2.8f;
         ai.moveSpeed = 1.0f + unit() * 1.0f; // 1.0-2.0 u/s
         ai.wanderRadius = 3.0f;              // stay close on uneven geometry
+        // Track 27: every 4th NPC walks a patrol loop — 4 ground-snapped
+        // waypoints on a square around its spawn (3.5-5.5u radius, random
+        // phase). Waypoints stay on the spawn plane; the walk re-snaps.
+        if (i % 4 == 0) {
+            const float radius = 3.5f + unit() * 2.0f;
+            const float phase  = unit() * 6.2831853f;
+            ai.patrolPoints.clear();
+            ai.patrolPoints.reserve(4);
+            for (int w = 0; w < 4; ++w) {
+                const float a = phase + float(w) * 1.5707963f;
+                glm::vec3 wp(pos.x + std::cos(a) * radius, pos.y,
+                             pos.z + std::sin(a) * radius);
+                if (m_collisionWorld) {
+                    Ray down;
+                    down.origin[0] = wp.x; down.origin[1] = pos.y + 10.0f;
+                    down.origin[2] = wp.z;
+                    down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+                    down.direction[2] = 0.0f;
+                    RayHit hit;
+                    if (m_collisionWorld->Raycast(down, hit) &&
+                        std::fabs(hit.point[1] - pos.y) < 3.0f)
+                        wp.y = hit.point[1];
+                }
+                ai.patrolPoints.push_back(wp);
+            }
+            ai.patrolIndex = 0;
+            ++patrolCount;
+        }
+        // Track 28: designate the first two NPCs as prefects (authorities).
+        // They react to witnessed fights by chasing + attacking the aggressor,
+        // and BUSTED fires if a prefect defeats the player. Uses modelIndex
+        // 0 (model 0 = first loaded character) so the pair shares a distinct
+        // look from the crowd whenever more than one model exists.
+        if (prefectCount < 2 && m_prefectIds[1].index == 0xFFFFFFFF) {
+            ai.role = AIRole::Prefect;
+            mc.npcModelIndex = 0;
+            ai.sightRadius = 14.0f; // authorities keep a wider watch
+            m_prefectIds[prefectCount] = e;
+            ++prefectCount;
+        }
         m_entities.AddAI(e, ai);
         // Track 23: melee combat state (stun/knockdown/combo on the target).
         m_entities.AddMeleeCombat(e);
@@ -1295,20 +1413,37 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
 
         m_npcCount++;
     }
-    Logger::Info("NPCs: %u spawned around (%.1f, %.1f, %.1f) from %zu models",
-                 m_npcCount, center.x, center.y, center.z, m_npcModels.size());
+    Logger::Info("NPCs: %u spawned around (%.1f, %.1f, %.1f) from %zu models "
+                 "(%u on patrol, %u prefects)",
+                 m_npcCount, center.x, center.y, center.z, m_npcModels.size(),
+                 patrolCount, prefectCount);
 }
 
-// Track 16: NPC AI update. States:
-//   IDLE        stand still; timer expires -> pick a WANDER target.
-//   WANDER      walk toward targetPos (ground raycast + wall resolve like
-//               Jimmy); arrive -> IDLE for a random duration.
-//   FACE_PLAYER player within faceRadius: turn to face them; movement
-//               pauses while they are close.
+// Track 16/27: NPC AI update. States:
+//   IDLE    stand still; timer expires -> PATROL (when a route exists) or
+//           pick a WANDER target.
+//   WANDER  walk toward targetPos (ground raycast + wall resolve like
+//           Jimmy); arrive -> IDLE for a random duration.
+//   PATROL  Track 27: walk the patrolPoints loop in order; pause briefly at
+//           each waypoint (through IDLE) and loop forever.
+//   ALERT   Track 27: player seen within sightRadius (10u) + line of sight;
+//           face them for a brief pause, then CHASE (or RETURN when lost).
+//   CHASE   Track 27: direct steering toward the player (collision resolve
+//           + sidestep after 2s without progress); ATTACK in melee range,
+//           RETURN once the player has been unseen for 5s.
+//   ATTACK  Track 27: in melee range (1.8u); face + swing through the Track
+//           23 melee path with a 1.5s cooldown; CHASE when they drift out.
+//   FLEE    Track 27: health below 20% while the player is near -> run away.
+//   RETURN  Track 27: walk back to the patrol route / home, then IDLE.
 void Engine::UpdateNpcs(float dt) {
     if (dt <= 0.0f) return;
 
-    // Player position for FACE_PLAYER (Jimmy's feet transform).
+    // Track 28: drain reaction events queued by combat/projectile code, then
+    // scan for new witnesses (their events process next frame).
+    ProcessAIEvents();
+    ScanFightWitnesses();
+
+    // Player position for perception/combat (Jimmy's feet transform).
     glm::vec3 playerPos(0.0f);
     bool havePlayer = false;
     if (m_jimmyActive && m_jimmyId.IsValid()) {
@@ -1325,18 +1460,115 @@ void Engine::UpdateNpcs(float dt) {
         return d;
     };
 
+    // Track 27: line of sight — raycast from the NPC's chest to the player's
+    // eye; a hit landing clearly short of the target means a wall between.
+    auto hasLineOfSight = [this](const glm::vec3& from, const glm::vec3& to) {
+        if (!m_collisionWorld) return true;
+        const glm::vec3 delta = to - from;
+        const float dist = glm::length(delta);
+        if (dist < 1e-4f) return true;
+        Ray ray;
+        ray.origin[0] = from.x; ray.origin[1] = from.y; ray.origin[2] = from.z;
+        ray.direction[0] = delta.x / dist;
+        ray.direction[1] = delta.y / dist;
+        ray.direction[2] = delta.z / dist;
+        RayHit hit;
+        if (!m_collisionWorld->Raycast(ray, hit)) return true;
+        return hit.t >= dist - 0.4f; // hit past the target = clear
+    };
+
+    // Track 27: one movement step along `dir` at `speed` with the same ground
+    // snap + wall sphere the wander walk uses. False = not walkable there.
+    auto stepMove = [this](const glm::vec3& pos, const glm::vec3& dir,
+                           float speed, float dt, glm::vec3& outPos) {
+        glm::vec3 newPos = pos + dir * (speed * dt);
+        float groundY = pos.y;
+        bool walkable = false;
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = newPos.x; down.origin[1] = newPos.y + 4.0f;
+            down.origin[2] = newPos.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit)) {
+                if (std::fabs(hit.point[1] - pos.y) < 3.0f) { // same-plane guard
+                    groundY = hit.point[1];
+                    walkable = true;
+                }
+            } else {
+                groundY = pos.y;      // nothing below: keep walking level
+                walkable = true;
+            }
+            // Wall resolve: 0.5-radius sphere like the player.
+            const float in[3] = { newPos.x, newPos.y + 0.5f, newPos.z };
+            float out[3];
+            if (m_collisionWorld->ResolveSphere(in, 0.5f, out))
+                newPos = glm::vec3(out[0], newPos.y, out[2]);
+        } else {
+            walkable = true; // no collision world: free movement
+        }
+        if (!walkable) return false;
+        outPos = glm::vec3(newPos.x, groundY, newPos.z);
+        return true;
+    };
+
     m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
-        (void)id;
+        // Track 28: KO'd NPCs fall over, lie down, then respawn. Runs before
+        // every other branch - a downed NPC is out of the AI rotation.
+        if (ai.state == AIState::Ko) {
+            ai.fallTimer += dt;
+            const float k = std::min(1.0f, ai.fallTimer / kFallTime);
+            t.rotation.x = -1.5707963f * (k * k); // ease-in fall onto the back
+            ai.koTimer -= dt;
+            if (ai.koTimer <= 0.0f) RespawnNpc(id, ai, t);
+            UpdateEntityAnimation(id, false, dt);
+            return;
+        }
+
+        // Track 28: procedural flinch lean (C_Player.agr has no named
+        // hit-reaction clip available - MAINPED.HXD is not extracted - so the
+        // hit reaction is this recoil + the melee stun freeze).
+        if (ai.flinchTimer > 0.0f) {
+            ai.flinchTimer -= dt;
+            if (ai.flinchTimer <= 0.0f) {
+                ai.flinchTimer = 0.0f;
+                t.rotation.x = 0.0f;
+            } else {
+                const float k = 1.0f - ai.flinchTimer / kFlinchTime;
+                t.rotation.x = -std::sin(k * 3.14159265f) * 0.35f;
+            }
+        }
+
         // Track 24: grappled NPCs are frozen (held at arm's length by
         // Engine::UpdateGrapple); only the walk/idle driver runs.
         if (id == m_grappleTarget) {
             UpdateEntityAnimation(id, false, dt);
             return;
         }
-        // Track 23: stunned/knocked-down NPCs skip AI (they reel from the
-        // hit and stay down); the melee tick restores them to Idle.
-        if (const Melee::CombatComponent* c = m_entities.GetMeleeCombat(id)) {
-            if (c->state != Melee::CombatState::Idle) {
+        // Track 30: the NPC in conversation is frozen and keeps facing the
+        // player (UpdateDialogue clears the handle on conversation end).
+        if (id == m_dialogueNpc) {
+            if (havePlayer) {
+                const glm::vec3 toP = playerPos - t.position;
+                if (glm::length(glm::vec2(toP.x, toP.z)) > 0.01f) {
+                    const float targetYaw = std::atan2(toP.x, toP.z);
+                    ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                    std::min(1.0f, ai.turnSpeed * dt);
+                    t.rotation.y = ai.facingYaw;
+                }
+            }
+            UpdateEntityAnimation(id, false, dt); // idle in place
+            return;
+        }
+        // Track 27: the NPC's own attack progresses here (rooted swing);
+        // stunned/knocked-down NPCs skip AI (the melee tick restores them).
+        if (Melee::CombatComponent* nmc = m_entities.GetMeleeCombat(id)) {
+            if (nmc->state == Melee::CombatState::Attacking) {
+                ProgressNpcAttack(id, nmc, dt);
+                UpdateEntityAnimation(id, false, dt);
+                return;
+            }
+            if (nmc->state != Melee::CombatState::Idle) {
                 UpdateEntityAnimation(id, false, dt);
                 return;
             }
@@ -1344,26 +1576,132 @@ void Engine::UpdateNpcs(float dt) {
         const glm::vec3 pos = t.position;
         bool moving = false; // Track 17: drive the walk/idle state machine
 
-        // Player proximity overrides wandering: pause and face the player.
-        if (havePlayer) {
-            const glm::vec3 toP = playerPos - pos;
-            const float distP = glm::length(glm::vec3(toP.x, 0.0f, toP.z));
-            if (distP < ai.faceRadius) {
-                const float targetYaw = std::atan2(toP.x, toP.z);
-                ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
-                                std::min(1.0f, ai.turnSpeed * dt);
-                t.rotation.y = ai.facingYaw;
-                if (ai.state == AIState::Wander) ai.hasTarget = false; // re-decide later
-                ai.state = AIState::FacePlayer;
-                UpdateEntityAnimation(id, false, dt); // Track 17: idle in place
-                return;
-            }
+        // Track 28: reaction target. An event-assigned entity (attacker /
+        // aggressor) takes priority; without one the Track 27 target is the
+        // player. Engaged states (ALERT/CHASE/ATTACK/FLEE) work against
+        // targetPos so NPC-vs-NPC reactions (fight back, help calls, prefect
+        // busts) reuse the same steering + attack path.
+        const Transform* tgtT = ai.targetEntity.IsValid()
+            ? m_entities.GetTransform(ai.targetEntity) : nullptr;
+        if (ai.targetEntity.IsValid() && !tgtT)
+            ai.targetEntity = EntityID{}; // stale handle: drop back to player
+        const bool haveTgt = tgtT != nullptr;
+        const glm::vec3 targetPos = tgtT ? tgtT->position : playerPos;
+        // --- Perception (Track 27) ---------------------------------------
+        const float distP = havePlayer
+            ? glm::length(glm::vec3(playerPos.x - pos.x, 0.0f,
+                                    playerPos.z - pos.z))
+            : 1e9f;
+        const float distT = haveTgt
+            ? glm::length(glm::vec3(targetPos.x - pos.x, 0.0f,
+                                    targetPos.z - pos.z))
+            : distP;
+        const bool seen = havePlayer && distP <= ai.sightRadius &&
+            hasLineOfSight(pos + glm::vec3(0.0f, 1.6f, 0.0f),
+                           playerPos + glm::vec3(0.0f, 1.4f, 0.0f));
+        // Track 28: target-aware sight. With an event-assigned entity the LOS
+        // check runs against it; WITHOUT one the player is the target (Track
+        // 27 semantics), so `seenT` must fall back to `seen` — gating sight
+        // on haveTgt alone made every player-targeted NPC flap ALERT↔RETURN
+        // (sight "lost" it never had) instead of committing to CHASE.
+        const bool seenT = haveTgt
+            ? (distT <= ai.sightRadius &&
+               HasLineOfSight(pos + glm::vec3(0.0f, 1.6f, 0.0f),
+                              targetPos + glm::vec3(0.0f, 1.4f, 0.0f)))
+            : seen;
+
+        const bool engaged = ai.state == AIState::Alert ||
+                             ai.state == AIState::Chase ||
+                             ai.state == AIState::Attack;
+        if (engaged) {
+            if (seenT) ai.loseTimer = 0.0f;   // Track 28: target-aware sight
+            else      ai.loseTimer += dt;
+        } else {
+            ai.loseTimer = 0.0f;
         }
+
+        // Attack cooldown ticks between swings (any state; the swing itself
+        // early-returns above, so a 1.5s gap is guaranteed after each attack).
+        ai.attackCdTimer -= dt;
+
+        // State transition helper: logs every change once (verification).
+        auto setState = [&](AIState next) {
+            if (ai.state == next) return;
+            Logger::Info("NPC AI: entity %u %s -> %s (dist %.1f)", id.index,
+                         AiStateName(ai.state), AiStateName(next),
+                         distP < 1e8f ? distP : -1.0f);
+            ai.state = next;
+        };
+
+        // ANY -> FLEE: health below the flee threshold while the danger
+        // (player) is near. Re-arms whenever the player gets close again.
+        if (ai.state != AIState::Flee && ai.health.max > 0 &&
+            ai.health.Fraction() < ai.fleeHealthFrac && distT <= ai.sightRadius) {
+            const glm::vec3 away = pos - targetPos;
+            const float len = glm::length(glm::vec3(away.x, 0.0f, away.z));
+            if (len > 1e-4f) ai.fleeDir = glm::vec3(away.x, 0.0f, away.z) / len;
+            ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f;
+            setState(AIState::Flee);
+        }
+
+        // Detection: roaming states notice the player -> ALERT (face + pause).
+        // Track 28: event-driven reactions skip this gate (their events put
+        // the NPC straight into ALERT/CHASE with targetEntity already set).
+        const bool roaming = ai.state == AIState::Idle ||
+                             ai.state == AIState::Wander ||
+                             ai.state == AIState::FacePlayer ||
+                             ai.state == AIState::Patrol ||
+                             ai.state == AIState::Return;
+        if (roaming && seen) {
+            ai.alertTimer = ai.alertDuration;
+            setState(AIState::Alert);
+        }
+
+        // Shared stuck/sidestep steering (CHASE + RETURN): straight at the
+        // goal; after `stuckTime` seconds without progress, sidestep
+        // perpendicular for a moment and retry (simple pathfinding).
+        auto steer = [&](const glm::vec3& dirIn, float speed) {
+            glm::vec3 dir = dirIn;
+            if (ai.sidestepTimer > 0.0f) {
+                dir = ai.sidestepDir;
+                ai.sidestepTimer -= dt;
+                if (ai.sidestepTimer <= 0.0f) {
+                    ai.stuckTimer = 0.0f;
+                    ai.lastPos = pos;
+                }
+                return dir;
+            }
+            const float expected = speed * dt + 1e-5f;
+            const float moved = glm::length(pos - ai.lastPos);
+            ai.lastPos = pos;
+            if (moved < expected * 0.4f) ai.stuckTimer += dt;
+            else ai.stuckTimer = std::max(0.0f, ai.stuckTimer - dt * 2.0f);
+            if (ai.stuckTimer >= ai.stuckTime) {
+                const float side = nextRandom01() < 0.5f ? -1.0f : 1.0f;
+                ai.sidestepDir = glm::vec3(-dirIn.z, 0.0f, dirIn.x) * side;
+                ai.sidestepTimer = 0.7f;
+                ai.stuckTimer = 0.0f;
+                Logger::Info("NPC AI: entity %u blocked -> sidestep", id.index);
+            }
+            return dir;
+        };
 
         switch (ai.state) {
         case AIState::Idle:
             ai.timer -= dt;
+            // Track 29: schedule behavior override — pinned NPCs stay put
+            // (idle at their post; no patrol/wander target picking).
+            if (ai.lockIdle) { ai.timer = 1.0f; break; }
             if (ai.timer <= 0.0f) {
+                // Track 27: walk the patrol route when one was assigned.
+                if (!ai.patrolPoints.empty()) {
+                    ai.targetPos =
+                        ai.patrolPoints[ai.patrolIndex % ai.patrolPoints.size()];
+                    ai.targetPos.y = pos.y; // mover re-snaps each frame
+                    ai.hasTarget = true;
+                    setState(AIState::Patrol);
+                    break;
+                }
                 // Pick a random nearby point around home.
                 const float ang  = float(nextRandom01()) * 6.2831853f;
                 const float dist = 1.5f + float(nextRandom01()) * ai.wanderRadius;
@@ -1400,74 +1738,32 @@ void Engine::UpdateNpcs(float dt) {
                     }
                 }
                 if (!snapped) {
-                    // DEBUG(Track 16): log why the first target was rejected.
-                    static int dbgLogged = 0;
-                    if (dbgLogged < 3) {
-                        dbgLogged++;
-                        Ray down;
-                        down.origin[0] = ai.targetPos.x;
-                        down.origin[1] = pos.y + 10.0f;
-                        down.origin[2] = ai.targetPos.z;
-                        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
-                        RayHit hit;
-                        const bool hitOk = m_collisionWorld && m_collisionWorld->Raycast(down, hit);
-                        Logger::Info("NPC wander-reject: pos.y=%.2f target=(%.1f,%.1f) hit=%s hitY=%.2f",
-                                     pos.y, ai.targetPos.x, ai.targetPos.z,
-                                     hitOk ? "y" : "n", hitOk ? hit.point[1] : 0.0f);
-                    }
                     ai.hasTarget = false; ai.timer = 1.0f; break;
                 }
                 ai.hasTarget = true;
-                ai.state = AIState::Wander;
+                setState(AIState::Wander);
             }
             break;
 
         case AIState::Wander: {
-            if (!ai.hasTarget) { ai.state = AIState::Idle; ai.timer = 1.0f; break; }
+            if (!ai.hasTarget) { setState(AIState::Idle); ai.timer = 1.0f; break; }
             glm::vec3 to = ai.targetPos - pos;
             to.y = 0.0f;
             const float dist = glm::length(to);
             if (dist < 0.25f) {
-                ai.state = AIState::Idle;
+                setState(AIState::Idle);
                 ai.timer = ai.idleTimeMin + float(nextRandom01()) *
                            (ai.idleTimeMax - ai.idleTimeMin);
                 break;
             }
-            glm::vec3 dir = to / dist;
-            glm::vec3 newPos = pos + dir * (ai.moveSpeed * dt);
-
-            // Ground: raycast down from above, clamp feet to the surface.
-            // A missed ray or a big level jump (walk-off edge) aborts the trip.
-            float groundY = pos.y;
-            bool walkable = false;
-            if (m_collisionWorld) {
-                Ray down;
-                down.origin[0] = newPos.x; down.origin[1] = newPos.y + 4.0f; down.origin[2] = newPos.z;
-                down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
-                RayHit hit;
-                if (m_collisionWorld->Raycast(down, hit)) {
-                    if (std::fabs(hit.point[1] - pos.y) < 3.0f) {
-                        groundY = hit.point[1];
-                        walkable = true;
-                    }
-                } else {
-                    groundY = pos.y;      // nothing below: keep walking level
-                    walkable = true;
-                }
-                // Wall resolve: 0.5-radius sphere like the player.
-                const float in[3] = { newPos.x, newPos.y + 0.5f, newPos.z };
-                float out[3];
-                if (m_collisionWorld->ResolveSphere(in, 0.5f, out))
-                    newPos = glm::vec3(out[0], newPos.y, out[2]);
-            } else {
-                walkable = true; // no collision world: free movement
-            }
-            if (!walkable) { // walk-off rejected: idle here, pick again later
-                ai.state = AIState::Idle;
+            const glm::vec3 dir = to / dist;
+            glm::vec3 newPos;
+            if (!stepMove(pos, dir, ai.moveSpeed, dt, newPos)) {
+                // walk-off rejected: idle here, pick again later
+                setState(AIState::Idle);
                 ai.timer = 1.0f;
                 break;
             }
-            newPos.y = groundY;
             t.position = newPos;
             moving = true; // Track 17: NPC is walking
 
@@ -1480,12 +1776,245 @@ void Engine::UpdateNpcs(float dt) {
         }
 
         case AIState::FacePlayer:
-            // Held only while the player is inside faceRadius (checked above
-            // at the top of the loop); falling through here means the player
-            // left the radius -> resume idling.
-            ai.state = AIState::Idle;
+            // Legacy Track 16 soft-face: superseded by ALERT (sightRadius
+            // >= faceRadius); falling through here resumes idling.
+            setState(AIState::Idle);
             ai.timer = 0.5f;
             break;
+
+        case AIState::Patrol: {
+            if (!ai.hasTarget || ai.patrolPoints.empty()) {
+                setState(AIState::Idle); ai.timer = 1.0f; break;
+            }
+            glm::vec3 to = ai.targetPos - pos;
+            to.y = 0.0f;
+            const float dist = glm::length(to);
+            if (dist < 0.35f) {
+                // Waypoint reached: loop to the next one after a short pause
+                // (the pause runs through IDLE so ground checks re-apply).
+                ai.patrolIndex = (ai.patrolIndex + 1) % ai.patrolPoints.size();
+                setState(AIState::Idle);
+                ai.timer = 0.4f + float(nextRandom01()) * 1.2f;
+                break;
+            }
+            const glm::vec3 dir = to / dist;
+            glm::vec3 newPos;
+            if (!stepMove(pos, dir, ai.moveSpeed, dt, newPos)) {
+                setState(AIState::Idle);
+                ai.timer = 1.0f;
+                break;
+            }
+            t.position = newPos;
+            moving = true;
+            const float targetYaw = std::atan2(dir.x, dir.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
+            break;
+        }
+
+        case AIState::Alert:
+            moving = false;
+            if (haveTgt) { // face the intruder (Track 28: reaction target first)
+                const float targetYaw = std::atan2(targetPos.x - pos.x,
+                                                   targetPos.z - pos.z);
+                ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                std::min(1.0f, ai.turnSpeed * dt);
+                t.rotation.y = ai.facingYaw;
+            }
+            if (!seenT && ai.loseTimer > 0.6f) { // lost interest
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                setState(AIState::Return);
+                break;
+            }
+            ai.alertTimer -= dt;
+            // Track 28: crowd watchers transition straight to WATCH once the
+            // pause expires, but ONLY genuine Track 28 crowd slots (formation
+            // target + a fightPos matching a hot fight record). Everything
+            // else — Track 27 player sighting (no target entity, no slot) and
+            // entity-targeted reactions — goes to CHASE. Treating a plain
+            // player sighting as a crowd slot made NPCs bounce
+            // ALERT -> WATCH -> RETURN forever (WATCH disperses because no
+            // hot fight exists at the slot) and never chase/attack.
+            if (ai.alertTimer <= 0.0f &&
+                (seenT || haveTgt || ai.hasTarget)) {
+                bool crowdSlot = ai.hasTarget && !ai.targetEntity.IsValid();
+                if (crowdSlot) {
+                    crowdSlot = false;
+                    for (const FightInfo& f : m_fights) {
+                        if (glm::distance(f.pos, ai.fightPos) < 2.0f) {
+                            crowdSlot = true;
+                            break;
+                        }
+                    }
+                }
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                // Plain player sighting: stare, then disperse — do NOT auto-
+                // chase. Track 28 reactions (fight-back, help calls, prefect
+                // response) drive CHASE; ambient sight-chase pinned every NPC
+                // in ATTACK on the player and made Track 30's talk-to-calm-NPC
+                // unreachable (retail Bully NPCs gather, they don't swarm).
+                setState(crowdSlot ? AIState::Watch : AIState::Return);
+            }
+            break;
+
+        case AIState::Chase: {
+            if (ai.loseTimer > ai.loseSightTime) { // target lost > 5s
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                setState(AIState::Return);
+                break;
+            }
+            if (distT <= ai.attackRange) { setState(AIState::Attack); break; }
+            glm::vec3 to = targetPos - pos;
+            to.y = 0.0f;
+            const float dist = glm::length(to);
+            if (dist < 1e-4f) break;
+            const float speed = ai.moveSpeed * ai.chaseSpeedMult;
+            const glm::vec3 dir = steer(to / dist, speed);
+            glm::vec3 newPos;
+            if (stepMove(pos, dir, speed, dt, newPos)) {
+                t.position = newPos;
+                moving = true;
+            }
+            // Face the run direction (or the blocked-heading while sliding).
+            const float targetYaw = std::atan2(dir.x, dir.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
+            break;
+        }
+
+        case AIState::Attack: {
+            if (ai.loseTimer > ai.loseSightTime) {
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                setState(AIState::Return);
+                break;
+            }
+            if (distT > ai.attackRange * 1.3f) { // target drifted out
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                setState(AIState::Chase);
+                break;
+            }
+            moving = false; // rooted swing
+            // Player fallback (Track 27): without an event-assigned target
+            // entity the ATTACK target is the player (`targetPos` already
+            // equals playerPos then); gating on haveTgt alone made player-
+            // targeted NPCs stand in range without ever swinging.
+            if (haveTgt || havePlayer) {
+                const float targetYaw = std::atan2(targetPos.x - pos.x,
+                                                   targetPos.z - pos.z);
+                ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                std::min(1.0f, ai.turnSpeed * dt);
+                t.rotation.y = ai.facingYaw;
+                if (ai.attackCdTimer <= 0.0f) {
+                    StartNpcAttack(id, Melee::AttackType::LightPunch, targetYaw);
+                    ai.attackCdTimer = ai.attackCooldown; // 1.5s (task spec)
+                }
+            }
+            break;
+        }
+
+        case AIState::Flee: {
+            // Far enough from the threat -> give up. Distance is measured to
+            // the event-assigned target when there is one, otherwise to the
+            // player (Track 27): gating on !haveTgt alone made every
+            // player-targeted NPC bounce FLEE<->RETURN in place.
+            const float safeDist = ai.sightRadius * 1.8f;
+            const float effDist = haveTgt ? distT : distP;
+            if (effDist > safeDist) {
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                setState(AIState::Return);
+                break;
+            }
+            // Keep the run direction away from the threat (Track 28:
+            // threatPos survives target invalidation; default is the target).
+            const glm::vec3 threat = ai.targetEntity.IsValid()
+                ? targetPos : ai.threatPos;
+            const glm::vec3 away = pos - threat;
+            const float len = glm::length(glm::vec3(away.x, 0.0f, away.z));
+            if (len > 1e-4f)
+                ai.fleeDir = glm::vec3(away.x, 0.0f, away.z) / len;
+            const float speed = ai.moveSpeed * ai.chaseSpeedMult * 1.25f;
+            glm::vec3 newPos;
+            if (stepMove(pos, ai.fleeDir, speed, dt, newPos)) {
+                t.position = newPos;
+                moving = true;
+            }
+            const float targetYaw = std::atan2(ai.fleeDir.x, ai.fleeDir.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
+            break;
+        }
+
+        case AIState::Watch: {
+            // Track 28 crowd behavior: stand at the formation slot (4-6 u
+            // from the fight) and face it; disperse 10 s after the fight's
+            // last activity (the fight record goes cold).
+            bool hot = false;
+            for (const FightInfo& f : m_fights) {
+                if (glm::distance(f.pos, ai.fightPos) < 2.0f &&
+                    m_time - f.lastActivity < kFightActiveTime) { hot = true; break; }
+            }
+            if (!hot) {
+                ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+                ai.targetEntity = EntityID{};
+                setState(AIState::Return);
+                break;
+            }
+            if (ai.hasTarget) {
+                glm::vec3 to = ai.targetPos - pos; to.y = 0.0f;
+                const float dist = glm::length(to);
+                if (dist > 0.35f) {
+                    const glm::vec3 dir = to / dist;
+                    glm::vec3 newPos;
+                    if (stepMove(pos, dir, ai.moveSpeed, dt, newPos)) {
+                        t.position = newPos;
+                        moving = true;
+                    }
+                    const float targetYaw = std::atan2(dir.x, dir.z);
+                    ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                    std::min(1.0f, ai.turnSpeed * dt);
+                    t.rotation.y = ai.facingYaw;
+                    break;
+                }
+            }
+            // At the slot (or the walk failed): stand and watch the fight.
+            glm::vec3 toF = ai.fightPos - pos; toF.y = 0.0f;
+            if (glm::length(toF) > 0.01f) {
+                const float targetYaw = std::atan2(toF.x, toF.z);
+                ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                std::min(1.0f, ai.turnSpeed * dt);
+                t.rotation.y = ai.facingYaw;
+            }
+            break;
+        }
+
+        case AIState::Return: {
+            // Goal: the current patrol waypoint, or home when roaming free.
+            glm::vec3 goal = ai.patrolPoints.empty()
+                ? ai.homePos
+                : ai.patrolPoints[ai.patrolIndex % ai.patrolPoints.size()];
+            glm::vec3 to = goal - pos;
+            to.y = 0.0f;
+            const float dist = glm::length(to);
+            if (dist < 0.4f) { // reached spawn/patrol route -> resume
+                setState(AIState::Idle);
+                ai.timer = 0.8f;
+                break;
+            }
+            const glm::vec3 dir = steer(to / dist, ai.moveSpeed);
+            glm::vec3 newPos;
+            if (stepMove(pos, dir, ai.moveSpeed, dt, newPos)) {
+                t.position = newPos;
+                moving = true;
+            }
+            const float targetYaw = std::atan2(dir.x, dir.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
+            break;
+        }
         }
 
         // Track 17: play walk while moving, idle otherwise (crossfaded).
@@ -1719,6 +2248,11 @@ uint32_t Engine::CloneRig(uint32_t sourceRigIndex) {
     clone.bodyScale = m_animRigs[sourceRigIndex].bodyScale;
     clone.walkClip = m_animRigs[sourceRigIndex].walkClip;
     clone.idleClip = m_animRigs[sourceRigIndex].idleClip;
+    // Track 27: attack clips registered on the source (CreateRig, when the
+    // combat .agr was loaded first) must survive the clone, or NPC-side
+    // StartNpcAttack silently no-ops with "clips not loaded".
+    for (int t = 0; t < Melee::kAttackTypeCount; ++t)
+        clone.attackClips[t] = m_animRigs[sourceRigIndex].attackClips[t];
     m_animRigs.push_back(std::move(clone));
     return uint32_t(m_animRigs.size() - 1);
 }
@@ -1894,7 +2428,7 @@ void Engine::UpdateMeleeCombat(float dt) {
             // also Track 25's block hold: the heavy attack fires on the press
             // edge, the block state applies while held (both specs coexist).
             static const bool s_demo = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
-            if (!s_demo && pc->equippedSlot < 0 &&
+            if (!s_demo && !m_dialogue.IsActive() && pc->equippedSlot < 0 &&
                 pc->state != DefenseState::Dodge &&
                 mc->state == Melee::CombatState::Idle) {
                 if      (m_input.IsPressed(Button::Attack))
@@ -1995,22 +2529,18 @@ void Engine::ResolveMeleeHit(Melee::CombatComponent* mc, const Melee::AttackData
         return; // miss: combo resets on attack end
     }
 
-    // Damage (+ combo finisher), stun, knockback.
+    // Damage (+ combo finisher), stun, knockback. Track 28: the damage +
+    // stun + fight registration + HIT event funnel through DamageNpc; the
+    // knockback impulse stays here (attacker-relative).
     const float mult = mc->RegisterHit(mc->attack);
     const int dmg = int(atk.damage * mult + 0.5f);
     AIComponent* ai = m_entities.GetAI(best);
     Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(best);
-    if (ai) ai->health.Damage(dmg);
-    if (tmc) {
-        tmc->damageTaken += dmg;
-        const bool dead = !ai || ai->health.current <= 0;
-        if (dead) {
-            tmc->state    = Melee::CombatState::KnockedDown;
-            tmc->downTimer = 3.0f;
-        } else {
-            tmc->state    = Melee::CombatState::Stunned;
-            tmc->stunTimer = atk.stunTime;
-        }
+    const bool wasAlive = ai && ai->health.current > 0;
+    DamageNpc(best, m_jimmyId, dmg, bestPos, atk.stunTime);
+    ai = m_entities.GetAI(best); // DamageNpc may have KO'd it
+    tmc = m_entities.GetMeleeCombat(best);
+    if (tmc && wasAlive && (!ai || ai->health.current > 0)) {
         glm::vec3 dir = bestPos - jt->position;
         dir.y = 0.0f;
         const float len = glm::length(dir);
@@ -2105,6 +2635,516 @@ void Engine::DriveMeleeDemo(float dt) {
         }
         // Demo attacks aim at the scripted target, not the camera.
         if (dist > 1e-3f) mc->attackYaw = std::atan2(to.x, to.y);
+    }
+}
+
+// =========================================================================
+// Track 27: NPC attacks + AI verification demo.
+// =========================================================================
+
+// NPC-side twin of StartMeleeAttack: locks the melee state machine into
+// Attacking, records the swing yaw and one-shot plays the attack clip at
+// speed = authored / effective duration. The swing itself is progressed by
+// ProgressNpcAttack from UpdateNpcs (UpdateMeleeCombat drives only Jimmy).
+void Engine::StartNpcAttack(EntityID npc, Melee::AttackType type, float targetYaw) {
+    Melee::CombatComponent* mc = m_entities.GetMeleeCombat(npc);
+    AnimationComponent* ac = m_entities.GetAnimation(npc);
+    if (!mc || !ac || mc->state != Melee::CombatState::Idle) return;
+    if (ac->rigIndex == 0xFFFFFFFF || ac->rigIndex >= m_animRigs.size()) return;
+    AnimRig& rig = m_animRigs[ac->rigIndex];
+    if (rig.attackClips[int(type)] < 0) return; // clips not loaded
+
+    const Melee::AttackData& atk = Melee::GetAttackData(type);
+    mc->state       = Melee::CombatState::Attacking;
+    mc->attack      = type;
+    mc->attackTimer = atk.duration;
+    mc->hitApplied  = false;
+    mc->attackYaw   = targetYaw;
+
+    if (AnimClip* clip = rig.controller.ClipAt(rig.attackClips[int(type)])) {
+        clip->speed = atk.authoredDur > 0.01f ? atk.authoredDur / atk.duration : 1.0f;
+        rig.controller.Play(rig.attackClips[int(type)], /*loop=*/false, 0.1f);
+    }
+}
+
+// Advances an NPC's own attack: tick the timer, fire the hit once inside the
+// hit window (-> ResolveNpcMeleeHit), return to Idle on expiry (miss resets
+// the combo). Mirrors Jimmy's progression in UpdateMeleeCombat.
+void Engine::ProgressNpcAttack(EntityID npc, Melee::CombatComponent* mc, float dt) {
+    if (!mc || mc->state != Melee::CombatState::Attacking) return;
+    const Melee::AttackData& atk = Melee::GetAttackData(mc->attack);
+    mc->attackTimer -= dt;
+    const float progress = 1.0f - mc->attackTimer / atk.duration;
+    if (!mc->hitApplied &&
+        progress >= atk.hitWindowStart && progress <= atk.hitWindowEnd) {
+        mc->hitApplied = true;
+        ResolveNpcMeleeHit(mc, atk, npc);
+    }
+    if (mc->attackTimer <= 0.0f) {
+        const bool missed = !mc->hitApplied;
+        mc->state = Melee::CombatState::Idle;
+        if (missed) mc->ResetCombo();
+    }
+}
+
+// An NPC's hit frame fired at the player: reach-check the player, then route
+// the damage through DamagePlayer so Track 25 defenses apply (dodge i-frames
+// -> 0 damage, block -> 50% + counter window). No knockback on the player:
+// UpdateJimmy integrates velocity from input only (unwired, by design).
+void Engine::ResolveNpcMeleeHit(Melee::CombatComponent* mc,
+                                const Melee::AttackData& atk, EntityID attacker) {
+    const Transform* nt = m_entities.GetTransform(attacker);
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!nt || !jt || !mc) return;
+    const glm::vec3 to = jt->position - nt->position;
+    const float dxz = glm::length(glm::vec3(to.x, 0.0f, to.z));
+    if (dxz > atk.range + 0.6f) {
+        Logger::Info("NPC melee: entity %u whiffed (player %.1fu > reach %.1fu)",
+                     attacker.index, dxz, atk.range);
+        return;
+    }
+    const int dmg = int(atk.damage + 0.5f);
+    mc->damageDealt += dmg;
+    DamagePlayer(dmg, "NPC punch");
+    // Track 28: a prefect downed the player -> BUSTED stub.
+    if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+        if (pc->health.current <= 0) {
+            const AIComponent* aai = m_entities.GetAI(attacker);
+            if (aai && aai->role == AIRole::Prefect) Busted();
+        }
+    }
+}
+
+// =========================================================================
+// Track 28: NPC reaction system.
+// =========================================================================
+
+// Tuning (task-spec values) — moved to file scope above (shared with
+// UpdateNpcs' KO/flinch branches).
+
+void Engine::QueueAIEvent(const AIEvent& e) {
+    m_aiEvents.push_back(e);
+}
+
+// Registers/refreshes a hot fight spot. Witnesses scan these; a fight stays
+// hot for kFightActiveTime after its last hit.
+void Engine::RegisterFight(const glm::vec3& pos, EntityID aggressor) {
+    for (FightInfo& f : m_fights) {
+        if (glm::distance(f.pos, pos) < 2.0f &&
+            m_time - f.lastActivity < kFightActiveTime + 10.0f) {
+            f.pos = pos;
+            f.aggressor = aggressor;
+            f.lastActivity = m_time;
+            return;
+        }
+    }
+    m_fights.push_back({pos, aggressor, m_time});
+}
+
+// Central NPC damage gate (Track 28). Applies damage, registers the fight
+// spot, queues a HIT event for the reaction pass, plays the flinch and
+// handles the KO transition at 0 health.
+void Engine::DamageNpc(EntityID npc, EntityID attacker, int dmg,
+                       const glm::vec3& hitPos, float stunTime) {
+    AIComponent* ai = m_entities.GetAI(npc);
+    if (!ai || ai->state == AIState::Ko) return; // already down: no re-trigger
+    ai->health.Damage(dmg);
+    RegisterFight(hitPos, attacker);
+    if (ai->health.current <= 0) {
+        KnockOutNpc(npc, attacker);
+        return;
+    }
+    // Flinch: melee stun (freeze; knockback applied by the caller) + lean.
+    ai->flinchTimer = kFlinchTime;
+    if (Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(npc)) {
+        tmc->state    = Melee::CombatState::Stunned;
+        tmc->stunTimer = std::max(0.3f, stunTime);
+    }
+    AIEvent e;
+    e.type = AIEventType::Hit;
+    e.sourceEntity = attacker;
+    e.targetEntity = npc;
+    e.position = hitPos;
+    e.time = m_time;
+    QueueAIEvent(e);
+}
+
+// NPC reached 0 health: KO - fall over, lie down, respawn after 10 s.
+void Engine::KnockOutNpc(EntityID npc, EntityID attacker) {
+    AIComponent* ai = m_entities.GetAI(npc);
+    const Transform* t = m_entities.GetTransform(npc);
+    if (!ai || !t || ai->state == AIState::Ko) return;
+    ai->state     = AIState::Ko;
+    ai->koTimer   = kRespawnDelay;
+    ai->fallTimer = 0.0f;
+    ai->hasTarget = false;
+    ai->targetEntity = EntityID{};
+    if (Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(npc)) {
+        tmc->state    = Melee::CombatState::KnockedDown;
+        tmc->downTimer = 0.0f; // stays down until the respawn
+    }
+    Logger::Info("NPC idx=%u KO'd by idx=%u - down for %.0fs",
+                 npc.index, attacker.index, kRespawnDelay);
+    AIEvent e;
+    e.type = AIEventType::NpcDefeated;
+    e.sourceEntity = attacker;
+    e.targetEntity = npc;
+    e.position = t->position;
+    e.time = m_time;
+    QueueAIEvent(e);
+    // Mission hook: completes an active DEFEAT_NPC objective on this NPC.
+    m_missions.NotifyNpcDefeated(npc);
+}
+
+// KO timer expired: back to the original spawn point with fresh health.
+void Engine::RespawnNpc(EntityID id, AIComponent& ai, Transform& t) {
+    glm::vec3 pos = ai.homePos;
+    if (m_collisionWorld) { // ground snap (level may have shifted under it)
+        Ray down;
+        down.origin[0] = pos.x; down.origin[1] = pos.y + 10.0f; down.origin[2] = pos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+    }
+    t.position = pos;
+    t.rotation.x = 0.0f;
+    t.rotation.z = 0.0f;
+    ai.health.current = ai.health.max;
+    ai.state = AIState::Idle;
+    ai.timer = 0.5f;
+    ai.hasTarget = false;
+    ai.targetEntity = EntityID{};
+    ai.flinchTimer = 0.0f;
+    ai.koTimer = 0.0f;
+    ai.fallTimer = 0.0f;
+    ai.loseTimer = 0.0f;
+    ai.stuckTimer = 0.0f;
+    ai.lastPos = pos;
+    if (Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(id)) {
+        tmc->state       = Melee::CombatState::Idle;
+        tmc->stunTimer   = 0.0f;
+        tmc->downTimer   = 0.0f;
+        tmc->damageTaken = 0;
+    }
+    Logger::Info("NPC idx=%u respawned at spawn point (health %d/%d)",
+                 id.index, ai.health.current, ai.health.max);
+}
+
+// True when nothing registered in the collision world blocks the segment
+// from -> to (eye-height raycast; 0.4 u skin so surface kisses pass).
+bool Engine::HasLineOfSight(const glm::vec3& from, const glm::vec3& to) const {
+    if (!m_collisionWorld) return true;
+    const glm::vec3 d = to - from;
+    const float len = glm::length(d);
+    if (len < 0.1f) return true;
+    Ray r;
+    r.origin[0] = from.x; r.origin[1] = from.y; r.origin[2] = from.z;
+    r.direction[0] = d.x / len; r.direction[1] = d.y / len; r.direction[2] = d.z / len;
+    RayHit hit;
+    return !(m_collisionWorld->Raycast(r, hit) && hit.t < len - 0.4f);
+}
+
+// Every roaming NPC with line of sight to a hot fight (within 15 u) emits
+// WITNESSED_FIGHT; ProcessAIEvents turns those into prefect chases or crowd
+// gathers. Also prunes long-cold fight records.
+void Engine::ScanFightWitnesses() {
+    for (size_t i = m_fights.size(); i-- > 0;) {
+        if (m_time - m_fights[i].lastActivity > kFightActiveTime + 20.0f)
+            m_fights.erase(m_fights.begin() + long(i));
+    }
+    if (m_fights.empty()) return;
+    m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
+        // Roaming states, or Track 27's idle player-ALERT (they are already
+        // looking this way; the fight outranks staring at the player).
+        const bool roaming =
+            ai.state == AIState::Idle || ai.state == AIState::Wander ||
+            ai.state == AIState::FacePlayer || ai.state == AIState::Patrol ||
+            ai.state == AIState::Return;
+        const bool idleAlert = ai.state == AIState::Alert && !ai.hasTarget;
+        if (!roaming && !idleAlert) return; // busy or down
+        const glm::vec3 eye = t.position + glm::vec3(0.0f, 1.6f, 0.0f);
+        for (const FightInfo& f : m_fights) {
+            if (m_time - f.lastActivity >= kFightActiveTime) continue; // cold
+            if (f.aggressor == id) continue;                          // your own fight
+            const glm::vec2 dxz(f.pos.x - t.position.x, f.pos.z - t.position.z);
+            if (glm::length(dxz) > kWitnessRadius) continue;
+            if (!HasLineOfSight(eye, f.pos + glm::vec3(0.0f, 1.0f, 0.0f))) continue;
+            AIEvent e;
+            e.type = AIEventType::WitnessedFight;
+            e.sourceEntity = f.aggressor;
+            e.targetEntity = id; // the witness (reaction target)
+            e.position = f.pos;
+            e.time = m_time;
+            QueueAIEvent(e);
+            break; // one fight reaction at a time
+        }
+    });
+}
+
+// Drains the reaction queue into AI state changes. Follow-up events (help
+// calls) queue for the next frame, bounding per-frame work.
+void Engine::ProcessAIEvents() {
+    std::vector<AIEvent> events;
+    events.swap(m_aiEvents);
+    for (const AIEvent& e : events) {
+        switch (e.type) {
+        case AIEventType::Hit: {
+            AIComponent* ai = m_entities.GetAI(e.targetEntity);
+            if (!ai || ai->state == AIState::Ko) break;
+            const Transform* st = m_entities.GetTransform(e.sourceEntity);
+            if (ai->health.Fraction() < kFleeHealthFrac28 &&
+                nextRandom01() < kFleeChance) {
+                // Low health: chance to flee instead of fighting back.
+                ai->state = AIState::Flee;
+                ai->threatPos = st ? st->position : e.position;
+                ai->targetEntity = e.sourceEntity;
+                ai->hasTarget = false;
+                ai->stuckTimer = 0.0f;
+                ai->sidestepTimer = 0.0f;
+                Logger::Info("NPC AI: entity %u flees (health %d/%d)",
+                             e.targetEntity.index, ai->health.current,
+                             ai->health.max);
+            } else {
+                // Fight back: chase + attack the attacker (works NPC-vs-NPC
+                // and NPC-vs-player: the engaged states use targetEntity).
+                ai->state = AIState::Chase;
+                ai->targetEntity = e.sourceEntity;
+                ai->hasTarget = false;
+                ai->loseTimer = 0.0f;
+                ai->stuckTimer = 0.0f;
+                ai->sidestepTimer = 0.0f;
+                ai->lastPos = m_entities.GetTransform(e.targetEntity)
+                    ? m_entities.GetTransform(e.targetEntity)->position
+                    : glm::vec3(0.0f);
+                Logger::Info("NPC AI: entity %u fights back against idx=%u",
+                             e.targetEntity.index, e.sourceEntity.index);
+            }
+            // Help call: nearby same-type NPCs hear it (processed next frame).
+            AIEvent help;
+            help.type = AIEventType::HelpCall;
+            help.sourceEntity = e.targetEntity; // the caller (victim)
+            help.targetEntity = e.sourceEntity; // the attacker
+            help.position = e.position;
+            help.time = m_time;
+            QueueAIEvent(help);
+            break;
+        }
+
+        case AIEventType::HelpCall: {
+            const Transform* caller = m_entities.GetTransform(e.sourceEntity);
+            const MeshComponent* cm = m_entities.GetMesh(e.sourceEntity);
+            if (!caller || !cm || !cm->isNpc) break;
+            m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
+                (void)t;
+                if (id == e.sourceEntity || id == e.targetEntity) return;
+                if (ai.state != AIState::Idle && ai.state != AIState::Wander &&
+                    ai.state != AIState::FacePlayer &&
+                    ai.state != AIState::Patrol && ai.state != AIState::Return)
+                    return;
+                const MeshComponent* m = m_entities.GetMesh(id);
+                if (!m || m->npcModelIndex != cm->npcModelIndex) return; // same type
+                if (glm::distance(t.position, caller->position) > kHelpCallRadius)
+                    return;
+                ai.state = AIState::Chase;
+                ai.targetEntity = e.targetEntity;
+                ai.hasTarget = false;
+                ai.loseTimer = 0.0f;
+                ai.stuckTimer = 0.0f;
+                ai.sidestepTimer = 0.0f;
+                ai.lastPos = t.position;
+                Logger::Info("NPC AI: entity %u answers help call from idx=%u",
+                             id.index, e.sourceEntity.index);
+            });
+            break;
+        }
+
+        case AIEventType::WitnessedFight: {
+            AIComponent* ai = m_entities.GetAI(e.targetEntity);
+            if (!ai || ai->state == AIState::Ko) break;
+            // Admissible from roaming states, or from Track 27's idle player-
+            // ALERT (they are already looking this way; the fight outranks
+            // staring at the player). Track 28 fight-alerts (hasTarget slot
+            // set) are not re-interrupted.
+            const bool roaming =
+                ai->state == AIState::Idle || ai->state == AIState::Wander ||
+                ai->state == AIState::FacePlayer || ai->state == AIState::Patrol ||
+                ai->state == AIState::Return;
+            const bool idlePlayerAlert =
+                ai->state == AIState::Alert && !ai->hasTarget;
+            if (!roaming && !idlePlayerAlert) break; // busy or down
+            // Already deciding on this exact fight: do not re-arm the pause
+            // every frame (the witness scan re-emits until the state leaves
+            // ALERT). A Track 27 player-alert (fightPos unset) is converted.
+            if (ai->state == AIState::Alert && ai->alertTimer > 0.0f &&
+                glm::distance(ai->fightPos, e.position) < 2.0f) break;
+
+            if (ai->role == AIRole::Prefect) {
+                // Authority: brief pause, then chase + attack the aggressor.
+                ai->state = AIState::Alert;
+                ai->fightPos = e.position;
+                ai->targetEntity = e.sourceEntity;
+                ai->hasTarget = false;
+                ai->alertTimer = kAlertTimeMin +
+                    nextRandom01() * (kAlertTimeMax - kAlertTimeMin);
+                ai->loseTimer = 0.0f;
+                ai->stuckTimer = 0.0f;
+                ai->sidestepTimer = 0.0f;
+                Logger::Info("NPC AI: prefect %u saw the fight - moving in "
+                             "on idx=%u", e.targetEntity.index,
+                             e.sourceEntity.index);
+                break;
+            }
+
+            // Civilian: crowd cap (8 per fight) - count current watchers.
+            int watchers = 0;
+            m_entities.ForEachAI([&](EntityID, Transform&, AIComponent& other) {
+                if (other.state == AIState::Watch ||
+                    (other.state == AIState::Alert &&
+                     other.role != AIRole::Prefect &&
+                     glm::distance(other.fightPos, e.position) < 2.0f))
+                    watchers++;
+            });
+            if (watchers >= kCrowdCap) break; // crowd full: keep wandering
+
+            // Formation slot: evenly spread angles, 4-6 u radius, ground-snapped.
+            const float ang = float(watchers) * (6.2831853f / float(kCrowdCap));
+            const float rad = kCrowdRadiusMin +
+                float(watchers % 3) *
+                ((kCrowdRadiusMax - kCrowdRadiusMin) / 2.0f);
+            glm::vec3 slotPos = e.position +
+                glm::vec3(std::cos(ang) * rad, 0.0f, std::sin(ang) * rad);
+            slotPos.y = e.position.y;
+            if (m_collisionWorld) {
+                Ray down;
+                down.origin[0] = slotPos.x; down.origin[1] = slotPos.y + 10.0f;
+                down.origin[2] = slotPos.z;
+                down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+                RayHit hit;
+                if (m_collisionWorld->Raycast(down, hit) &&
+                    std::fabs(hit.point[1] - e.position.y) < 3.0f)
+                    slotPos.y = hit.point[1];
+            }
+            ai->state = AIState::Alert;
+            ai->fightPos = e.position;
+            ai->targetPos = slotPos;
+            ai->hasTarget = true;
+            ai->alertTimer = kAlertTimeMin +
+                nextRandom01() * (kAlertTimeMax - kAlertTimeMin);
+            ai->loseTimer = 0.0f;
+            ai->stuckTimer = 0.0f;
+            break;
+        }
+
+        case AIEventType::NpcDefeated:
+            Logger::Info("AI event: NPC_DEFEATED idx=%u (by idx=%u)",
+                         e.targetEntity.index, e.sourceEntity.index);
+            break;
+        }
+    }
+}
+
+// Track 28 stub: a prefect defeated the player. Logs BUSTED, restores full
+// health and teleports back to the spawn point.
+void Engine::Busted() {
+    Logger::Info("BUSTED");
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    Transform* jt = m_jimmyId.IsValid()
+        ? m_entities.GetTransform(m_jimmyId) : nullptr;
+    if (pc) {
+        pc->health.current = pc->health.max;
+        pc->state = DefenseState::Normal;
+        pc->wanted = std::min(5, pc->wanted + 1);
+    }
+    if (jt) jt->position = m_jimmySpawn + glm::vec3(0.0f, 2.0f, 0.0f);
+}
+
+// OPENBULLY_NPC_DEMO: scripted headless verification of the Track 27 AI
+// state machine. Position-direct drive (same approach as DriveMeleeDemo;
+// the spawn-shell plane guard included):
+//   t 0-24  walk toward the nearest living NPC at 2.5 u/s -> it should go
+//           ALERT (sightRadius 10u + LOS), then CHASE, then ATTACK once
+//           within 1.8u. Every transition is logged with entity + distance.
+//   t 24    once: drop every engaged (CHASE/ATTACK) NPC below the 20% flee
+//           threshold -> they must flip to FLEE and run away (visible in the
+//           per-second AI census and the transition log).
+//   t 24+   stand still; fleeing NPCs reach the give-up distance -> RETURN.
+void Engine::DriveNpcDemo(float dt) {
+    if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    const double t = m_time;
+
+    // Nearest living NPC (not knocked down).
+    EntityID best{};
+    float bestDist = 1e9f;
+    m_entities.ForEach([&](EntityID id, Transform& et,
+                           const EntityManager::EntityRecord&) {
+        if (id == m_jimmyId || !m_entities.GetAI(id)) return;
+        if (const Melee::CombatComponent* c = m_entities.GetMeleeCombat(id))
+            if (c->state == Melee::CombatState::KnockedDown) return;
+        const float d = glm::length(et.position - jt->position);
+        if (d < bestDist) { bestDist = d; best = id; }
+    });
+    if (!best.IsValid()) return;
+    const Transform* nt = m_entities.GetTransform(best);
+    if (!nt) return;
+    const AIComponent* ai = m_entities.GetAI(best);
+
+    glm::vec3 pos = jt->position;
+    // Plane guard (same approach as DriveMeleeDemo: the spawn-shell has no
+    // collision beneath Jimmy, so the character is held at the target NPC's
+    // plane for the whole script — gravity is neutralized each frame).
+    PhysicsComponent* pphys = m_entities.GetPhysics(m_jimmyId);
+    if (pphys) {
+        pos.y = nt->position.y;
+        pphys->velocity.y = 0.0f;
+    }
+
+    PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    const bool npcEngaged = ai && (ai->state == AIState::Attack ||
+                                   ai->state == AIState::Flee);
+    if (t < 24.0) {
+        // Approach phase: close on the NPC, hold ground once it is on us.
+        glm::vec3 to = nt->position - pos;
+        to.y = 0.0f;
+        const float dist = glm::length(to);
+        if (dist > 1.1f && dist < 60.0f && !npcEngaged) {
+            const glm::vec3 dir = to / dist;
+            pos += dir * (2.5f * dt);
+        }
+        if (pc && dist > 1e-3f) { // always face the NPC (approach or stand)
+            pc->facingYaw   = std::atan2(to.x / dist, to.z / dist);
+            pc->facingValid = true;
+        }
+    } else {
+        // Flee trigger: once, push every engaged NPC below the 20% threshold.
+        static bool s_fleeTriggered = false;
+        if (!s_fleeTriggered) {
+            s_fleeTriggered = true;
+            m_entities.ForEachAI([&](EntityID, const Transform&, AIComponent& a) {
+                if ((a.state == AIState::Chase || a.state == AIState::Attack) &&
+                    a.health.Fraction() >= a.fleeHealthFrac) {
+                    a.health.Damage(int(float(a.health.max) * 0.9f));
+                    Logger::Info("NPC demo: entity health dropped to %d/%d "
+                                 "(below flee threshold)",
+                                 a.health.current, a.health.max);
+                }
+            });
+        }
+    }
+
+    Transform* pt = m_entities.GetTransform(m_jimmyId);
+    if (!pt) return;
+    pt->position = pos;
+
+    // Snap the follow camera behind Jimmy so screenshots catch the fight.
+    if (pc) {
+        const float cy = std::cos(pc->facingYaw), sy = std::sin(pc->facingYaw);
+        const glm::vec3 focus = pos + glm::vec3(0.0f, 1.2f, 0.0f);
+        m_camera.SetPosition(focus - glm::vec3(sy, 0.0f, cy) * 3.2f +
+                             glm::vec3(0.0f, 1.4f, 0.0f));
+        m_camera.SetLookAt(focus - m_camera.GetPosition());
     }
 }
 
@@ -2468,6 +3508,20 @@ bool Engine::Init(const Window& window) {
     if (const char* shot = std::getenv("OPENBULLY_SHOT"))
         m_screenshotName = shot;
 
+    // Track 29: OPENBULLY_TIME_START="HH:MM" overrides the initial game
+    // clock (verification screenshots at different times of day).
+    if (const char* ts = std::getenv("OPENBULLY_TIME_START")) {
+        int h = -1, m = -1;
+        if (std::sscanf(ts, "%d:%d", &h, &m) == 2 &&
+            h >= 0 && h < 24 && m >= 0 && m < 60) {
+            m_gameTimeMinutes = double(h * 60 + m);
+            SyncGameClock();
+            Logger::Info("Game time: start override %02d:%02d", h, m);
+        } else {
+            Logger::Warning("Game time: OPENBULLY_TIME_START='%s' is not HH:MM, ignored", ts);
+        }
+    }
+
     // Track 13/15: shared unit-cube mesh for debug wireframes.
     if (m_debugCollision || m_debugPhysics)
         m_renderer->InitDebugBox();
@@ -2574,6 +3628,9 @@ bool Engine::Init(const Window& window) {
             npcCenter = 0.5f * (glm::make_vec3(anchor->boundsMin) +
                                 glm::make_vec3(anchor->boundsMax));
         }
+        // Track 29: load NPC schedules before the crowd spawns — with
+        // schedules available SpawnNpcs routes through the schedule system.
+        LoadSchedules();
         SpawnNpcs(npcCenter);
     }
 
@@ -2600,6 +3657,9 @@ bool Engine::Init(const Window& window) {
     // so it runs after the character/NPC setup above.
     InitMissions();
 
+    // Track 30: dialogue system (same JSON probing convention as missions).
+    InitDialogue();
+
     // Track 20 (UI): HUD renderer. Runs on bgfx view 10 with the same
     // shaderRoot convention as Renderer::Init. Non-fatal on failure: the
     // world keeps rendering, the HUD stays off.
@@ -2622,6 +3682,10 @@ void Engine::Update() {
     const double deltaTime = double(now - m_lastPerf) / double(SDL_GetPerformanceFrequency());
     m_lastPerf = now;
     m_time += deltaTime;
+
+    // Track 29: advance the global game clock (60x real time); schedules
+    // react below after the NPC update.
+    UpdateGameTime(float(deltaTime));
 
     // Input snapshot + camera integration (Track 10). Escape is surfaced by
     // Input; main.cpp also checks it via Engine::QuitRequested().
@@ -2703,6 +3767,11 @@ void Engine::Update() {
     static const bool s_meleeDemoDrive = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
     if (s_meleeDemoDrive && m_jimmyActive) DriveMeleeDemo(float(deltaTime));
 
+    // Track 27: scripted NPC AI demo. Position-direct (like MELEE_DEMO) so it
+    // must run before UpdateJimmy/UpdateNpcs consume the state this frame.
+    static const bool s_npcDemo = std::getenv("OPENBULLY_NPC_DEMO") != nullptr;
+    if (s_npcDemo && m_jimmyActive) DriveNpcDemo(float(deltaTime));
+
     m_camera.Update(float(deltaTime), m_input, /*ignoreMove=*/m_jimmyActive);
 
     // Track 14: entity update (physics integration on gravity carriers).
@@ -2713,6 +3782,16 @@ void Engine::Update() {
     UpdateJimmy(float(deltaTime));
     // Track 16: NPC AI (after physics so ground/wall state is settled).
     UpdateNpcs(float(deltaTime));
+
+    // Track 29: schedule debug keys (T = +1 hour) + spawn/despawn/behavior
+    // ticks driven by the game clock.
+    HandleScheduleKeys();
+    UpdateSchedules();
+
+    // Track 30: dialogue input + typewriter. Runs before the combat/weapon
+    // updates so their input handlers see the conversation-active gate the
+    // same frame (E starts/advances the talk instead of attacking/pickup).
+    UpdateDialogue(float(deltaTime));
 
     // Track 24: combat input + grapple state machine (after the NPC update
     // so hold positions settle this frame). The demo script runs ahead of
@@ -2788,6 +3867,212 @@ void Engine::Update() {
     if (m_time - m_lastTimingLog >= 1.0) {
         LogFrameTiming();
         m_lastTimingLog = m_time;
+    }
+}
+
+// --- Track 30: dialogue system ---------------------------------------------------
+
+// Loads data/dialogue/demo_dialogue.json (hand-authored Bully-flavored trees;
+// .lur bytecode and XACT banks are deferred per the asset catalog). Same
+// probing convention as the mission loader: CWD first, then the source tree.
+bool Engine::InitDialogue() {
+    const char* paths[] = {
+        "data/dialogue/demo_dialogue.json",
+        "../data/dialogue/demo_dialogue.json",
+    };
+    bool loaded = false;
+    for (const char* p : paths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            loaded = m_dialogue.LoadFile(p);
+            break;
+        }
+    }
+    if (!loaded) {
+        Logger::Warning("Dialogue: demo_dialogue.json not found or empty "
+                        "(dialogue system idle)");
+        return false;
+    }
+    // Conversation end: release the NPC + complete the TALK_TO_NPC objective.
+    m_dialogue.SetOnEnd([this] { OnDialogueEnded(); });
+    return true;
+}
+
+// E-press path: start a conversation with the nearest NPC within 2.5u when
+// NOT in combat (no grapple, no live melee exchange, player grounded in a
+// normal defensive state). The tree is picked by the NPC's model index so
+// different NPC types carry different conversations.
+void Engine::TryStartDialogue() {
+    if (m_dialogue.IsActive() || !m_jimmyActive || !m_jimmyId.IsValid()) return;
+    if (m_dialogue.TreeCount() == 0) return;
+    if (m_grappleTarget.IsValid()) return; // mid-grapple: no talking
+    if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId))
+        if (mc->state != Melee::CombatState::Idle) return; // mid-fight
+    if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId))
+        if (pc->state == DefenseState::Dodge) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+
+    const EntityID npc = FindNearestNpc(jt->position, 2.5f);
+    if (!npc.IsValid() || !m_entities.IsAlive(npc)) return;
+
+    // Track 30: "not in combat" also covers the NPC side — an NPC fighting
+    // (Chase/Attack), fleeing, or downed cannot be talked to. ALERT (the
+    // sighted-player pause) stays allowed: it is a pre-combat face/pause, and
+    // blocking it made E-to-talk nearly unreachable once Track 27's
+    // sight-chase was restored (an approaching NPC is Alert at 10u and
+    // already Chase by the time it is within 2.5u). Starting a conversation
+    // de-escalates: the dialogue freeze pulls the NPC out of the AI rotation
+    // and normal AI resumes when the conversation ends.
+    if (const AIComponent* ai = m_entities.GetAI(npc)) {
+        switch (ai->state) {
+            case AIState::Chase:
+            case AIState::Attack:
+            case AIState::Flee:
+            case AIState::Ko:
+                return;
+            default: break;
+        }
+    }
+    if (const Melee::CombatComponent* nmc = m_entities.GetMeleeCombat(npc))
+        if (nmc->state != Melee::CombatState::Idle) return;
+
+    // Tree assignment: NPC model index cycles through the loaded trees
+    // (students/prefects/bullies/nerds). Distinct NPC types get distinct
+    // conversations; repeats wrap deterministically.
+    int treeIndex = 0;
+    if (const MeshComponent* mesh = m_entities.GetMesh(npc))
+        treeIndex = int(mesh->npcModelIndex) % m_dialogue.TreeCount();
+
+    if (m_dialogue.StartDialogue(m_dialogue.TreeId(treeIndex), "")) {
+        m_dialogueNpc = npc;
+        m_dialogueChoiceSel = 0;
+        Logger::Info("Dialogue: talk started with NPC %u (tree '%s')",
+                     npc.index, m_dialogue.TreeId(treeIndex).c_str());
+    }
+}
+
+// Conversation-end hook (fires exactly once from DialogueManager::EndDialogue
+// via the SetOnEnd callback): release the NPC and complete any active
+// mission's TALK_TO_NPC objective (mission hook deliverable).
+void Engine::OnDialogueEnded() {
+    m_dialogueNpc = {};
+    m_dialogueChoiceSel = 0;
+    Logger::Info("Dialogue: conversation ended (normal AI resumes)");
+    for (uint32_t i = 0; i < m_missions.MissionCount(); ++i) {
+        const Mission* m = m_missions.GetMission(i);
+        if (!m || m->state != MissionState::Active) continue;
+        if (m->currentObjective >= m->objectives.size()) continue;
+        const Objective& o = m->objectives[m->currentObjective];
+        if (o.type == ObjectiveType::TalkToNpc && !o.complete) {
+            Logger::Info("Dialogue: completing TALK_TO_NPC objective for '%s'",
+                         m->id.c_str());
+            m_missions.CompleteObjective(i, m->currentObjective);
+            break;
+        }
+    }
+}
+
+// Per-frame dialogue logic: input (start/advance/choose) + typewriter tick.
+// Ordering note: this runs right after UpdateNpcs and BEFORE the melee and
+// weapon updates, so their !m_dialogue.IsActive() input gates are consistent
+// within the same frame.
+void Engine::UpdateDialogue(float dt) {
+    // OPENBULLY_DIALOGUE_DEMO=1: auto-start a conversation at t=1s for
+    // headless screenshot/stability verification (same philosophy as the
+    // other *_DEMO hooks), then auto-advance ~2 lines/s so the whole tree
+    // plays out (typewriter reveal, next hops, choice picks, end hook) —
+    // without this the demo stuck forever on the first line's full reveal.
+    static const bool s_demo = std::getenv("OPENBULLY_DIALOGUE_DEMO") != nullptr;
+    if (s_demo) {
+        if (!m_dialogue.IsActive()) {
+            // Walk Jimmy (position-direct, plane-guarded like DriveNpcDemo)
+            // toward the nearest NPC so the talk reaches 2.5u: ambient NPCs
+            // never close in on their own (Alert freezes them, Return walks
+            // them home), so the demo must bring the player to them.
+            if (m_jimmyActive && m_jimmyId.IsValid()) {
+                if (Transform* pt = m_entities.GetTransform(m_jimmyId)) {
+                    EntityID talkNpc = FindNearestNpc(pt->position, 60.0f);
+                    if (const Transform* nt = m_entities.GetTransform(talkNpc)) {
+                        if (PhysicsComponent* pp = m_entities.GetPhysics(m_jimmyId)) {
+                            pt->position.y = nt->position.y;
+                            pp->velocity.y = 0.0f;
+                        }
+                        glm::vec3 to = nt->position - pt->position;
+                        to.y = 0.0f;
+                        const float d = glm::length(to);
+                        if (d > 1.6f && d < 55.0f)
+                            pt->position += to / d * (2.5f * dt);
+                        if (PlayerController* dpc = m_entities.GetPlayer(m_jimmyId);
+                            dpc && d > 1e-3f) {
+                            dpc->facingYaw   = std::atan2(to.x / d, to.z / d);
+                            dpc->facingValid = true;
+                            pt->rotation.y   = dpc->facingYaw;
+                        }
+                    }
+                }
+            }
+            // Try (re)start every 2s while idle: after a conversation ends
+            // the next one begins within 2s, so a soak run cycles
+            // start -> play -> end repeatedly (end hook + mission hookup
+            // exercised every cycle).
+            static double s_lastTry = 0.0;
+            if (m_time >= 1.0 && m_time - s_lastTry > 2.0) {
+                s_lastTry = m_time;
+                TryStartDialogue();
+            }
+        } else {
+            // Advance the instant the typewriter finishes the line; pick
+            // choice 0 when a menu opens (1s dwell so the menu shows).
+            static double s_menuSince = 0.0;
+            const std::vector<DialogueChoice>* demoChoices =
+                m_dialogue.ActiveChoices();
+            if (demoChoices && !demoChoices->empty()) {
+                if (s_menuSince == 0.0) s_menuSince = m_time;
+                if (m_time - s_menuSince > 1.0) {
+                    Logger::Info("Dialogue demo: picking choice 0 of %zu",
+                                 demoChoices->size());
+                    m_dialogue.ChooseOption(0);
+                    s_menuSince = 0.0;
+                }
+            } else {
+                s_menuSince = 0.0;
+                if (m_dialogue.LineFullyRevealed()) m_dialogue.Advance();
+            }
+        }
+    }
+
+    if (m_dialogue.IsActive()) {
+        const std::vector<DialogueChoice>* choices = m_dialogue.ActiveChoices();
+        if (choices && !choices->empty()) {
+            // Choice menu: number keys 1-4 pick directly; arrows + Enter move
+            // the highlighted row. W/S mirror the arrows (movement is frozen
+            // during conversation, so they cannot conflict).
+            if      (m_input.WasKeyPressed(SDL_SCANCODE_1)) m_dialogue.ChooseOption(0);
+            else if (m_input.WasKeyPressed(SDL_SCANCODE_2)) m_dialogue.ChooseOption(1);
+            else if (m_input.WasKeyPressed(SDL_SCANCODE_3)) m_dialogue.ChooseOption(2);
+            else if (m_input.WasKeyPressed(SDL_SCANCODE_4)) m_dialogue.ChooseOption(3);
+            else {
+                if (m_input.WasKeyPressed(SDL_SCANCODE_UP) ||
+                    m_input.WasKeyPressed(SDL_SCANCODE_W))
+                    m_dialogueChoiceSel = (m_dialogueChoiceSel + int(choices->size()) - 1)
+                                          % int(choices->size());
+                if (m_input.WasKeyPressed(SDL_SCANCODE_DOWN) ||
+                    m_input.WasKeyPressed(SDL_SCANCODE_S))
+                    m_dialogueChoiceSel = (m_dialogueChoiceSel + 1) % int(choices->size());
+                if (m_input.WasKeyPressed(SDL_SCANCODE_RETURN) ||
+                    m_input.WasKeyPressed(SDL_SCANCODE_KP_ENTER))
+                    m_dialogue.ChooseOption(m_dialogueChoiceSel);
+            }
+        } else if (m_input.WasKeyPressed(SDL_SCANCODE_E) ||
+                   m_input.WasKeyPressed(SDL_SCANCODE_SPACE)) {
+            // Skip line: reveal the full line; press again for the next.
+            m_dialogue.Advance();
+        }
+        m_dialogue.Update(dt); // typewriter reveal (0.03 s per character)
+    } else if (m_input.WasKeyPressed(SDL_SCANCODE_E)) {
+        // Start: E near an NPC when not in combat.
+        TryStartDialogue();
     }
 }
 
@@ -3122,8 +4407,8 @@ void Engine::HandleHudDebugKeys() {
 void Engine::UpdateHUD(float dt) {
     (void)dt;
 
-    // Game clock: 1 in-game minute per real second (single-player pacing).
-    m_clockMinutes = (m_clockMinutes + 1) % (24 * 60);
+    // Game clock: advanced by UpdateGameTime (Track 29, 60x real time);
+    // this snapshot only mirrors the accumulator for the HUD.
     m_hudState.clockMinutes = m_clockMinutes;
 
     // Player vitals + minimap anchor.
@@ -3185,6 +4470,312 @@ void Engine::UpdateHUD(float dt) {
     });
 }
 
+// --- Track 29: time-of-day + NPC schedules -----------------------------------
+
+// Advances the global game clock at 60x real time (1 real second = 1 game
+// minute). Frame hitches are clamped so an alt-tab pause cannot
+// fast-forward the day. The HUD clock mirrors this accumulator.
+void Engine::UpdateGameTime(float dt) {
+    double step = double(dt) * 60.0; // 60x: 1 real second = 1 game minute
+    if (step < 0.0)   step = 0.0;
+    if (step > 120.0) step = 120.0;  // clamp hitches to 2 game-minutes
+    m_gameTimeMinutes += step;
+    SyncGameClock();
+}
+
+// Derives the integer HUD clock from the fractional game-time accumulator.
+void Engine::SyncGameClock() {
+    while (m_gameTimeMinutes >= 24.0 * 60.0) m_gameTimeMinutes -= 24.0 * 60.0;
+    if (m_gameTimeMinutes < 0.0) m_gameTimeMinutes = 0.0;
+    m_clockMinutes = int(m_gameTimeMinutes) % (24 * 60);
+    m_hudState.clockMinutes = m_clockMinutes;
+}
+
+// Track 29 debug: T fast-forwards 1 hour (schedule testing without waiting
+// through the 60x clock). OPENBULLY_TIME_DEMO=1 drives the same +1h path
+// every 3 s for automated verification (OS key injection is unreliable).
+void Engine::HandleScheduleKeys() {
+    bool advanceHour = m_input.WasKeyPressed(SDL_SCANCODE_T);
+    static const bool s_timeDemo = std::getenv("OPENBULLY_TIME_DEMO") != nullptr;
+    if (s_timeDemo && !advanceHour) {
+        static int s_lastStep = -1;
+        const int step = int(m_time / 3.0); // one hour every 3 s
+        if (step >= 1 && step <= 8 && step != s_lastStep) {
+            s_lastStep = step;
+            advanceHour = true;
+            Logger::Info("Time demo: scripted +1h (step %d)", step);
+        }
+    }
+    if (advanceHour) {
+        m_gameTimeMinutes += 60.0;
+        SyncGameClock();
+        Logger::Info("Schedule debug: +1h -> game time %02d:%02d",
+                     GetGameTime().hour, GetGameTime().minute);
+        UpdateSchedules(); // react on the same frame
+    }
+}
+
+// Track 29: load the schedule set (mission-JSON probing convention: CWD
+// first, then the source tree; refs resolved like the mission loader).
+bool Engine::LoadSchedules() {
+    std::unordered_map<std::string, glm::vec3> refs;
+    refs["spawn"] = m_jimmySpawn;
+    if (!m_worldMeshes.empty()) {
+        const WorldMesh* anchor = &m_worldMeshes.front();
+        for (const WorldMesh& wm : m_worldMeshes)
+            if (wm.gpu.vertexCount > anchor->gpu.vertexCount) anchor = &wm;
+        refs["anchor_center"] = 0.5f * (glm::make_vec3(anchor->boundsMin) +
+                                        glm::make_vec3(anchor->boundsMax));
+        refs["anchor_min"] = glm::make_vec3(anchor->boundsMin);
+        refs["anchor_max"] = glm::make_vec3(anchor->boundsMax);
+    }
+    const char* paths[] = {
+        "data/schedules/npc_schedules.json",
+        "../data/schedules/npc_schedules.json",
+    };
+    for (const char* p : paths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            if (m_schedules.LoadFromJson(p, refs)) {
+                Logger::Info("Schedules: %zu loaded from %s",
+                             m_schedules.ScheduleCount(), p);
+                return true;
+            }
+            return false;
+        }
+    }
+    Logger::Warning("Schedules: npc_schedules.json not found (schedules idle)");
+    return false;
+}
+
+// Track 29: create the entity for one scheduled NPC slot at its window's
+// spawn point (ground-snapped). The slot's rig clone is built once and
+// re-used across respawns so day cycles do not accumulate rigs.
+EntityID Engine::SpawnScheduledNpc(ScheduledNpc& sn, const ScheduleWindow& w) {
+    const NpcModel& model = m_npcModels[sn.modelIndex];
+    glm::vec3 pos = w.hasSpawnPoint ? w.spawnPoint : sn.spawnPoint;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = pos.x; down.origin[1] = pos.y + 10.0f; down.origin[2] = pos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+    }
+
+    // Lazily build + clone the model's skinned rig once per slot.
+    uint32_t rigIndex = sn.rigIndex;
+    if (rigIndex == 0xFFFFFFFF) {
+        rigIndex = model.rigIndex;
+        if (rigIndex == 0xFFFFFFFF && !m_sharedClips.empty() &&
+            !model.sourcePath.empty()) {
+            const NifLoadResult nif = LoadNifFile(model.sourcePath);
+            if (nif.ok) rigIndex = CreateRig(nif);
+            m_npcModels[sn.modelIndex].rigIndex = rigIndex; // cached (no retry)
+            if (rigIndex != 0xFFFFFFFF)
+                Logger::Info("NPC '%s': skinned rig %u (%d bones)",
+                             model.name.c_str(), rigIndex,
+                             m_animRigs[rigIndex].controller.BoneCount());
+        }
+        if (rigIndex != 0xFFFFFFFF) rigIndex = CloneRig(rigIndex);
+        sn.rigIndex = rigIndex;
+    }
+
+    // Deterministic per-slot variation (same pattern as the legacy crowd).
+    uint32_t rng = sn.seed ? sn.seed : 0x1234ABCDu;
+    auto next = [&rng]() {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return rng;
+    };
+    auto unit = [&next]() { return float(next() % 10000u) / 10000.0f; };
+
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = pos;
+    t.scale = glm::vec3(model.bodyScale);
+    t.rotation.y = unit() * 6.2831853f;
+    m_entities.AddTransform(e, t);
+
+    MeshComponent mc;
+    mc.isBox = false;
+    mc.isNpc = true;
+    mc.npcModelIndex = sn.modelIndex;
+    m_entities.AddMesh(e, mc);
+
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+    cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+    cc.layerMask = 2u; // dynamic layer
+    m_entities.AddCollision(e, cc);
+
+    PhysicsComponent pc;
+    pc.gravity = -9.8f;
+    m_entities.AddPhysics(e, pc);
+
+    AIComponent ai;
+    ai.homePos = pos;
+    ai.facingYaw = t.rotation.y;
+    ai.lastPos = pos; // Track 27: stuck-detection baseline
+    ai.state = AIState::Idle;
+    ai.timer = 0.2f + unit() * 2.8f;
+    ai.moveSpeed = 1.0f + unit() * 1.0f;
+    ai.wanderRadius = 3.0f;
+    ai.scheduleIndex = sn.scheduleIndex;
+    // Window behavior override: idle pins the NPC at its post.
+    ai.lockIdle = (w.behavior == ScheduleBehavior::Idle);
+    // Track 27: every 4th scheduled NPC (by slot index) walks a patrol loop —
+    // 4 ground-snapped waypoints on a square around its spawn point.
+    if (sn.scheduleIndex % 4 == 0) {
+        const float radius = 3.5f + unit() * 2.0f;
+        const float phase  = unit() * 6.2831853f;
+        ai.patrolPoints.clear();
+        ai.patrolPoints.reserve(4);
+        for (int wp = 0; wp < 4; ++wp) {
+            const float a = phase + float(wp) * 1.5707963f;
+            glm::vec3 point(pos.x + std::cos(a) * radius, pos.y,
+                            pos.z + std::sin(a) * radius);
+            if (m_collisionWorld) {
+                Ray down;
+                down.origin[0] = point.x; down.origin[1] = pos.y + 10.0f;
+                down.origin[2] = point.z;
+                down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+                down.direction[2] = 0.0f;
+                RayHit hit;
+                if (m_collisionWorld->Raycast(down, hit) &&
+                    std::fabs(hit.point[1] - pos.y) < 3.0f)
+                    point.y = hit.point[1];
+            }
+            ai.patrolPoints.push_back(point);
+        }
+        ai.patrolIndex = 0;
+    }
+    // Track 28: authority NPCs. Cap of 2 (task spec): prefer scheduled spawns
+    // whose schedule is named "prefect" (data/npc_schedules.json); if no
+    // prefect schedule spawned yet, the first two spawned slots fill the cap.
+    if (m_prefectIds[1].index == 0xFFFFFFFF) {
+        bool isPrefect = false;
+        if (const NPCSchedule* sched =
+                m_schedules.GetSchedule(size_t(sn.scheduleIndex)))
+            isPrefect = sched->name.find("prefect") != std::string::npos;
+        else if (m_prefectIds[0].index == 0xFFFFFFFF)
+            isPrefect = true; // fallback: first spawned slot
+        if (isPrefect) {
+            ai.role = AIRole::Prefect;
+            ai.sightRadius = 14.0f; // authorities keep a wider watch
+            if      (m_prefectIds[0].index == 0xFFFFFFFF) m_prefectIds[0] = e;
+            else                                          m_prefectIds[1] = e;
+            Logger::Info("NPC AI: entity %u designated PREFECT", e.index);
+        }
+    }
+    m_entities.AddAI(e, ai);
+    m_entities.AddMeleeCombat(e);
+
+    if (rigIndex != 0xFFFFFFFF) {
+        AnimationComponent ac;
+        ac.rigIndex = rigIndex;
+        ac.playing = true;
+        ac.wasMoving = false;
+        m_entities.AddAnimation(e, ac);
+        AnimRig& rig = m_animRigs[rigIndex];
+        if (rig.idleClip >= 0) rig.controller.Play(rig.idleClip, true, 0.0f);
+    }
+
+    sn.entity = e;
+    sn.lastWindowIndex = -1;   // UpdateSchedules applies the window state
+    sn.walkToSpawnLogged = false;
+    if (const NPCSchedule* sched =
+            m_schedules.GetSchedule(size_t(sn.scheduleIndex)))
+        Logger::Info("Schedule[%s]: spawned NPC model=%u at %02d:%02d",
+                     sched->name.c_str(), sn.modelIndex,
+                     GetGameTime().hour, GetGameTime().minute);
+    return e;
+}
+
+// Track 29: destroy a scheduled NPC's entity. Called when the game clock
+// leaves the NPC's spawned window; the slot stays registered for respawn.
+void Engine::DespawnScheduledNpc(ScheduledNpc& sn, const char* reason) {
+    if (!sn.entity.IsValid()) return;
+    if (!m_entities.IsAlive(sn.entity)) {
+        sn.entity = EntityID{}; // externally destroyed (KO cleanup etc.)
+        return;
+    }
+    // Never despawn mid-conversation (Track 30); retried next frame after
+    // the dialogue ends and clears m_dialogueNpc.
+    if (sn.entity == m_dialogueNpc) return;
+    // Release a held NPC first so the grapple never references a corpse.
+    if (sn.entity == m_grappleTarget) EndGrapple(false);
+    const NPCSchedule* sched =
+        m_schedules.GetSchedule(size_t(sn.scheduleIndex));
+    Logger::Info("Schedule[%s]: despawned NPC (%s) at %02d:%02d",
+                 sched ? sched->name.c_str() : "?", reason,
+                 GetGameTime().hour, GetGameTime().minute);
+    m_entities.Destroy(sn.entity);
+    sn.entity = EntityID{};
+    sn.lastWindowIndex = -1;
+    sn.walkToSpawnLogged = false;
+}
+
+// Track 29: per-frame schedule tick. For every scheduled NPC slot: resolve
+// the active window at the current game minute; spawn when a spawned window
+// opens, despawn when it closes, apply the window's behavior override on
+// transitions, and stage the despawn walk 10 in-game minutes early.
+void Engine::UpdateSchedules() {
+    if (m_scheduledNpcs.empty()) return;
+    const int nowMin = m_clockMinutes;
+    for (ScheduledNpc& sn : m_scheduledNpcs) {
+        const NPCSchedule* sched =
+            m_schedules.GetSchedule(size_t(sn.scheduleIndex));
+        if (!sched) continue;
+        const int wi = sched->WindowIndexAt(nowMin);
+        if (wi < 0 || sched->windows[wi].state == SpawnState::Despawned) {
+            DespawnScheduledNpc(sn, wi < 0 ? "no window" : "window end");
+            continue;
+        }
+        const ScheduleWindow& w = sched->windows[wi];
+        if (!sn.entity.IsValid() || !m_entities.IsAlive(sn.entity)) {
+            if (sn.entity.IsValid()) sn.entity = EntityID{}; // stale handle
+            SpawnScheduledNpc(sn, w);
+            continue;
+        }
+        // Behavior override on window change.
+        if (wi != sn.lastWindowIndex) {
+            sn.lastWindowIndex = wi;
+            sn.walkToSpawnLogged = false;
+            if (AIComponent* ai = m_entities.GetAI(sn.entity)) {
+                ai->homePos = sn.spawnPoint;
+                ai->hasTarget = false;
+                ai->state = AIState::Idle;
+                ai->timer = 0.5f;
+                ai->lockIdle = (w.behavior == ScheduleBehavior::Idle);
+            }
+            Logger::Info("Schedule[%s]: window %d active at %02d:%02d (%s)",
+                         sched->name.c_str(), wi, GetGameTime().hour,
+                         GetGameTime().minute,
+                         w.behavior == ScheduleBehavior::Idle ? "idle" : "wander");
+        }
+        // Gradual transition: 10 in-game minutes before this window ends in
+        // a despawn, walk back toward the spawn point (staging).
+        const ScheduleWindow& next =
+            sched->windows[(size_t(wi) + 1) % sched->windows.size()];
+        if (next.state == SpawnState::Despawned && w.hasSpawnPoint) {
+            const int untilEnd = (w.endMinute - nowMin + 24 * 60) % (24 * 60);
+            if (untilEnd <= 10 && !sn.walkToSpawnLogged) {
+                if (AIComponent* ai = m_entities.GetAI(sn.entity)) {
+                    ai->lockIdle = false;
+                    ai->state = AIState::Wander;
+                    ai->targetPos = w.spawnPoint;
+                    ai->targetPos.y = sn.entity.IsValid()
+                        ? m_entities.GetTransform(sn.entity)->position.y
+                        : ai->homePos.y; // mover re-snaps to ground
+                    ai->hasTarget = true;
+                    sn.walkToSpawnLogged = true;
+                    Logger::Info("Schedule[%s]: NPC walking to despawn point "
+                                 "(%d game-min left)", sched->name.c_str(), untilEnd);
+                }
+            }
+        }
+    }
+}
+
 void Engine::LogFrameTiming() {
     if (m_framesAccum == 0) return;
     const double avgMs = m_frameMsAccum / double(m_framesAccum);
@@ -3202,26 +4793,36 @@ void Engine::LogFrameTiming() {
                          int(m_entities.GetPhysics(m_jimmyId) &&
                              m_entities.GetPhysics(m_jimmyId)->onGround));
     }
-    // Track 16: NPC AI census (idle/wander/face counts + one wander sample).
+    // Track 16/27: NPC AI census (all state counts + one engaged sample).
     {
-        unsigned idle = 0, wander = 0, face = 0; bool first = true;
-        char sample[128] = {};
+        unsigned counts[11] = {}; bool first = true;
+        char sample[160] = {};
+        char wanderSample[128] = {};
         m_entities.ForEachAI([&](EntityID, const Transform& t, const AIComponent& ai) {
-            switch (ai.state) {
-            case AIState::Idle:        idle++;   break;
-            case AIState::Wander:      wander++; break;
-            case AIState::FacePlayer:  face++;   break;
-            }
+            const int s = int(ai.state);
+            if (s >= 0 && s < 11) counts[s]++;
             if (first && ai.state == AIState::Wander) {
-                std::snprintf(sample, sizeof(sample),
-                              "sample: (%.1f, %.1f, %.1f) -> target (%.1f, %.1f)",
-                              t.position.x, t.position.y, t.position.z,
+                std::snprintf(wanderSample, sizeof(wanderSample),
+                              "| wander sample: (%.1f, %.1f) -> target (%.1f, %.1f)",
+                              t.position.x, t.position.z,
                               ai.targetPos.x, ai.targetPos.z);
                 first = false;
             }
+            // Track 27: prefer an engaged (chase/attack) NPC in the sample so
+            // combat verification lines up with the transitions in the log.
+            if (sample[0] == '\0' &&
+                (ai.state == AIState::Chase || ai.state == AIState::Attack ||
+                 ai.state == AIState::Flee)) {
+                std::snprintf(sample, sizeof(sample),
+                              "| engaged: entity at (%.1f, %.1f) state %s",
+                              t.position.x, t.position.z, AiStateName(ai.state));
+            }
         });
-        Logger::Info("NPC AI: idle=%u wander=%u face=%u %s",
-                     idle, wander, face, sample);
+        Logger::Info("NPC AI: idle=%u wander=%u face=%u patrol=%u alert=%u "
+                     "chase=%u attack=%u flee=%u return=%u watch=%u ko=%u %s%s",
+                     counts[0], counts[1], counts[2], counts[3], counts[4],
+                     counts[5], counts[6], counts[7], counts[8], counts[9],
+                     counts[10], sample, wanderSample);
     }
     m_framesAccum = 0;
     m_frameMsAccum = 0.0;
@@ -3390,6 +4991,23 @@ void Engine::Render() {
                                   120.0f * frac, 6.0f, 0xff40a0ffff);
                 }
             }
+        }
+
+        // Track 30: dialogue box (bottom-center panel, typewriter text,
+        // choice buttons while a choice menu is pending).
+        if (m_dialogue.IsActive()) {
+            const std::vector<DialogueChoice>* choices = m_dialogue.ActiveChoices();
+            std::vector<std::string> choiceTexts;
+            if (choices)
+                for (const DialogueChoice& c : *choices)
+                    choiceTexts.push_back(c.text);
+            if (m_dialogueChoiceSel >= int(choiceTexts.size()))
+                m_dialogueChoiceSel = int(choiceTexts.size()) - 1;
+            m_ui.DrawDialogueBox(m_dialogue.Speaker().c_str(),
+                                 m_dialogue.VisibleText(),
+                                 /*showAdvanceHint=*/choices == nullptr,
+                                 choiceTexts,
+                                 m_dialogueChoiceSel);
         }
     }
 
@@ -3641,7 +5259,8 @@ void Engine::UpdateWeapons(float dt) {
     }
 
     // --- Pickup: E near a dropped weapon -------------------------------------
-    if (m_input.WasKeyPressed(SDL_SCANCODE_E)) {
+    // Track 30: E is the dialogue key; a conversation takes precedence.
+    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive()) {
         EntityID best{};
         float bestDist = 2.2f; // pickup radius
         m_entities.ForEach([&](EntityID id, Transform& t,
@@ -3674,11 +5293,11 @@ void Engine::UpdateWeapons(float dt) {
         }
     }
 
-    // --- Slot selection: 1-5 ---------------------------------------------------
+    // --- Slot selection: 1-5 (deferred during dialogue: 1-4 pick choices) ---
     static const SDL_Scancode kSlotKeys[5] = {
         SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4, SDL_SCANCODE_5,
     };
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5 && !m_dialogue.IsActive(); ++i) {
         if (m_input.WasKeyPressed(kSlotKeys[i])) {
             if (pc->slots[i].type == WeaponType::Unarmed) {
                 Logger::Info("Slot %d empty", i + 1);
@@ -3752,14 +5371,13 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
             // Must be roughly in front of Jimmy (dot > 0.1).
             if (dxz > 1e-3f && glm::dot(glm::vec3(to.x, 0.0f, to.z) / dxz, fwd) < 0.1f)
                 return;
-            ai->health.Damage(damage);
+            // Track 28: funnel through DamageNpc (flinch + reactions + KO).
+            DamageNpc(id, m_jimmyId, damage, t.position, 0.4f);
             hitSomething = true;
-            Logger::Info("%s hit NPC idx=%u for %d (health %d/%d)", data.name,
-                         id.index, damage, ai->health.current, ai->health.max);
-            if (ai->health.current <= 0) {
-                Logger::Info("NPC idx=%u defeated", id.index);
-                m_entities.Destroy(id);
-            }
+            if (const AIComponent* ai2 = m_entities.GetAI(id))
+                Logger::Info("%s hit NPC idx=%u for %d (health %d/%d)",
+                             data.name, id.index, damage,
+                             ai2->health.current, ai2->health.max);
         });
         if (!hitSomething)
             Logger::Info("%s swing: no target in range (%.1f)", data.name, reach);
@@ -3873,15 +5491,13 @@ void Engine::UpdateProjectiles(float dt) {
             const glm::vec3 newPos = oldPos + step;
             m_entities.ForEachAI([&](EntityID id, Transform& nt, AIComponent& ai) {
                 if (kill || id == m_jimmyId) return;
+                if (ai.state == AIState::Ko) return; // downed: no re-trigger
                 const glm::vec3 torso = nt.position + glm::vec3(0.0f, 1.0f, 0.0f);
                 if (glm::length(newPos - torso) < 0.8f) {
-                    ai.health.Damage(p.damage);
-                    Logger::Info("Projectile hit NPC idx=%u for %d (health %d/%d)",
-                                 id.index, p.damage, ai.health.current, ai.health.max);
-                    if (ai.health.current <= 0) {
-                        Logger::Info("NPC idx=%u defeated (projectile)", id.index);
-                        m_entities.Destroy(id);
-                    }
+                    // Track 28: funnel through DamageNpc (flinch + reactions).
+                    DamageNpc(id, m_jimmyId, p.damage, nt.position, 0.4f);
+                    Logger::Info("Projectile hit NPC idx=%u for %d",
+                                 id.index, p.damage);
                     kill = true;
                 }
             });

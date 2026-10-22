@@ -1,0 +1,46 @@
+{
+  "schedules": [
+    {
+      "name": "student",
+      "windows": [
+        { "start": "07:00", "end": "08:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "spawn", "offset": [8, 0, 6] } },
+        { "start": "08:00", "end": "15:00", "state": "despawned" },
+        { "start": "15:00", "end": "18:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "spawn", "offset": [6, 0, 4] } },
+        { "start": "18:00", "end": "22:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "anchor_center", "offset": [-6, 0, -4] } },
+        { "start": "22:00", "end": "07:00", "state": "despawned" }
+      ]
+    },
+    {
+      "name": "townie",
+      "windows": [
+        { "start": "06:00", "end": "22:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "spawn", "offset": [-10, 0, -8] } },
+        { "start": "22:00", "end": "06:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "anchor_center", "offset": [4, 0, -6] } }
+      ]
+    },
+    {
+      "name": "prefect",
+      "windows": [
+        { "start": "07:00", "end": "08:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "spawn", "offset": [5, 0, -5] } },
+        { "start": "08:00", "end": "15:00", "state": "spawned", "behavior": "idle",
+          "spawn_point": { "ref": "spawn", "offset": [4, 0, -3] } },
+        { "start": "15:00", "end": "22:00", "state": "spawned", "behavior": "wander",
+          "spawn_point": { "ref": "spawn", "offset": [-4, 0, 8] } },
+        { "start": "22:00", "end": "07:00", "state": "despawned" }
+      ]
+    },
+    {
+      "name": "teacher",
+      "windows": [
+        { "start": "07:30", "end": "16:00", "state": "spawned", "behavior": "idle",
+          "spawn_point": { "ref": "spawn", "offset": [-5, 0, 3] } },
+        { "start": "16:00", "end": "07:30", "state": "despawned" }
+      ]
+    }
+  ]
+}

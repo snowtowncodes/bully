@@ -49,12 +49,27 @@ set(BGFX_CUSTOM_TARGETS        OFF CACHE BOOL "" FORCE)
 set(BGFX_LIBRARY_TYPE          STATIC CACHE STRING "" FORCE)
 add_subdirectory("${OPENBULLY_BGPUX_DIR}" bgfx-build EXCLUDE_FROM_ALL)
 
+# --- glm (vendored header-only 1.0.1, external/glm) --------------------------
+set(OPENBULLY_GLM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/glm")
+if(NOT EXISTS "${OPENBULLY_GLM_DIR}/glm/glm.hpp")
+    message(FATAL_ERROR
+        "glm sources not found at external/glm.\r\n"
+        "Vendor glm 1.0.1 (headers only) so that external/glm/glm/glm.hpp exists.")
+endif()
+add_library(glm_headers INTERFACE)
+target_include_directories(glm_headers INTERFACE "${OPENBULLY_GLM_DIR}")
+
 # --- Main executable ---------------------------------------------------------
 add_executable(openbully
     src/main.cpp
     src/engine/engine.cpp
     src/engine/resource_manager.cpp
     src/engine/formats/nif_loader.cpp
+    src/engine/formats/nft_loader.cpp
+    src/entities/entity.cpp
+    src/game/input.cpp
+    src/game/camera.cpp
+    src/physics/collision.cpp
     src/platform/window.cpp
     src/platform/logger.cpp
     src/rendering/mesh.cpp
@@ -66,8 +81,18 @@ add_executable(nif_test
     src/tools/nif_test.cpp
     src/engine/formats/nif_loader.cpp
     src/rendering/mesh.cpp
+    src/physics/collision.cpp
 )
 target_include_directories(nif_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# Collision self-test (Track 13; no GPU, no SDL/bgfx).
+add_executable(collision_test
+    src/tools/collision_test.cpp
+    src/physics/collision.cpp
+)
+target_include_directories(collision_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
@@ -81,6 +106,7 @@ target_link_libraries(openbully PRIVATE
     bgfx
     bx
     bimg
+    glm_headers
 )
 
 # The vendored SDL2 VC package ships headers flat in include/ (SDL.h), while
@@ -170,6 +196,14 @@ if(WIN32 AND EXISTS "${OPENBULLY_SDL2_DIR}/lib/x64/SDL2.dll")
             "$<TARGET_FILE_DIR:openbully>/SDL2.dll"
         COMMENT "Copying SDL2.dll next to openbully.exe")
 endif()
+
+# Aggregate target for shader compilation: builds every per-shader stamp
+# produced by the custom commands above. openbully depends on it so shader
+# binaries always exist (and refresh) before the executable links/runs.
+add_custom_target(openbully_shaders
+    DEPENDS ${OPENBULLY_SHADER_TARGETS}
+    COMMENT "Compiling bgfx shaders (shaderc)")
+add_dependencies(openbully openbully_shaders)
 
 # --- Subdirectories ----------------------------------------------------------
 if(OPENBULLY_BUILD_TOOLS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/CMakeLists.txt")

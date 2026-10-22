@@ -1,0 +1,95 @@
+{
+  "_comment": "Track 41 class definitions. Positions are offsets from Jimmy's runtime spawn point ('ref': 'spawn'), mirroring the mission-file convention, so every marker stays walkable: Jimmy spawns on the ASY_ABlock rooftop (bounds x[-748.6,-722.1], y~465, z[2.0,8.1]) and all offsets below are inside those bounds with margin. Schedule windows are minutes-since-midnight 'HH:MM'; 'days' is a weekday list (bit 0 = Monday). Rewards apply once per passed session (kind: max_health | money | weapon | ammo | ammo_cap | respect).",
+  "classes": [
+    {
+      "id": "english_1", "type": "ENGLISH", "name": "English 1",
+      "building": "Main School Building", "room": "Room 101",
+      "days": ["MON", "WED", "FRI"], "start": "09:00", "end": "10:00",
+      "ref": "spawn", "offset": [6.0, 0.0, -1.0], "radius": 3.0,
+      "sessions_required": 5,
+      "objectives": ["Take your seat", "Parse the reading passage", "Ace the grammar quiz"],
+      "rewards": [ {"kind": "money", "amount": 20}, {"kind": "respect", "amount": 1} ]
+    },
+    {
+      "id": "math_1", "type": "MATH", "name": "Math 1",
+      "building": "Main School Building", "room": "Room 102",
+      "days": ["MON", "TUE", "THU"], "start": "10:00", "end": "11:00",
+      "ref": "spawn", "offset": [-7.0, 0.0, 1.0], "radius": 3.0,
+      "sessions_required": 5,
+      "objectives": ["Take your seat", "Solve the word problems", "Pass the times-table drill"],
+      "rewards": [ {"kind": "money", "amount": 25}, {"kind": "respect", "amount": 1} ]
+    },
+    {
+      "id": "gym_1", "type": "GYM", "name": "Gym 1",
+      "building": "Gymnasium", "room": "Main Court",
+      "days": ["MON", "WED", "FRI"], "start": "11:00", "end": "12:00",
+      "ref": "spawn", "offset": [10.0, 0.0, 2.0], "radius": 3.0,
+      "sessions_required": 4,
+      "objectives": ["Warm up with jumping jacks", "Run the obstacle course", "Win the dodgeball round"],
+      "rewards": [ {"kind": "max_health", "amount": 10}, {"kind": "respect", "amount": 1} ]
+    },
+    {
+      "id": "art_1", "type": "ART", "name": "Art 1",
+      "building": "Art Wing", "room": "Studio A",
+      "days": ["TUE", "THU"], "start": "09:00", "end": "10:00",
+      "ref": "spawn", "offset": [-4.0, 0.0, -2.0], "radius": 3.0,
+      "sessions_required": 3,
+      "objectives": ["Set up your easel", "Sketch the still life", "Mix the perfect color"],
+      "rewards": [ {"kind": "money", "amount": 15} ]
+    },
+    {
+      "id": "chemistry_1", "type": "CHEMISTRY", "name": "Chemistry 1",
+      "building": "Science Wing", "room": "Lab 2",
+      "days": ["MON", "THU"], "start": "13:00", "end": "14:00",
+      "ref": "spawn", "offset": [0.0, 0.0, 4.0], "radius": 3.0,
+      "sessions_required": 4,
+      "objectives": ["Put on safety goggles", "Mix the compounds", "Light the firecracker demo"],
+      "rewards": [ {"kind": "weapon", "weapon_id": 6, "amount": 5}, {"kind": "respect", "amount": 1} ]
+    },
+    {
+      "id": "shop_1", "type": "SHOP", "name": "Shop 1",
+      "building": "Shop Building", "room": "Workshop",
+      "days": ["TUE", "FRI"], "start": "13:00", "end": "14:00",
+      "ref": "spawn", "offset": [4.0, 0.0, 5.0], "radius": 3.0,
+      "sessions_required": 4,
+      "objectives": ["Put on safety gloves", "Sand the birdhouse", "Reinforce the slingshot frame"],
+      "rewards": [ {"kind": "ammo_cap", "amount": 10} ]
+    },
+    {
+      "id": "photography_1", "type": "PHOTOGRAPHY", "name": "Photography 1",
+      "building": "Art Wing", "room": "Darkroom",
+      "days": ["WED"], "start": "14:00", "end": "15:00",
+      "ref": "spawn", "offset": [-9.0, 0.0, -1.0], "radius": 3.0,
+      "sessions_required": 3,
+      "objectives": ["Check the camera film", "Frame the shot", "Develop the print"],
+      "rewards": [ {"kind": "money", "amount": 30} ]
+    },
+    {
+      "id": "music_1", "type": "MUSIC", "name": "Music 1",
+      "building": "Main School Building", "room": "Band Room",
+      "days": ["TUE", "THU"], "start": "15:00", "end": "16:00",
+      "ref": "spawn", "offset": [2.0, 0.0, -4.0], "radius": 3.0,
+      "sessions_required": 3,
+      "objectives": ["Tune your instrument", "Rehearse the scales", "Perform the recital"],
+      "rewards": [ {"kind": "money", "amount": 20}, {"kind": "respect", "amount": 1} ]
+    },
+    {
+      "id": "geography_1", "type": "GEOGRAPHY", "name": "Geography 1",
+      "building": "Main School Building", "room": "Room 105",
+      "days": ["MON", "WED"], "start": "15:00", "end": "16:00",
+      "ref": "spawn", "offset": [-6.0, 0.0, 4.0], "radius": 3.0,
+      "sessions_required": 3,
+      "objectives": ["Unfold the world map", "Label the continents", "Pass the capital-cities quiz"],
+      "rewards": [ {"kind": "money", "amount": 18} ]
+    },
+    {
+      "id": "biology_1", "type": "BIOLOGY", "name": "Biology 1",
+      "building": "Science Wing", "room": "Lab 1",
+      "days": ["FRI"], "start": "14:00", "end": "15:00",
+      "ref": "spawn", "offset": [8.0, 0.0, -3.0], "radius": 3.0,
+      "sessions_required": 3,
+      "objectives": ["Put on lab gloves", "Dissect the frog", "Label the specimens"],
+      "rewards": [ {"kind": "max_health", "amount": 5}, {"kind": "respect", "amount": 1} ]
+    }
+  ]
+}

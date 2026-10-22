@@ -8728,8 +8728,11 @@ void Engine::UpdateBossSpecial(EntityID id, BossComponent& bc, AIComponent& ai,
                 break; }
             case BossSpecial::Grab: {
                 // Close-range grab -> break-free QTE (dodge by spacing).
+                // Force=false: honors the QTE cooldown so a failed break-free
+                // is followed by a real gap (the boss recovers) instead of
+                // re-grabbing the same frame the failure flash shows.
                 if (dist <= 2.3f) {
-                    StartBossQTE(bc, 1.7f, /*force=*/true);
+                    StartBossQTE(bc, 1.7f, /*force=*/false);
                     sp.fired = true;
                     Logger::Info("BOSS %s: GRAB attempt (break free!)",
                                  BossTypeName(bc.type));

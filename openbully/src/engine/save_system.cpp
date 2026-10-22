@@ -124,10 +124,45 @@ std::string SaveSystem::Serialize(const SaveData& d) {
     os << ind2 << "]\n";
     os << ind << "},\n";
 
+    // --- Class (Track 41) ---
+    os << ind << "\"class\": {\n";
+    os << ind2 << "\"respect\": " << d.classRespect << ",\n";
+    os << ind2 << "\"slingshot_cap_bonus\": " << d.slingshotCapBonus << ",\n";
+    os << ind2 << "\"classes\": [\n";
+    for (size_t i = 0; i < d.classes.size(); ++i) {
+        const ClassSave& c = d.classes[i];
+        os << ind3 << "{\"id\":\"" << JsonEscape(c.id) << "\""
+           << ",\"completions\":" << c.completions
+           << ",\"fails\":" << c.fails << "}";
+        os << (i + 1 < d.classes.size() ? "," : "") << "\n";
+    }
+    if (d.classes.empty()) os << ind3;
+    os << ind2 << "]\n";
+    os << ind << "},\n";
+
+    // --- Reputation (Track 42): per-faction respect + mission tally ---------
+    os << ind << "\"reputation\": {\n";
+    os << ind2 << "\"respect\": [";
+    for (int i = 0; i < ReputationSave::kCount; ++i)
+        os << (i > 0 ? ", " : "") << FormatDouble(d.reputation.respect[i]);
+    os << "],\n";
+    os << ind2 << "\"completed_missions\": " << d.reputation.completedMissions << "\n";
+    os << ind << "},\n";
+
     // --- World ---
     os << ind << "\"world\": {\n";
     os << ind2 << "\"game_time_minutes\": " << FormatDouble(d.gameTimeMinutes) << ",\n";
+    os << ind2 << "\"game_day\": " << d.gameDay << ",\n";
     os << ind2 << "\"weather\": " << d.weather << "\n";
+    os << ind << "},\n";
+
+    // --- Arcade (Track 45): high scores, plays, wins, achievement ---
+    os << ind << "\"arcade\": {\n";
+    os << ind2 << "\"high_scores\": [" << d.arcadeHigh[0] << ", "
+       << d.arcadeHigh[1] << "],\n";
+    os << ind2 << "\"plays\": " << d.arcadePlays << ",\n";
+    os << ind2 << "\"wins\": " << d.arcadeWins << ",\n";
+    os << ind2 << "\"achievement\": " << d.arcadeAchievement << "\n";
     os << ind << "}\n";
     os << "}\n";
 
@@ -403,11 +438,60 @@ bool SaveSystem::Deserialize(const std::string& json, SaveData& out) {
         }
     }
 
+    // --- Class (Track 41) ---
+    if (const JValue* cl = root.Find("class")) {
+        if (cl->type == JValue::Type::Object) {
+            if (const JValue* v = cl->Find("respect")) out.classRespect = static_cast<int>(v->number);
+            if (const JValue* v = cl->Find("slingshot_cap_bonus")) out.slingshotCapBonus = static_cast<int>(v->number);
+            if (const JValue* arr = cl->Find("classes"); arr && arr->type == JValue::Type::Array) {
+                out.classes.clear();
+                for (const JValue& item : arr->items) {
+                    ClassSave c;
+                    if (const JValue* v = item.Find("id"))         c.id = v->str;
+                    if (const JValue* v = item.Find("completions")) c.completions = static_cast<int>(v->number);
+                    if (const JValue* v = item.Find("fails"))       c.fails = static_cast<int>(v->number);
+                    out.classes.push_back(std::move(c));
+                }
+            }
+        }
+    }
+
+    // --- Reputation (Track 42) ---------------------------------------------
+    if (const JValue* rp = root.Find("reputation")) {
+        if (rp->type == JValue::Type::Object) {
+            if (const JValue* arr = rp->Find("respect"); arr &&
+                arr->type == JValue::Type::Array) {
+                for (int i = 0; i < ReputationSave::kCount &&
+                                i < static_cast<int>(arr->items.size()); ++i)
+                    out.reputation.respect[i] =
+                        static_cast<float>(arr->items[i].number);
+            }
+            if (const JValue* v = rp->Find("completed_missions"))
+                out.reputation.completedMissions = static_cast<int>(v->number);
+        }
+    }
+
     // --- World ---
     if (const JValue* w = root.Find("world")) {
         if (w->type == JValue::Type::Object) {
             if (const JValue* v = w->Find("game_time_minutes")) out.gameTimeMinutes = v->number;
-            if (const JValue* v = w->Find("weather"))           out.weather         = static_cast<int>(v->number);
+            if (const JValue* v = w->Find("game_day"))          out.gameDay = static_cast<int>(v->number);
+            if (const JValue* v = w->Find("weather"))           out.weather = static_cast<int>(v->number);
+        }
+    }
+
+    // --- Arcade (Track 45) ---
+    if (const JValue* a = root.Find("arcade")) {
+        if (a->type == JValue::Type::Object) {
+            if (const JValue* hs = a->Find("high_scores")) {
+                if (hs->type == JValue::Type::Array && hs->items.size() >= 2) {
+                    out.arcadeHigh[0] = static_cast<int>(hs->items[0].number);
+                    out.arcadeHigh[1] = static_cast<int>(hs->items[1].number);
+                }
+            }
+            if (const JValue* v = a->Find("plays"))       out.arcadePlays       = static_cast<int>(v->number);
+            if (const JValue* v = a->Find("wins"))        out.arcadeWins        = static_cast<int>(v->number);
+            if (const JValue* v = a->Find("achievement")) out.arcadeAchievement = static_cast<int>(v->number);
         }
     }
 

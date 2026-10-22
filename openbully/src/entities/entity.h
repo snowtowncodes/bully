@@ -16,6 +16,7 @@
 #include "../rendering/renderer.h"
 #include "../game/player.h"
 #include "../game/combat.h"
+#include "../game/boss.h" // Track 49: BossComponent (faction leader fights)
 #include "../game/weapon.h" // Track 26: WeaponType for WeaponComponent
 #include "../combat/combat.h" // Track 23: melee CombatComponent (Melee ns)
 #include "../vehicles/vehicle.h" // Track 31: VehicleComponent
@@ -148,6 +149,7 @@ public:
     // Track 16: NPC AI component.
     AIComponent*        AddAI(EntityID id, const AIComponent& a = {});
     AIComponent*        GetAI(EntityID id);
+    const AIComponent*  GetAI(EntityID id) const; // const readers (factions)
 
     // Track 26: weapon component (world pickups).
     WeaponComponent*    AddWeapon(EntityID id, const WeaponComponent& w = {});
@@ -164,6 +166,10 @@ public:
     // Track 23: melee combat component (attack/stun/combo state).
     Melee::CombatComponent* AddMeleeCombat(EntityID id, const Melee::CombatComponent& c = {});
     Melee::CombatComponent* GetMeleeCombat(EntityID id);
+
+    // Track 49: boss component (faction leader: phases, specials, QTEs).
+    BossComponent*          AddBoss(EntityID id, const BossComponent& b = {});
+    BossComponent*          GetBoss(EntityID id);
 
     void RemoveMesh(EntityID id);
     void RemoveCollision(EntityID id);
@@ -185,6 +191,7 @@ public:
         uint32_t combat      = 0xFFFFFFFF;
         uint32_t melee       = 0xFFFFFFFF; // Track 23
         uint32_t vehicle     = 0xFFFFFFFF; // Track 31
+        uint32_t boss        = 0xFFFFFFFF; // Track 49
 
         bool HasMesh() const      { return mesh      != 0xFFFFFFFF; }
         bool HasCollision() const { return collision != 0xFFFFFFFF; }
@@ -265,6 +272,7 @@ private:
     std::vector<CombatComponent>    m_combats;
     std::vector<Melee::CombatComponent> m_melees; // Track 23
     std::vector<VehicleComponent>   m_vehicles; // Track 31
+    std::vector<BossComponent>      m_bosses;   // Track 49
 };
 
 } // namespace OpenBully

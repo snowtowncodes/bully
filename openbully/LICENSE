@@ -1,0 +1,39 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+OpenBully - Open-source reimplementation of Bully game engine
+Copyright (C) 2024 OpenBully Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+IMPORTANT NOTICE:
+
+This software is a clean-room reimplementation of the Bully game engine.
+It does NOT include any original game assets, code, or copyrighted materials
+from Rockstar Games or Take-Two Interactive.
+
+To use this software, you MUST own a legal copy of Bully and provide your
+own game data files. This project does not and will not distribute any
+copyrighted game assets.
+
+This reimplementation is created for:
+- Preservation of video game history
+- Interoperability and platform support
+- Educational purposes
+- Enabling community modifications
+
+All reverse engineering was performed for interoperability purposes in
+accordance with applicable copyright law.

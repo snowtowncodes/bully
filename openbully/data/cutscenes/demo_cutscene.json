@@ -1,0 +1,136 @@
+{
+  "_comment": "Track 48 demo cutscenes, hand-authored for the Chapter 1 flow on the ASY_ABlock rooftop (Jimmy's verified spawn, bounds x[-748.6,-722.1], y~465, z[2.0,8.1]). Like demo_missions.json, every position is an offset from the 'spawn' reference point ('ref': 'spawn') so the content stays aligned wherever the level lands. Cutscene 1 (cs_intro_welcome) auto-starts when the ch1_welcome mission activates (the tz_spawn trigger zone fires at spawn) - the mission -> cutscene path; cutscene 2 (cs_classmates_tip) activates the next mission in the chain on end - the cutscene -> mission-state path. Camera keys: 'cut': true makes the transition instant (the previous pose holds, then the view pops); without it the camera eases position + look-at with a smoothstep blend. 'face_actor' overrides look_at with the actor's live head position. Actions: MOVE_TO tweens over 'duration' (walk clip runs while in flight), TELEPORT sets the position instantly, FACE turns the actor's yaw toward the target point, ANIMATE plays a clip ('walk'/'idle' stay under the normal walk/idle switcher; any other name is looked up in the loaded .agr dictionary and played for 'duration' seconds).",
+  "cutscenes": [
+    {
+      "id": "cs_intro_welcome",
+      "duration": 13.0,
+      "auto_mission": "ch1_welcome",
+      "actors": [
+        { "name": "jimmy", "kind": "jimmy" },
+        { "name": "gary", "kind": "npc",
+          "near": { "ref": "spawn", "offset": [2.6, 0, -1.0] }, "radius": 45 }
+      ],
+      "camera": {
+        "keyframes": [
+          { "time": 0.0,
+            "position": { "ref": "spawn", "offset": [-5.5, 2.4, -9.0] },
+            "look_at": { "ref": "spawn", "offset": [1.5, 1.3, 0.0] } },
+          { "time": 5.0,
+            "position": { "ref": "spawn", "offset": [-1.5, 1.8, -4.5] },
+            "look_at": { "ref": "spawn", "offset": [1.0, 1.2, 0.0] } },
+          { "time": 6.0, "cut": true, "face_actor": "gary",
+            "position": { "ref": "spawn", "offset": [3.4, 1.6, -2.4] },
+            "look_at": { "ref": "spawn", "offset": [1.0, 1.2, 0.0] } },
+          { "time": 10.0, "face_actor": "gary",
+            "position": { "ref": "spawn", "offset": [0.6, 1.5, -1.9] },
+            "look_at": { "ref": "spawn", "offset": [1.0, 1.2, 0.0] } },
+          { "time": 13.0, "cut": true,
+            "position": { "ref": "spawn", "offset": [0.0, 2.2, -4.2] },
+            "look_at": { "ref": "spawn", "offset": [1.5, 1.2, 0.0] } }
+        ]
+      },
+      "actions": [
+        { "time": 0.4, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [2.0, 0, 0.0] } },
+        { "time": 0.8, "actor": "jimmy", "type": "ANIMATE", "anim": "idle" },
+        { "time": 1.0, "actor": "jimmy", "type": "MOVE_TO", "duration": 3.0,
+          "position": { "ref": "spawn", "offset": [2.2, 0, -1.2] } },
+        { "time": 3.0, "actor": "gary", "type": "MOVE_TO", "duration": 2.2,
+          "position": { "ref": "spawn", "offset": [1.0, 0, -0.6] } },
+        { "time": 5.6, "actor": "gary", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [2.2, 0, -1.2] } },
+        { "time": 5.7, "actor": "gary", "type": "ANIMATE", "anim": "idle" },
+        { "time": 9.2, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [1.0, 0, -0.6] } },
+        { "time": 12.4, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [8.0, 0, -1.0] } }
+      ],
+      "lines": [
+        { "time": 1.2, "duration": 3.0, "speaker": "Gary",
+          "text": "New kid! Close your mouth, you'll catch flies." },
+        { "time": 5.7, "duration": 3.0, "speaker": "Gary",
+          "text": "Words can't hurt me. I've tried them all!" },
+        { "time": 9.4, "duration": 3.2, "speaker": "Crabblesnitch",
+          "text": "That's the Principal. This is your school now." }
+      ]
+    },
+    {
+      "id": "cs_classmates_tip",
+      "duration": 9.0,
+      "on_end_mission": "ch1_this_is_your_school",
+      "actors": [
+        { "name": "jimmy", "kind": "jimmy" },
+        { "name": "gary", "kind": "npc",
+          "near": { "ref": "spawn", "offset": [1.0, 0, -0.6] }, "radius": 45 }
+      ],
+      "camera": {
+        "keyframes": [
+          { "time": 0.0,
+            "position": { "ref": "spawn", "offset": [-3.0, 1.9, -4.0] },
+            "look_at": { "ref": "spawn", "offset": [1.2, 1.2, 0.0] } },
+          { "time": 4.0, "face_actor": "gary",
+            "position": { "ref": "spawn", "offset": [0.5, 1.5, -2.6] },
+            "look_at": { "ref": "spawn", "offset": [1.0, 1.2, 0.0] } },
+          { "time": 9.0, "cut": true,
+            "position": { "ref": "spawn", "offset": [0.0, 2.4, -5.0] },
+            "look_at": { "ref": "spawn", "offset": [1.0, 1.2, -0.5] } }
+        ]
+      },
+      "actions": [
+        { "time": 0.5, "actor": "jimmy", "type": "MOVE_TO", "duration": 2.5,
+          "position": { "ref": "spawn", "offset": [1.5, 0, -1.0] } },
+        { "time": 1.0, "actor": "gary", "type": "ANIMATE", "anim": "idle" },
+        { "time": 3.0, "actor": "gary", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [1.5, 0, -1.0] } },
+        { "time": 6.0, "actor": "jimmy", "type": "ANIMATE", "anim": "idle" },
+        { "time": 8.0, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [4.0, 0, -1.5] } }
+      ],
+      "lines": [
+        { "time": 0.8, "duration": 3.0, "speaker": "Gary",
+          "text": "Here's your schedule. Don't lose it or the dean's got you." },
+        { "time": 4.5, "duration": 3.5, "speaker": "Crabblesnitch",
+          "text": "Report to class at the bell. Try to keep out of trouble." }
+      ]
+    },
+    {
+      "id": "boss_victory",
+      "duration": 8.0,
+      "_comment": "Track 49: fired from Engine::OnBossDefeated when a boss hits 0 HP. The 'boss' actor binds the nearest NPC to the boss spawn point (spawn + [7,0,0]) - the KO'd boss itself.",
+      "actors": [
+        { "name": "jimmy", "kind": "jimmy" },
+        { "name": "boss", "kind": "npc",
+          "near": { "ref": "spawn", "offset": [7.0, 0, 0.0] }, "radius": 45 }
+      ],
+      "camera": {
+        "keyframes": [
+          { "time": 0.0,
+            "position": { "ref": "spawn", "offset": [11.5, 2.6, -5.5] },
+            "look_at": { "ref": "spawn", "offset": [7.0, 0.8, 0.0] } },
+          { "time": 3.5,
+            "position": { "ref": "spawn", "offset": [9.2, 1.4, -3.2] },
+            "look_at": { "ref": "spawn", "offset": [7.0, 0.7, 0.0] } },
+          { "time": 4.5, "cut": true, "face_actor": "jimmy",
+            "position": { "ref": "spawn", "offset": [5.6, 1.6, -1.6] },
+            "look_at": { "ref": "spawn", "offset": [7.0, 0.7, 0.0] } },
+          { "time": 8.0, "cut": true,
+            "position": { "ref": "spawn", "offset": [5.5, 2.2, -4.0] },
+            "look_at": { "ref": "spawn", "offset": [7.0, 1.0, 0.0] } }
+        ]
+      },
+      "actions": [
+        { "time": 0.6, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [7.0, 0, 0.0] } },
+        { "time": 1.0, "actor": "jimmy", "type": "ANIMATE", "anim": "idle" },
+        { "time": 7.4, "actor": "jimmy", "type": "FACE",
+          "position": { "ref": "spawn", "offset": [12.0, 0, -1.0] } }
+      ],
+      "lines": [
+        { "time": 1.2, "duration": 3.2, "speaker": "Jimmy",
+          "text": "Stay down. This school's got a new pecking order." },
+        { "time": 4.8, "duration": 3.0, "speaker": "Jimmy",
+          "text": "Now who's the boss of this yard?" }
+      ]
+    }
+  ]
+}

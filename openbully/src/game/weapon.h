@@ -23,7 +23,11 @@ enum class WeaponType : uint8_t {
     Unarmed = 0,
     MeleeBlunt,        // bat, garbage lid, plank
     MeleeSharp,        // yardstick
-    RangedProjectile,  // slingshot
+    RangedProjectile,  // slingshot, firecracker
+    // --- Track 41/47: rows past the type range are ids, not types. kTable
+    // indexes them by value (GetWeaponData uses kTable[int(type)]), so each
+    // value must equal its row: Plank=5, Firecracker=6, Camera=7.
+    Camera = 7,        // photography (RMB viewfinder, LMB shutter)
 };
 
 struct WeaponData {
@@ -53,6 +57,10 @@ inline const WeaponData& GetWeaponData(WeaponType type) {
         // enters the inventory through the class-reward grant. Throws like a
         // ranged projectile (bigger pop, shorter range than the slingshot).
         { "Firecracker",WeaponType::RangedProjectile,20,  0,  5, 14.0f, 1.10f, 0.75f, nullptr,          6.0f },
+        // Track 47: camera (photography class). No damage, durability or
+        // knockback, so the wear/break path never touches it; no hand model
+        // either — the viewfinder overlay replaces the weapon view.
+        { "Camera",     WeaponType::Camera,           0,  0,  0,  0.0f, 1.10f, 0.75f, nullptr,          0.0f },
     };
     const int n = int(sizeof(kTable) / sizeof(kTable[0]));
     return kTable[uint8_t(type) < n ? uint8_t(type)

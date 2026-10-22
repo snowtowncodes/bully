@@ -64,10 +64,14 @@ add_executable(openbully
     src/main.cpp
     src/engine/engine.cpp
     src/combat/combat.cpp
+    src/game/boss.cpp
     src/vehicles/vehicle.cpp
     src/engine/resource_manager.cpp
     src/mission/mission.cpp
+    src/photo/photo.cpp
+    src/cutscene/cutscene.cpp   # Track 48: cutscene playback (camera keys + actor actions + subtitles)
     src/game/schedule.cpp
+    src/game/classes.cpp   # Track 41: class system (attendance + completion)
     src/dialogue/dialogue.cpp
     src/engine/formats/nif_loader.cpp
     src/engine/formats/nft_loader.cpp
@@ -78,17 +82,22 @@ add_executable(openbully
     src/vehicles/vehicle.cpp
     src/vehicles/vehicle_physics.cpp
     src/vehicles/vehicle_feel.cpp
+    src/game/tricks.cpp
     src/game/input.cpp
     src/game/camera.cpp
+    src/minigame/minigame.cpp  # Track 44: minigame framework (class activities)
+    src/game/boss.cpp          # Track 49: boss definitions + QTE helpers
     src/weather/weather.cpp
     src/physics/collision.cpp
     src/vehicles/vehicle_physics.cpp
     src/platform/window.cpp
     src/platform/logger.cpp
+    src/platform/crash_report.cpp
     src/rendering/mesh.cpp
     src/rendering/renderer.cpp
     src/ui/ui.cpp
     src/engine/save_system.cpp
+    src/arcade/arcade.cpp      # Track 45: arcade cabinets (Nut Shots / Monkey Fling)
 )
 
 # NIF loader test harness (standalone, no SDL/bgfx dependency).
@@ -137,6 +146,15 @@ target_include_directories(vp_probe PRIVATE
 )
 target_link_libraries(vp_probe PRIVATE glm_headers)
 
+# Track 46 trick scoring probe (headless; no GPU/SDL/glm).
+add_executable(trick_probe
+    src/tools/trick_probe.cpp
+    src/game/tricks.cpp
+)
+target_include_directories(trick_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # Track 33 vehicle handling self-test (headless; no GPU, no audio device).
 add_executable(vehicle_test
     src/tools/vehicle_test.cpp
@@ -166,6 +184,19 @@ add_executable(audio_test
     src/tools/audio_test.cpp
     src/audio/audio.cpp
     src/platform/logger.cpp
+)
+
+# Track 41 class system self-test (headless; no GPU/SDL): JSON load, schedule
+# queries, progression + save/load roundtrip of the class section.
+add_executable(class_test
+    src/tools/class_test.cpp
+    src/game/classes.cpp
+    src/engine/save_system.cpp
+    src/platform/logger.cpp
+)
+target_include_directories(class_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENBULLY_GLM_DIR}
 )
 target_include_directories(audio_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -309,6 +340,24 @@ add_custom_command(TARGET openbully POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/data/dialogue/demo_dialogue.json"
         "$<TARGET_FILE_DIR:openbully>/data/dialogue/demo_dialogue.json"
     COMMENT "Copying demo_dialogue.json next to openbully.exe")
+
+# Track 48: cutscene definitions next to the executable (same probe convention
+# as missions: data/cutscenes/demo_cutscene.json, then the source tree).
+add_custom_command(TARGET openbully POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openbully>/data/cutscenes"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/cutscenes/demo_cutscene.json"
+        "$<TARGET_FILE_DIR:openbully>/data/cutscenes/demo_cutscene.json"
+    COMMENT "Copying demo_cutscene.json next to openbully.exe")
+
+# Track 41: class definitions next to the executable (same probe convention:
+# data/classes/classes.json first, then the source tree).
+add_custom_command(TARGET openbully POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openbully>/data/classes"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/classes/classes.json"
+        "$<TARGET_FILE_DIR:openbully>/data/classes/classes.json"
+    COMMENT "Copying classes.json next to openbully.exe")
 
 # Aggregate target for shader compilation: builds every per-shader stamp
 # produced by the custom commands above. openbully depends on it so shader

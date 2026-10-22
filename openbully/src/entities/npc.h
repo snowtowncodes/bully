@@ -32,6 +32,7 @@
 #include "entity_id.h"        // EntityID (own header: no entity.h cycle)
 
 #include "../game/player.h" // Track 26: Health for NPC damage
+#include "../game/faction.h" // Track 42: Faction enum (plain data, no cycles)
 
 namespace OpenBully {
 
@@ -107,6 +108,13 @@ struct AIComponent {
 
     // --- Track 28: reaction state -------------------------------------------
     AIRole   role          = AIRole::Civilian;
+
+    // --- Track 42: faction membership ---------------------------------------
+    // Assigned at spawn from the model index (Engine::FactionForModel);
+    // AIRole::Prefect NPCs are Faction::Authority. Respect bands
+    // (Engine::m_factions) gate perception + AI reactions.
+    Faction  faction       = Faction::Townies;
+
     EntityID targetEntity{};        // CHASE: who we pursue/attack
     glm::vec3 threatPos{0.0f};      // FLEE: run away from here
     glm::vec3 fightPos{0.0f};       // WATCH/ALERT: fight location to face

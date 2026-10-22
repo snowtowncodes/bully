@@ -27,6 +27,15 @@ inline constexpr float kWheelieStuntTime   = 3.0f;   // s: logged as "stunt"
 inline constexpr float kAutoRightDelay     = 3.0f;   // s: crashed -> auto-right
 inline constexpr float kFeelGravity        = 9.8f;   // u/s^2 downward
 inline constexpr float kFeelRollingDrag    = 1.2f;   // 1/s coasting damping
+// Track 46: stoppie tuning. The stoppie mirrors the wheelie spring model:
+// brake torque pitches the nose DOWN (rear rises), the restoring spring is
+// weight on the front wheel, and the balance decays as speed bleeds off so
+// the endo settles back down instead of hanging forever.
+inline constexpr float kStoppieTorque      = 120.0f; // deg/s^2 pitch accel
+inline constexpr float kStoppieSpring      = 7.0f;   // 1/s^2 restoring (per deg)
+inline constexpr float kStoppieDamping     = 5.0f;   // 1/s angular damping
+inline constexpr float kStoppieBalanceMax  = 50.0f;  // deg: over-rotate -> fail
+inline constexpr float kStoppieMinSpeed    = 1.5f;   // u/s: too slow to endo
 
 // Runtime feel state (per mounted vehicle; standalone path).
 struct FeelState {
@@ -37,7 +46,11 @@ struct FeelState {
     bool inBrake    = false;   // S
     bool inLeanL    = false;   // A
     bool inLeanR    = false;   // D
-    bool inWheelie  = false;   // Shift (W + Shift on bike = wheelie)
+    bool inWheelie  = false;   // Shift held, OR W+S (Track 46 trick trigger)
+    // Track 46: true when the bike is grounded (>= 1 wheel contact). Tricks
+    // cannot start mid-air; the wheelie torque gate below also uses it so a
+    // Shift/W+S hold doesn't lift the front while jumping.
+    bool inGrounded = true;
 
     // Wheelie state (bike only).
     bool  wheelieActive  = false;
@@ -45,6 +58,15 @@ struct FeelState {
     float wheelieBalance = 0.0f;  // deg/s pitch angular velocity
     float wheelieTime    = 0.0f;  // s continuous
     bool  wheelieStuntLogged = false;
+
+    // Track 46: stoppie state (bike only). Mirror of the wheelie channel with
+    // the opposite pitch sense: + stoppieAngle means the REAR is lifted (the
+    // front dives under braking). Kept separate from wheelieAngle so the two
+    // poses can never blend — they start from mutually exclusive inputs.
+    bool  stoppieActive  = false;
+    float stoppieAngle   = 0.0f;  // deg, 0 = level, + = rear lifted
+    float stoppieBalance = 0.0f;  // deg/s pitch angular velocity
+    float stoppieTime    = 0.0f;  // s continuous
 
     // Crash state.
     bool  crashed    = false;
@@ -65,6 +87,8 @@ struct FeelOut {
     bool  stuntLogged = false;  // wheelie > kWheelieStuntTime
     bool  autoRighted = false;
     float impactSpeed = 0.0f;
+    // Track 46: stoppie over-rotation (rear too high) -> loop out backwards.
+    bool  stoppieFail = false;
 };
 
 // Per-frame feel update (standalone drive model). pos is read for wobble phase

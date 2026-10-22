@@ -3,6 +3,7 @@
 
 #include "platform/window.h"
 #include "platform/logger.h"
+#include "platform/crash_report.h"
 #include "engine/engine.h"
 #include "rendering/renderer.h" // complete Renderer type for Engine's dtor
 
@@ -12,6 +13,7 @@ int main(int argc, char* argv[]) {
     using namespace OpenBully;
 
     Logger::Init();
+    InstallCrashReporter(); // Track 49: log module+offset on unhandled faults
     setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered: logs visible when piped
     Logger::Info("OpenBully v0.1.0 - Bootstrap Phase 2 (bgfx)");
 
@@ -72,3 +74,8 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+// NOTE: a temporary SEH crash reporter was prototyped here for the Track 49
+// verification (printing module+offset for the int3 crash); removed again —
+// the root cause was found before it was needed (see the Jimmy void guard in
+// Engine::UpdateJimmy and the deferred boss spawns).

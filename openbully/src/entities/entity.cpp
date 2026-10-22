@@ -37,6 +37,7 @@ EntityID EntityManager::Create() {
             rec.combat    = 0xFFFFFFFF;
             rec.melee     = 0xFFFFFFFF;
             rec.vehicle   = 0xFFFFFFFF;
+            rec.boss      = 0xFFFFFFFF;
             m_transforms.emplace_back();
             ++m_aliveCount;
             return EntityID{uint32_t(i), rec.generation};
@@ -55,6 +56,7 @@ EntityID EntityManager::Create() {
     rec.combat    = 0xFFFFFFFF;
     rec.melee     = 0xFFFFFFFF;
     rec.vehicle   = 0xFFFFFFFF;
+    rec.boss      = 0xFFFFFFFF;
     m_transforms.emplace_back();
     m_entities.push_back(rec);
     ++m_aliveCount;
@@ -208,6 +210,14 @@ AIComponent* EntityManager::GetAI(EntityID id) {
     return &m_ai[rec->ai];
 }
 
+// Track 46: const overload so const engine readers (NpcFaction) can fetch AI
+// state without casting; FindRecord is called through a const path.
+const AIComponent* EntityManager::GetAI(EntityID id) const {
+    const EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->ai == 0xFFFFFFFF) return nullptr;
+    return &m_ai[rec->ai];
+}
+
 // -- CombatComponent (Track 24) ----------------------------------------------
 
 CombatComponent* EntityManager::AddCombat(EntityID id, const CombatComponent& c) {
@@ -245,6 +255,25 @@ Melee::CombatComponent* EntityManager::GetMeleeCombat(EntityID id) {
     EntityRecord* rec = nullptr;
     if (!FindRecord(id, &rec) || rec->melee == 0xFFFFFFFF) return nullptr;
     return &m_melees[rec->melee];
+}
+
+// -- BossComponent (Track 49) -------------------------------------------------
+
+BossComponent* EntityManager::AddBoss(EntityID id, const BossComponent& b) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->boss == 0xFFFFFFFF) {
+        rec->boss = uint32_t(m_bosses.size());
+        m_bosses.emplace_back();
+    }
+    m_bosses[rec->boss] = b;
+    return &m_bosses[rec->boss];
+}
+
+BossComponent* EntityManager::GetBoss(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->boss == 0xFFFFFFFF) return nullptr;
+    return &m_bosses[rec->boss];
 }
 
 // -- AnimationComponent (Track 17) ---------------------------------------------

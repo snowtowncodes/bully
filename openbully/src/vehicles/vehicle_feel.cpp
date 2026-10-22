@@ -71,6 +71,11 @@ bool FeelImpact(FeelState& feel, const glm::vec3& pos, float yaw,
     feel.wheelieBalance = 0.0f;
     feel.wheelieTime   = 0.0f;
     feel.wheelieStuntLogged = false;
+    // Track 46: the stoppie dies with the crash too.
+    feel.stoppieActive  = false;
+    feel.stoppieAngle   = 0.0f;
+    feel.stoppieBalance = 0.0f;
+    feel.stoppieTime    = 0.0f;
 
     out.crashBegan = true;
     // Rider lands beside the vehicle, perpendicular to heading (impact side).
@@ -136,8 +141,8 @@ FeelOut StepFeel(FeelState& feel, const glm::vec3& pos, float yaw, float speed,
                         dt * 10.0f;
     }
 
-    // --- Wheelie (bike only) -------------------------------------------------
-    if (feel.type == VehicleType::Bike) {
+    // --- Wheelie (bike only, grounded) ---------------------------------------
+    if (feel.type == VehicleType::Bike && feel.inGrounded) {
         // StepWheelie works in deg and per-frame units; scale torque by dt here
         // by pre-multiplying balance (kept simple: balance in deg/s, integrate
         // with dt below via direct call semantics).
@@ -197,7 +202,72 @@ FeelOut StepFeel(FeelState& feel, const glm::vec3& pos, float yaw, float speed,
         }
     }
 
-    out.pitch = feel.wheelieAngle * kDegToRad;
+    // --- Track 46: stoppie (bike only): brake hard while rolling forward -----
+    // The endo mirrors the wheelie: brake torque pitches the nose DOWN (the
+    // rear rises — positive stoppieAngle in the feel convention), the front
+    // weight spring pulls it back, and the balance fades as speed bleeds so
+    // a full brake stop settles the rear wheel instead of looping out.
+    // Gated on the wheelie ANGLE (not the active latch): during a wheelie's
+    // ~0.15 s release decay the stoppie may already trigger, and gating on
+    // the latch would eat the whole >1.5 u/s speed window.
+    if (feel.type == VehicleType::Bike && feel.wheelieAngle < 5.0f &&
+        !feel.crashed && feel.inGrounded) {
+        // Signed speed: a stoppie needs FORWARD motion. Once the brake stops
+        // the bike (and it creeps into reverse) the torque goes off and the
+        // spring settles the rear back down.
+        const bool wantStoppie = feel.inBrake && !feel.inThrottle &&
+                                 speed > kStoppieMinSpeed;
+        if (!feel.stoppieActive && wantStoppie) {
+            feel.stoppieActive  = true;
+            feel.stoppieTime    = 0.0f;
+            feel.stoppieBalance = 0.0f;
+            VehicleSfxWheelie(pos); // same pitch-up cue, different pose
+        }
+
+        if (feel.stoppieActive) {
+            feel.stoppieTime += dt;
+            // Torque fades as the speed collapses: an endo from a rolling
+            // brake lasts under ~1.2 s, then the rear settles back down.
+            const float fade = std::clamp(1.2f - feel.stoppieTime, 0.0f, 1.0f);
+            const float torque = wantStoppie
+                ? kStoppieTorque * h.flipFactor * fade * dt
+                : 0.0f;
+            const float spring = -kStoppieSpring * feel.stoppieAngle;
+            feel.stoppieBalance += (torque + spring) * dt;
+            feel.stoppieBalance -= feel.stoppieBalance * kStoppieDamping * dt;
+            feel.stoppieAngle   += feel.stoppieBalance * dt;
+
+            if (feel.stoppieAngle > kStoppieBalanceMax) {
+                // Rear flipped over the front: loop out -> crash (bail).
+                Logger::Info("STUNT FAILED: stoppie looped out (%.0f deg)",
+                             feel.stoppieAngle);
+                feel.stoppieActive  = false;
+                feel.stoppieAngle   = 0.0f;
+                feel.stoppieBalance = 0.0f;
+                feel.stoppieTime    = 0.0f;
+                FeelImpact(feel, pos, yaw, kEjectImpactSpeed + 1.0f, out);
+            } else if (!wantStoppie && feel.stoppieAngle <= 0.0f) {
+                // Released and recovered to level.
+                feel.stoppieActive  = false;
+                feel.stoppieAngle   = 0.0f;
+                feel.stoppieBalance = 0.0f;
+                feel.stoppieTime    = 0.0f;
+            }
+        } else {
+            feel.stoppieAngle   = 0.0f;
+            feel.stoppieBalance = 0.0f;
+        }
+    } else if (feel.type == VehicleType::Bike &&
+               (feel.crashed || feel.wheelieActive)) {
+        // A wheelie (or a crash) takes the stoppie channel offline; fold any
+        // residual stoppie pitch back to level without antic feedback.
+        feel.stoppieActive  = false;
+        feel.stoppieAngle   = 0.0f;
+        feel.stoppieBalance = 0.0f;
+        feel.stoppieTime    = 0.0f;
+    }
+
+    out.pitch = (feel.wheelieAngle + feel.stoppieAngle) * kDegToRad;
     if (feel.crashed) out.roll = feel.tiltRoll;
     return out;
 }

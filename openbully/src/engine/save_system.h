@@ -35,6 +35,22 @@ struct TriggerSave {
     bool        fired = false;
 };
 
+// Class progression snapshot (Track 41): per-class completion counters.
+struct ClassSave {
+    std::string id;
+    int completions = 0;
+    int fails       = 0;
+};
+
+// Faction reputation snapshot (Track 42): per-faction respect (-100..100) +
+// the completed-mission tally that feeds the overall-respect aggregate.
+// Index order matches the Faction enum (faction.h).
+struct ReputationSave {
+    static constexpr int kCount = 7;   // Faction::Count (keep in sync)
+    float respect[kCount] = {};
+    int   completedMissions = 0;
+};
+
 // Full game state for one save slot.
 struct SaveData {
     int         version   = 1;
@@ -59,9 +75,27 @@ struct SaveData {
     std::vector<MissionSave> missions;
     std::vector<TriggerSave> triggers;
 
+    // --- Class (Track 41) -----------------------------------------------------
+    std::vector<ClassSave> classes;
+    int classRespect       = 0;
+    int slingshotCapBonus  = 0;   // SHOP class reward (Track 41)
+
+    // --- Reputation (Track 42) -------------------------------------------------
+    ReputationSave reputation;
+
     // --- World ----------------------------------------------------------------
     double gameTimeMinutes = 8.0 * 60.0;   // fractional minutes since midnight
+    int    gameDay         = 0;            // Track 41: day counter (0 = Monday)
     int    weather          = 0;            // placeholder (Track 34 not yet done)
+
+    // --- Track 45: arcade progression ----------------------------------------
+    // Per-game high scores in ArcadeGameId order (Nut Shots, Monkey Fling);
+    // wins = rounds that set a new high score (drives the $5 prize and the
+    // 10-win "Arcade Winner" achievement).
+    int    arcadeHigh[2]      = {0, 0};
+    int    arcadePlays        = 0;   // coins inserted
+    int    arcadeWins         = 0;
+    int    arcadeAchievement  = 0;   // 1 = unlocked
 };
 
 // Stateless save/load helper. All methods are static; the Engine computes the

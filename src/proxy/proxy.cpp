@@ -10,6 +10,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #include <d3d9.h>
 #include <d3d12.h>
 #include <d3d9on12.h>
@@ -687,30 +688,25 @@ static LONG WINAPI Neutralized_ChangeDisplaySettingsExW(LPCWSTR lpszDeviceName,
     return DISP_CHANGE_SUCCESSFUL;
 }
 
-// Patch the main executable's IAT entries for ChangeDisplaySettings* so the
-// stubs above run instead of the real user32 functions. Only the exe is walked.
-static void InstallDisplaySettingsNeutralizer() {
-    if (s_displayNeutralized) return;
-    s_displayNeutralized = true;
-
+// Patch one loaded module's IAT entries for ChangeDisplaySettings* so the
+// stubs above run instead of the real user32 functions. Returns the number of
+// slots replaced; a fault inside one module is contained and does not abort the
+// remaining modules.
+static UINT PatchModuleDisplaySettingsIAT(HMODULE module) {
     UINT patched = 0;
-    __try {
-        HMODULE exe = GetModuleHandleA(nullptr);
-        if (!exe) return;
+    if (!module) return 0;
 
-        BYTE* base = reinterpret_cast<BYTE*>(exe);
+    __try {
+        BYTE* base = reinterpret_cast<BYTE*>(module);
         PIMAGE_DOS_HEADER dos = reinterpret_cast<PIMAGE_DOS_HEADER>(base);
-        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
 
         PIMAGE_NT_HEADERS nt = reinterpret_cast<PIMAGE_NT_HEADERS>(base + dos->e_lfanew);
-        if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
 
         const DWORD importRva =
             nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-        if (importRva == 0) {
-            Log("[proxy] borderless: no ChangeDisplaySettings imports found in exe IAT\n");
-            return;
-        }
+        if (importRva == 0) return 0;
 
         PIMAGE_IMPORT_DESCRIPTOR descriptor =
             reinterpret_cast<PIMAGE_IMPORT_DESCRIPTOR>(base + importRva);
@@ -750,15 +746,76 @@ static void InstallDisplaySettingsNeutralizer() {
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        Log("[proxy] borderless: IAT walk faulted; display-settings neutralizer incomplete\n");
-        return;
+        return patched;
+    }
+
+    return patched;
+}
+
+// Patch every loaded module's ChangeDisplaySettings* imports, then restore the
+// registry-persisted desktop mode in case the game changed it before this
+// neutralizer ran (the process loads ASI plugins that can set a display mode
+// before the proxy's Direct3DCreate9 is reached).
+static void InstallDisplaySettingsNeutralizer() {
+    if (s_displayNeutralized) return;
+    s_displayNeutralized = true;
+
+    // Identify our own module so its IAT is not walked.
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&s_displayNeutralized), &self);
+
+    UINT patched = 0;
+    UINT modulesPatched = 0;
+
+    __try {
+        HANDLE snapshot = CreateToolhelp32Snapshot(
+            TH32CS_SNAPMODULE, GetCurrentProcessId());
+        if (snapshot == INVALID_HANDLE_VALUE) {
+            Log("[proxy] borderless: module snapshot failed (%lu); no IAT patch performed\n",
+                static_cast<unsigned long>(GetLastError()));
+        } else {
+            MODULEENTRY32W entry = {};
+            entry.dwSize = sizeof(entry);
+            if (Module32FirstW(snapshot, &entry)) {
+                do {
+                    if (self && entry.hModule == self) continue;
+                    const UINT modulePatched =
+                        PatchModuleDisplaySettingsIAT(entry.hModule);
+                    if (modulePatched > 0) {
+                        patched += modulePatched;
+                        modulesPatched++;
+                    }
+                } while (Module32NextW(snapshot, &entry));
+            }
+            CloseHandle(snapshot);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[proxy] borderless: module IAT walk faulted; display-settings "
+            "neutralizer incomplete\n");
     }
 
     if (patched == 0) {
         Log("[proxy] borderless: no ChangeDisplaySettings imports found in exe IAT\n");
     } else {
-        Log("[proxy] borderless: neutralized %u ChangeDisplaySettings IAT entr%s in main exe\n",
-            patched, patched == 1 ? "y" : "ies");
+        Log("[proxy] borderless: neutralized %u ChangeDisplaySettings IAT entries "
+            "across %u modules\n",
+            patched, modulesPatched);
+    }
+
+    // Undo any display-mode change that slipped in before the patch pass by
+    // resetting to the registry-persisted mode. Resolved by name so this call
+    // bypasses our own stubs (our module is never patched).
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        auto realChangeDisplaySettingsA = reinterpret_cast<LONG(WINAPI*)(DEVMODEA*, DWORD)>(
+            GetProcAddress(user32, "ChangeDisplaySettingsA"));
+        if (realChangeDisplaySettingsA) {
+            const LONG result = realChangeDisplaySettingsA(nullptr, 0);
+            Log("[proxy] borderless: restored desktop mode after install (hr=%ld)\n",
+                static_cast<long>(result));
+        }
     }
 }
 

@@ -1,0 +1,67 @@
+// OpenBully: Main Entry Point
+// Phase 2 - bgfx-backed bootstrap: window + engine loop
+
+#include "platform/window.h"
+#include "platform/logger.h"
+#include "engine/engine.h"
+#include "rendering/renderer.h" // complete Renderer type for Engine's dtor
+
+#include <string>
+
+int main(int argc, char* argv[]) {
+    using namespace OpenBully;
+
+    Logger::Init();
+    setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered: logs visible when piped
+    Logger::Info("OpenBully v0.1.0 - Bootstrap Phase 2 (bgfx)");
+
+    // Parse command-line arguments
+    bool testMode = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--test-triangle") {
+            testMode = true;
+        }
+    }
+    (void)testMode; // Phase 2: triangle always renders; flag reserved for later tracks
+    if (testMode) {
+        Logger::Info("Test triangle mode enabled");
+    }
+
+    // Create window
+    Window window("OpenBully", 1280, 720);
+    if (!window.IsValid()) {
+        Logger::Error("Failed to create window");
+        return 1;
+    }
+
+    // Initialize engine (owns bgfx renderer)
+    Engine engine;
+    if (!engine.Init(window)) {
+        Logger::Error("Failed to initialize engine");
+        return 1;
+    }
+
+    // Main loop
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                running = false;
+            }
+            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
+                running = false;
+            }
+        }
+
+        engine.Update();
+        engine.Render();
+        // Present handled by bgfx inside engine.Render() (Renderer::Frame).
+    }
+
+    // Cleanup
+    engine.Shutdown();
+    Logger::Info("OpenBully shutdown complete");
+
+    return 0;
+}

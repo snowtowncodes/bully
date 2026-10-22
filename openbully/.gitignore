@@ -1,0 +1,14 @@
+# Build output
+build/
+out/
+
+# Vendored dependencies (downloaded by bootstrap; see docs/building.md)
+external/
+
+# IDE / tooling
+.vs/
+.vscode/
+*.user
+
+# Extracted game archives (large; regenerate with src/tools/extract_img.py)
+data/extracted/

@@ -13,6 +13,8 @@
 
 #include <glm/glm.hpp>
 
+#include "../game/player.h" // Track 26: Health for NPC damage
+
 namespace OpenBully {
 
 enum class AIState : uint8_t {
@@ -36,6 +38,9 @@ struct AIComponent {
     float faceRadius   = 5.0f;      // player-detection radius (task spec)
     float turnSpeed    = 6.0f;      // rad/s toward facing target
     float facingYaw    = 0.0f;      // current body yaw (radians, 0 = +Z)
+
+    // Track 26: vitals so weapon attacks (melee + slingshot) can hurt NPCs.
+    Health health;
 };
 
 } // namespace OpenBully

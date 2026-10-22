@@ -373,6 +373,40 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
                  PackRGBA(r, g, 30, 235));
     }
 
+    // --- Track 25: stamina bar (under the health bar) -------------------------
+    {
+        const float barW = 220.0f * s;
+        const float barH = 10.0f * s;
+        const float bx = pad;
+        const float by = H - pad - 20.0f * s - 2.0f * s - 2.0f * s - barH;
+        DrawRect(bx - 2.0f * s, by - 2.0f * s, barW + 4.0f * s, barH + 4.0f * s,
+                 PackRGBA(25, 25, 28, 200));
+        DrawRect(bx, by, barW, barH, PackRGBA(0, 0, 0, 180));
+        float ratio = hud.maxStamina > 0
+            ? float(hud.stamina) / float(hud.maxStamina) : 0.0f;
+        ratio = std::min(1.0f, std::max(0.0f, ratio));
+        // Yellow pool; flashes red when empty-ish.
+        DrawRect(bx + 1.0f * s, by + 1.0f * s,
+                 std::max(0.0f, (barW - 2.0f * s) * ratio), barH - 2.0f * s,
+                 PackRGBA(235, 200, 60, 235));
+    }
+
+    // --- Track 25: combat state label (under the stamina bar) -----------------
+    {
+        const char* label = nullptr;
+        uint32_t color = PackRGBA(255, 255, 255, 220);
+        switch (hud.combatState) {
+            case 1: label = "DODGE";  color = PackRGBA(120, 200, 255, 255); break;
+            case 2: label = "BLOCK";  color = PackRGBA(150, 150, 255, 255); break;
+            case 3: label = "COUNTER!"; color = PackRGBA(255, 220, 80, 255); break;
+            default: break; // Normal: no label
+        }
+        if (label)
+            DrawText(pad, H - pad - 20.0f * s - 2.0f * s - 2.0f * s - 10.0f * s
+                          - 2.0f * s - 2.0f * s - 2.0f * s - 8.0f * s,
+                     label, color);
+    }
+
     // --- Wanted stars: top-right -------------------------------------------
     const float right = W - pad;
     {
@@ -455,6 +489,58 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
         // Player dot at the center (white).
         DrawRect(cx - 2.5f * s, cy - 2.5f * s, 5.0f * s, 5.0f * s,
                  PackRGBA(255, 255, 255, 255));
+    }
+
+    // --- Track 24: grapple status banner (top-center) -----------------------
+    if (hud.grappleState > 0) {
+        const char* label = "";
+        uint32_t rgba = PackRGBA(255, 210, 80, 255);
+        switch (hud.grappleState) {
+        case 1: label = "GRAPPLE: U=HEADLOCK I=KNEE O=THROW G=RELEASE"; break;
+        case 2: label = "GRAPPLED - MASH U/I/O/SPACE!"; rgba = PackRGBA(255, 90, 90, 255); break;
+        case 3: label = "BREAKING FREE!"; rgba = PackRGBA(120, 255, 120, 255); break;
+        default: break;
+        }
+        std::string text(label);
+        const float tx = W * 0.5f - MeasureText(text) * 0.5f;
+        const float ty = pad;
+        DrawRect(tx - 4.0f * s, ty - 4.0f * s,
+                 MeasureText(text) + 8.0f * s, kGlyphHeight + 8.0f * s,
+                 PackRGBA(20, 20, 24, 190));
+        DrawText(tx, ty, text, rgba);
+        if (hud.grappleState == 2) {
+            char mb[32];
+            std::snprintf(mb, sizeof(mb), "MASH %d/10", hud.grappleMash);
+            const std::string mash(mb);
+            const float my2 = ty + (kGlyphHeight + 8.0f) * s + 6.0f * s;
+            DrawText(W * 0.5f - MeasureText(mash) * 0.5f, my2, mash,
+                     PackRGBA(255, 255, 255, 235));
+        }
+    }
+
+    // --- Weapon slots: bottom-left, above the health bar (Track 26) ---------
+    {
+        const float y = H - pad - 20.0f * s - kGlyphHeight * s - 8.0f * s;
+        float x = pad;
+        for (int i = 0; i < HUDState::kMaxWeaponSlots; ++i) {
+            const HUDState::WeaponSlotInfo& slot = hud.weaponSlots[i];
+            char buf[24];
+            if (slot.valid) {
+                if (slot.ammo > 0)
+                    std::snprintf(buf, sizeof(buf), "%d:%s %d", i + 1, slot.name, slot.ammo);
+                else
+                    std::snprintf(buf, sizeof(buf), "%d:%s %d", i + 1, slot.name, slot.durability);
+            } else {
+                std::snprintf(buf, sizeof(buf), "%d:-", i + 1);
+            }
+            const std::string label(buf);
+            const uint32_t rgba = slot.valid
+                ? (slot.equipped ? PackRGBA(255, 210, 60, 255)   // equipped: gold
+                                 : PackRGBA(200, 200, 205, 220))
+                : PackRGBA(110, 110, 115, 140);                  // empty: dim
+            DrawText(x, y, label, rgba);
+            x += MeasureText(label) + 10.0f * s;
+        }
     }
 }
 

@@ -33,6 +33,7 @@ EntityID EntityManager::Create() {
             rec.player    = 0xFFFFFFFF;
             rec.ai        = 0xFFFFFFFF;
             rec.animation = 0xFFFFFFFF;
+            rec.weapon    = 0xFFFFFFFF;
             m_transforms.emplace_back();
             ++m_aliveCount;
             return EntityID{uint32_t(i), rec.generation};
@@ -47,6 +48,7 @@ EntityID EntityManager::Create() {
     rec.player    = 0xFFFFFFFF;
     rec.ai        = 0xFFFFFFFF;
     rec.animation = 0xFFFFFFFF;
+    rec.weapon    = 0xFFFFFFFF;
     m_transforms.emplace_back();
     m_entities.push_back(rec);
     ++m_aliveCount;
@@ -200,6 +202,45 @@ AIComponent* EntityManager::GetAI(EntityID id) {
     return &m_ai[rec->ai];
 }
 
+// -- CombatComponent (Track 24) ----------------------------------------------
+
+CombatComponent* EntityManager::AddCombat(EntityID id, const CombatComponent& c) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->combat == 0xFFFFFFFF) {
+        rec->combat = uint32_t(m_combats.size());
+        m_combats.emplace_back();
+    }
+    m_combats[rec->combat] = c;
+    return &m_combats[rec->combat];
+}
+
+CombatComponent* EntityManager::GetCombat(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->combat == 0xFFFFFFFF) return nullptr;
+    return &m_combats[rec->combat];
+}
+
+// -- Melee::CombatComponent (Track 23) ----------------------------------------
+
+Melee::CombatComponent* EntityManager::AddMeleeCombat(EntityID id,
+                                                      const Melee::CombatComponent& c) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->melee == 0xFFFFFFFF) {
+        rec->melee = uint32_t(m_melees.size());
+        m_melees.emplace_back();
+    }
+    m_melees[rec->melee] = c;
+    return &m_melees[rec->melee];
+}
+
+Melee::CombatComponent* EntityManager::GetMeleeCombat(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->melee == 0xFFFFFFFF) return nullptr;
+    return &m_melees[rec->melee];
+}
+
 // -- AnimationComponent (Track 17) ---------------------------------------------
 
 AnimationComponent* EntityManager::AddAnimation(EntityID id, const AnimationComponent& a) {
@@ -217,6 +258,25 @@ AnimationComponent* EntityManager::GetAnimation(EntityID id) {
     EntityRecord* rec = nullptr;
     if (!FindRecord(id, &rec) || rec->animation == 0xFFFFFFFF) return nullptr;
     return &m_animations[rec->animation];
+}
+
+// -- WeaponComponent (Track 26) ------------------------------------------------
+
+WeaponComponent* EntityManager::AddWeapon(EntityID id, const WeaponComponent& w) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->weapon == 0xFFFFFFFF) {
+        rec->weapon = uint32_t(m_weapons.size());
+        m_weapons.emplace_back();
+    }
+    m_weapons[rec->weapon] = w;
+    return &m_weapons[rec->weapon];
+}
+
+WeaponComponent* EntityManager::GetWeapon(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->weapon == 0xFFFFFFFF) return nullptr;
+    return &m_weapons[rec->weapon];
 }
 
 // -- Spatial queries ----------------------------------------------------------

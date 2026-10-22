@@ -31,17 +31,37 @@ struct HUDState {
     int wanted = 0;
     // Cash on hand (display only, debug-modified later).
     int money = 0;
+    // Track 25: stamina pool (int-rounded for the bar) + combat state
+    // (CombatState: 0 normal, 1 dodge, 2 block, 3 counter).
+    int stamina = 100;
+    int maxStamina = 100;
+    int combatState = 0;
     // Game clock in minutes since midnight (480 = 08:00).
     int clockMinutes = 8 * 60;
     // Player world XZ + facing yaw (radians, 0 = +Z) for the minimap.
     float playerX   = 0.0f;
     float playerZ   = 0.0f;
     float playerYaw = 0.0f;
+    // Track 24: grapple HUD status. 0 = none, 1 = grabbing (attacker),
+    // 2 = grappled (target), 3 = breaking free.
+    int   grappleState = 0;
+    int   grappleMash  = 0;   // mash presses done toward the break-free count
     // Nearby NPC world XZ dots for the minimap.
     static constexpr int kMaxMinimapDots = 64;
     struct MinimapDot { float x = 0.0f; float z = 0.0f; };
     MinimapDot npcDots[kMaxMinimapDots] = {};
     int npcDotCount = 0;
+
+    // Track 26: weapon inventory slots (bottom-left, above the health bar).
+    static constexpr int kMaxWeaponSlots = 5;
+    struct WeaponSlotInfo {
+        bool valid = false;
+        bool equipped = false;
+        char name[16] = {};
+        int  durability = 0;
+        int  ammo = 0;
+    };
+    WeaponSlotInfo weaponSlots[kMaxWeaponSlots] = {};
 };
 
 class UIRenderer {

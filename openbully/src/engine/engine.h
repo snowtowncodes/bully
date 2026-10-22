@@ -10,6 +10,8 @@
 #include "game/camera.h"
 #include "game/input.h"
 #include "game/player.h"
+#include "game/weapon.h" // Track 26: WeaponType + WeaponData
+#include "../combat/combat.h" // Track 23: melee combat core
 #include "../mission/mission.h"
 #include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
 #include <cstdint>
@@ -70,6 +72,44 @@ private:
     void UpdateJimmy(float dt);
     void UpdateJimmyCamera(float dt);
 
+    // Track 25: dodge / block / stamina state machine. Runs before
+    // UpdateJimmy so the movement code can honor the combat state
+    // (dodge overrides movement, block roots the character).
+    void UpdateJimmyCombat(float dt);
+    // Track 25: central incoming-damage gate for the player. Honors dodge
+    // i-frames (0 damage) and block (50% reduction + counter-window check);
+    // all player damage sources must route through this.
+    void DamagePlayer(int amount, const char* source);
+
+    // Track 26: weapon system. Weapon models load from the extracted World.img
+    // set (bat/garbagelid/yardstick/slingshot); pickups spawn near Jimmy and
+    // are collected with E; 1-5 selects inventory slots; the equipped weapon
+    // replaces the unarmed punch (LMB) — melee extends the hit range and uses
+    // weapon damage, the slingshot spawns a projectile entity.
+    struct WeaponModel {
+        std::string name;                            // NIF file name
+        WeaponType  type   = WeaponType::Unarmed;
+        int         id     = 0;                      // kTable index (authoritative)
+        GpuMesh     gpu;
+        std::vector<WorldMesh::SubRange> subs;
+        float       drawScale = 1.0f;                // normalizes to ~0.9u
+    };
+    struct Projectile {
+        EntityID  id;                                // Transform + Mesh(isBox)
+        glm::vec3 velocity{0.0f};
+        float     life    = 3.0f;                    // seconds until despawn
+        int       damage  = 0;                       // 0 = inert debris
+    };
+    bool LoadWeaponModels();
+    void SpawnWeaponPickups(const glm::vec3& center);
+    void UpdateWeapons(float dt);                    // pickups (E) + slot keys
+    void WeaponTryAttack(PlayerController* pc);      // LMB with weapon equipped
+    void SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg);
+    void SpawnDebris(const glm::vec3& pos);          // break effect
+    void UpdateProjectiles(float dt);
+    void RenderWeaponInHand(const glm::mat4& view, const glm::mat4& proj);
+    const WeaponModel* EquippedWeaponModel(const PlayerController* pc, int* slotOut = nullptr) const;
+
     // Track 17: skeletal animation. Loads Anim/C_Player.agr once into a
     // shared rig (skeleton + clips); attaches AnimationComponents to Jimmy
     // and NPCs; per-frame playback update; skinned draws in Render.
@@ -80,6 +120,17 @@ private:
     uint32_t CloneRig(uint32_t sourceRigIndex);
     void   UpdateAnimations(float dt);               // drive all controllers
     void   UpdateEntityAnimation(EntityID id, bool moving, float dt);
+
+    // Track 23: melee combat. Loads Anim/C_Player.agr once (World.img player
+    // group; attack clips picked through the MAINPED.HXD name dictionary) and
+    // registers the punch/kick clips on every rig. UpdateMeleeCombat drives
+    // attack input, hit-frame sphere checks, damage/knockback/stun and the
+    // combo counter; damage popups are drawn as HUD text in Render.
+    bool   LoadCombatAnimations();
+    void   UpdateMeleeCombat(float dt);
+    void   StartMeleeAttack(Melee::AttackType type);
+    void   ResolveMeleeHit(Melee::CombatComponent* mc, const Melee::AttackData& atk);
+    void   DriveMeleeDemo(float dt);  // OPENBULLY_MELEE_DEMO scripted attacks
 
     // Track 16: NPC models + spawn + AI update.
     struct NpcModel {
@@ -100,6 +151,19 @@ private:
     // Track 20 (UI): debug keys (H damage / J,K wanted) + HUDState refresh.
     void HandleHudDebugKeys();
     void UpdateHUD(float dt);
+
+    // Track 24: grappling system. One active grapple at a time: Jimmy is the
+    // attacker, m_grappleTarget the held NPC. TryStartGrapple pairs the two
+    // closest characters within range; GrappleAttack applies grapple moves;
+    // the target breaks free by mashing (human input edges or simulated NPC
+    // presses); the attacker releases with G.
+    EntityID FindNearestNpc(const glm::vec3& pos, float maxDist);
+    bool     TryStartGrapple(float maxDist = 1.5f);
+    void     EndGrapple(bool targetBrokeFree);
+    void     GrappleAttack(GrappleMove move);
+    void     HandleCombatInput();
+    void     UpdateGrapple(float dt);
+    void     DriveGrappleDemo(); // OPENBULLY_GRAPPLE_DEMO scripted sequence
 
     // Track 20: mission system. Loads data/missions/demo_missions.json,
     // registers trigger zones around the demo level, and drives the manager
@@ -191,6 +255,9 @@ private:
         float bodyScale = 1.0f;
         int   walkClip = -1;
         int   idleClip = -1;
+        bool  grapplePlaying = false;   // Track 24: grapple clip active
+        // Track 23: attack clips (registered from C_Player.agr when loaded).
+        int   attackClips[Melee::kAttackTypeCount] = {-1, -1, -1, -1};
     };
     std::vector<AnimRig> m_animRigs;
     std::vector<AgrAnim> m_sharedClips;      // decoded .agr clips (shared)
@@ -207,6 +274,29 @@ private:
     // Track 16: NPC model collection (character NIFs from World.img).
     std::vector<NpcModel> m_npcModels;
     uint32_t              m_npcCount = 0;
+
+    // Track 24: grapple state. m_grappleTarget is invalid when no grapple is
+    // active. The grapple idle clip comes from a "grap*" .agr group in the
+    // extracted animation directory (World.img peds) when present; without
+    // it both characters hold their current pose (fallback freeze).
+    EntityID m_grappleTarget;          // default-constructed = invalid
+    int      m_grappleClipIndex = -1;  // index into m_sharedClips (-1 = none)
+    bool     m_grappleAnimLoaded = false; // grapple .agr found on disk
+
+    // Track 26: weapon models + live projectiles.
+    std::vector<WeaponModel> m_weaponModels;
+    std::vector<Projectile>  m_projectiles;
+
+    // Track 23: melee combat state.
+    std::vector<AgrAnim> m_combatClips;  // decoded C_Player.agr (all 439 anims)
+    bool   m_combatClipsLoaded = false;
+    // Damage popup (top-center HUD text; set on a landed melee hit).
+    char     m_meleePopup[96] = {};
+    float    m_meleePopupTimer = 0.0f;
+    uint32_t m_screenWidth  = 0;  // for popup centering (set in Init)
+    uint32_t m_screenHeight = 0;
+    double   m_meleeDemoLastAtk = -10.0; // DriveMeleeDemo cadence
+    int      m_meleeDemoStep    = 0;     // light/light/heavy chain position
 
     // Track 20: mission system state.
     MissionManager m_missions;         // missions + trigger zones

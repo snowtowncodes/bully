@@ -11,6 +11,15 @@
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+// SDL_syswm.h pulls in windows.h, whose DrawText/DrawTextA macro pair would
+// rewrite UIRenderer::DrawText call sites below. The method stays DrawText
+// in the class; drop both macros for this translation unit.
+#ifdef DrawText
+#undef DrawText
+#endif
+#ifdef DrawTextA
+#undef DrawTextA
+#endif
 #include <bx/bx.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -649,6 +658,27 @@ bool Engine::SpawnJimmy(const glm::vec3& position) {
 //      downhill. High landing speed => fall-damage log.
 //   5. wall slide: sphere resolve with normal; incoming velocity projected
 //      onto the wall tangent so Jimmy slides along walls, not into them.
+
+// --- Track 25: dodge / block / stamina tuning -------------------------------
+
+namespace {
+
+// Task spec: dodge 0.5 s i-frames, 20 stamina; block 5 stamina/s;
+// attack 10 stamina; regen 20/s when idle.
+constexpr float kDodgeStaminaCost    = 20.0f;
+constexpr float kDodgeInvincibleTime = 0.5f;   // s of i-frames from roll start
+constexpr float kDodgeDuration       = 0.45f;  // s of roll movement (i-frames outlast it)
+constexpr float kDodgeSpeed          = 8.0f;   // u/s roll translation
+constexpr float kDodgeCooldown       = 0.6f;   // s between rolls (hold-shift guard)
+constexpr float kBlockStaminaPerSec  = 5.0f;
+constexpr float kAttackStaminaCost   = 10.0f;
+constexpr float kAttackCooldown      = 0.5f;
+constexpr float kCounterWindow       = 0.2f;   // block THIS soon before a hit
+constexpr float kCounterDuration     = 0.6f;   // counter state lifetime
+constexpr float kCounterAttackBonus  = 4.0f;   // next attack multiplier
+
+} // namespace
+
 void Engine::UpdateJimmy(float dt) {
     if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
     Transform* t = m_entities.GetTransform(m_jimmyId);
@@ -675,6 +705,29 @@ void Engine::UpdateJimmy(float dt) {
         if (m_input.IsDown(Button::Left))    wishMove -= glm::vec3(cy, 0.0f, -sy);
         if (m_input.IsDown(Button::Right))   wishMove += glm::vec3(cy, 0.0f, -sy);
     }
+    // Track 25: block roots the character ("can't move while blocking").
+    if (pc->state == DefenseState::Block) wishMove = glm::vec3(0.0f);
+    // Track 25: dodge roll overrides WASD with the locked roll direction and
+    // a full 360-degree spin over the roll (no dodge clip in C_Player.agr, so
+    // the spec's translation+rotation fallback applies).
+    if (pc->state == DefenseState::Dodge && glm::length(pc->dodgeDir) > 0.5f) {
+        const float prevSpin = pc->dodgeRollSpin;
+        pc->dodgeRollSpin = std::min(pc->dodgeRollSpin +
+            (6.28318531f / kDodgeDuration) * dt, 6.28318531f);
+        const float spinDy = pc->dodgeRollSpin - prevSpin;
+        pc->facingYaw += spinDy;
+        t->rotation.y = pc->facingYaw;
+        pos += pc->dodgeDir * (kDodgeSpeed * dt);
+
+        // Skip normal movement handling but still run collision/ground code:
+        // fall through with wantsMove cleared (dodge motion already applied).
+        wishMove = glm::vec3(0.0f);
+    }
+    // Track 24: movement is held while grappling (UpdateGrapple positions
+    // both characters; input is ignored until the grapple ends).
+    if (CombatComponent* cc = m_entities.GetCombat(m_jimmyId))
+        if (cc->state != CombatState::None) wishMove = glm::vec3(0.0f);
+
     const bool wantsMove = wishMove.x != 0.0f || wishMove.z != 0.0f;
 
     // Ground state for THIS frame, from the position we are about to leave.
@@ -845,6 +898,172 @@ void Engine::UpdateJimmy(float dt) {
     // Track 17: walk cycle while input moves him (grounded), idle otherwise.
     // Sprint could drive a faster walk later (clip speed scaling).
     UpdateEntityAnimation(m_jimmyId, wantsMove && !p->sliding, dt);
+}
+
+// Track 25: per-frame combat state machine for the player. Order of checks:
+//   1. counters tick down (dodge/invincibility/cooldowns/state timers),
+//   2. attack input (LMB) — blocked entirely while dodging,
+//   3. dodge trigger (Shift + WASD press) — needs 20 stamina,
+//   4. block hold (RMB) — 5 stamina/s, breaks when the pool empties.
+// UpdateJimmy (runs right after) enforces the movement consequences:
+// dodge overrides WASD with the locked roll, block zeroes it.
+void Engine::UpdateJimmyCombat(float dt) {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc || dt <= 0.0f) return;
+
+    // --- 1. Tick timers ------------------------------------------------------
+    if (pc->invincibleTimer > 0.0f) pc->invincibleTimer -= dt;
+    if (pc->dodgeCooldown  > 0.0f) pc->dodgeCooldown  -= dt;
+    if (pc->attackCooldown > 0.0f) pc->attackCooldown -= dt;
+
+    if (pc->state == DefenseState::Dodge) {
+        pc->stateTimer -= dt;
+        if (pc->stateTimer <= 0.0f) {
+            pc->state = DefenseState::Normal;
+            Logger::Info("Dodge: roll ended");
+        }
+    } else if (pc->state == DefenseState::Counter) {
+        pc->stateTimer -= dt;
+        if (pc->stateTimer <= 0.0f) {
+            pc->state = DefenseState::Normal;
+            Logger::Info("Counter window expired (not spent)");
+        }
+    }
+
+    const bool blocking = m_input.IsDown(Button::Block);
+
+    // --- 2. Attack (LMB) ------------------------------------------------------
+    // Can't attack during a dodge roll; otherwise costs 10 stamina. A
+    // counter-armed attack consumes the armed flag for 4x damage.
+    if (m_input.IsPressed(Button::Attack)) {
+        // Track 26: an equipped weapon replaces the unarmed punch entirely
+        // (dodge still blocks it; the weapon's own cooldown governs the rate
+        // and counter-arming is honored inside WeaponTryAttack).
+        if (pc->equippedSlot >= 0) {
+            if (pc->state != DefenseState::Dodge && pc->attackCooldown <= 0.0f)
+                WeaponTryAttack(pc);
+        } else if (pc->state == DefenseState::Dodge) {
+            Logger::Info("Attack ignored: dodging");
+        } else if (pc->attackCooldown > 0.0f) {
+            // rate-limited, no log spam
+        } else if (!pc->stamina.Spend(kAttackStaminaCost)) {
+            Logger::Info("Attack failed: not enough stamina (%.0f/%.0f)",
+                         pc->stamina.current, pc->stamina.max);
+        } else {
+            pc->attackCooldown = kAttackCooldown;
+            if (pc->counterArmed) {
+                pc->counterArmed = false;
+                pc->state = DefenseState::Normal;
+                Logger::Info("COUNTER ATTACK! damage %d (stamina %.0f/%.0f)",
+                             int(10.0f * kCounterAttackBonus),
+                             pc->stamina.current, pc->stamina.max);
+            } else {
+                Logger::Info("Punch: damage 10 (stamina %.0f/%.0f)",
+                             pc->stamina.current, pc->stamina.max);
+            }
+        }
+    }
+
+    // --- 3. Dodge trigger: Shift + a WASD direction press ---------------------
+    // Only from Normal/Counter (not while blocking); needs 20 stamina.
+    const bool dirPressed =
+        m_input.IsPressed(Button::Forward) || m_input.IsPressed(Button::Back) ||
+        m_input.IsPressed(Button::Left)    || m_input.IsPressed(Button::Right);
+    if (m_input.IsDown(Button::Sprint) && dirPressed &&
+        (pc->state == DefenseState::Normal || pc->state == DefenseState::Counter) &&
+        pc->dodgeCooldown <= 0.0f) {
+        if (!pc->stamina.Spend(kDodgeStaminaCost)) {
+            Logger::Info("Dodge failed: not enough stamina (%.0f/%.0f)",
+                         pc->stamina.current, pc->stamina.max);
+        } else {
+            // Roll direction: the WASD wish direction in camera-yaw space,
+            // falling back to the current facing when only Shift was tapped.
+            const float cy = std::cos(m_camera.GetYaw()), sy = std::sin(m_camera.GetYaw());
+            glm::vec3 dir(0.0f);
+            if (m_input.IsDown(Button::Forward)) dir += glm::vec3(sy, 0.0f, cy);
+            if (m_input.IsDown(Button::Back))    dir -= glm::vec3(sy, 0.0f, cy);
+            if (m_input.IsDown(Button::Left))    dir -= glm::vec3(cy, 0.0f, -sy);
+            if (m_input.IsDown(Button::Right))   dir += glm::vec3(cy, 0.0f, -sy);
+            if (dir.x == 0.0f && dir.z == 0.0f) {
+                dir = glm::vec3(std::sin(pc->facingYaw), 0.0f, std::cos(pc->facingYaw));
+                pc->facingValid = true;
+            }
+            pc->dodgeDir = glm::normalize(dir);
+            pc->state           = DefenseState::Dodge;
+            pc->stateTimer      = kDodgeDuration;
+            pc->invincibleTimer = kDodgeInvincibleTime;
+            pc->dodgeCooldown   = kDodgeCooldown;
+            pc->dodgeRollSpin   = 0.0f;
+            Logger::Info("Dodge roll: dir (%.2f, %.2f), i-frames %.1fs "
+                         "(stamina %.0f/%.0f)",
+                         pc->dodgeDir.x, pc->dodgeDir.z, kDodgeInvincibleTime,
+                         pc->stamina.current, pc->stamina.max);
+        }
+    }
+
+    // --- 4. Block hold (RMB) --------------------------------------------------
+    // Entering block from Normal/Counter stamps the start time for the
+    // counter-window check in DamagePlayer. Holding drains 5 stamina/s and
+    // roots the character (enforced in UpdateJimmy); the pool breaking drops
+    // the block. Blocked characters still regen nothing while draining.
+    if (blocking && pc->state != DefenseState::Dodge) {
+        if (pc->state != DefenseState::Block) {
+            pc->state          = DefenseState::Block;
+            pc->blockStartTime = float(m_time);
+            Logger::Info("Block: entered (50%% damage reduction)");
+        }
+        if (!pc->stamina.Spend(kBlockStaminaPerSec * dt)) {
+            pc->stamina.current = 0.0f;
+            if (pc->state == DefenseState::Block) {
+                pc->state = DefenseState::Normal;
+                Logger::Info("Block broken: stamina depleted");
+            }
+        }
+    } else if (pc->state == DefenseState::Block && !blocking) {
+        pc->state = DefenseState::Normal;
+        Logger::Info("Block: released");
+    } else if (pc->state == DefenseState::Normal) {
+        pc->stamina.Regen(dt); // idle/attacking/dodging regen at 20/s
+    }
+}
+
+// Track 25: central incoming-damage gate. All player damage routes here.
+//   - dodge i-frames: no damage at all,
+//   - block: 50% reduction; blocking within kCounterWindow of the block
+//     start (i.e. the block went up <0.2 s before the hit lands) arms the
+//     counter state — the next attack deals 4x damage.
+void Engine::DamagePlayer(int amount, const char* source) {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc || amount <= 0) return;
+
+    if (pc->invincibleTimer > 0.0f) {
+        Logger::Info("Hit DODGED (%s): 0 damage (i-frames %.2fs left)",
+                     source ? source : "?", std::max(0.0f, pc->invincibleTimer));
+        return;
+    }
+    if (pc->state == DefenseState::Block) {
+        const int reduced = amount / 2; // 50% reduction (task spec)
+        pc->health.Damage(reduced);
+        Logger::Info("Hit BLOCKED (%s): %d -> %d damage (health %d/%d)",
+                     source ? source : "?", amount, reduced,
+                     pc->health.current, pc->health.max);
+        // Counter window: the block must have gone up less than 0.2 s ago.
+        if (!pc->counterArmed &&
+            float(m_time) - pc->blockStartTime < kCounterWindow) {
+            pc->counterArmed = true;
+            pc->state        = DefenseState::Counter;
+            pc->stateTimer   = kCounterDuration;
+            Logger::Info("COUNTER! well-timed block -> next attack x%.1f "
+                         "(window %.1fs)", kCounterAttackBonus, kCounterDuration);
+        }
+        return;
+    }
+    pc->health.Damage(amount);
+    Logger::Info("Hit (%s): %d damage (health %d/%d)",
+                 source ? source : "?", amount,
+                 pc->health.current, pc->health.max);
 }
 
 
@@ -1059,6 +1278,8 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
         ai.moveSpeed = 1.0f + unit() * 1.0f; // 1.0-2.0 u/s
         ai.wanderRadius = 3.0f;              // stay close on uneven geometry
         m_entities.AddAI(e, ai);
+        // Track 23: melee combat state (stun/knockdown/combo on the target).
+        m_entities.AddMeleeCombat(e);
 
         // Track 17: attach the animation state when the model has a rig;
         // start idle so the crowd poses immediately.
@@ -1106,6 +1327,20 @@ void Engine::UpdateNpcs(float dt) {
 
     m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
         (void)id;
+        // Track 24: grappled NPCs are frozen (held at arm's length by
+        // Engine::UpdateGrapple); only the walk/idle driver runs.
+        if (id == m_grappleTarget) {
+            UpdateEntityAnimation(id, false, dt);
+            return;
+        }
+        // Track 23: stunned/knocked-down NPCs skip AI (they reel from the
+        // hit and stay down); the melee tick restores them to Idle.
+        if (const Melee::CombatComponent* c = m_entities.GetMeleeCombat(id)) {
+            if (c->state != Melee::CombatState::Idle) {
+                UpdateEntityAnimation(id, false, dt);
+                return;
+            }
+        }
         const glm::vec3 pos = t.position;
         bool moving = false; // Track 17: drive the walk/idle state machine
 
@@ -1310,6 +1545,60 @@ bool Engine::LoadAnimationRig() {
     };
     size_t loaded = loadDir("data/extracted/anim");
     if (loaded == 0) loaded = loadDir("../data/extracted/anim");
+
+    // Track 24: grapple animation group. The ped grapple clips stream from
+    // World.img into "grap*" .agr groups; the .agr format stores no names,
+    // so availability is filename-based. First match becomes the grapple
+    // idle clip (played on both rigs); no match = pose-freeze fallback.
+    {
+        const char* dirs[] = { "data/extracted/anim", "../data/extracted/anim" };
+        for (const char* dir : dirs) {
+            DIR* dp = ::opendir(dir);
+            if (!dp) continue;
+            std::string found;
+            while (dirent* ent = ::readdir(dp)) {
+                std::string n = ent->d_name;
+                std::string low = n;
+                std::transform(low.begin(), low.end(), low.begin(),
+                               [](unsigned char c) { return char(std::tolower(c)); });
+                if (n.size() > 4 && n.substr(n.size() - 4) == ".agr" &&
+                    low.find("grap") != std::string::npos) { found = n; break; }
+            }
+            ::closedir(dp);
+            if (found.empty()) continue;
+            const std::string path = std::string(dir) + "/" + found;
+            FILE* f = std::fopen(path.c_str(), "rb");
+            if (!f) continue;
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (sz <= 0) { std::fclose(f); continue; }
+            std::vector<uint8_t> buf(static_cast<size_t>(sz));
+            if (::fread(buf.data(), 1, buf.size(), f) != buf.size()) {
+                std::fclose(f);
+                continue;
+            }
+            std::fclose(f);
+            std::vector<AgrAnim> anims;
+            if (AgrLoadGroup(buf.data(), buf.size(), anims)) {
+                for (AgrAnim& a : anims) {
+                    if (!a.decoded) continue;
+                    m_grappleClipIndex = int(m_sharedClips.size());
+                    m_sharedClips.push_back(std::move(a));
+                    break;
+                }
+            }
+            if (m_grappleClipIndex >= 0) {
+                m_grappleAnimLoaded = true;
+                Logger::Info("AGR: grapple clip #%d from %s",
+                             m_grappleClipIndex, found.c_str());
+                break;
+            }
+        }
+        if (!m_grappleAnimLoaded)
+            Logger::Info("AGR: no grapple .agr group found; "
+                         "grapple uses the pose-freeze fallback");
+    }
     if (m_sharedClips.empty()) {
         Logger::Warning("LoadAnimationRig: no .agr animations decoded; "
                         "characters will be static");
@@ -1376,6 +1665,17 @@ uint32_t Engine::CreateRig(const NifLoadResult& nif) {
         rig.idleClip = rig.controller.AddClip("idle", m_sharedClips[size_t(m_idleClipIndex)]);
     }
 
+    // Track 23: register the melee attack clips (punches/kicks from
+    // C_Player.agr) on this rig so any entity can play them.
+    if (m_combatClipsLoaded) {
+        for (int t = 0; t < Melee::kAttackTypeCount; ++t) {
+            const Melee::AttackData& atk = Melee::GetAttackData(Melee::GetAttackType(t));
+            if (atk.clipIndex < 0 || atk.clipIndex >= int(m_combatClips.size())) continue;
+            rig.attackClips[t] = rig.controller.AddClip(atk.clipName,
+                m_combatClips[size_t(atk.clipIndex)], 1.0f);
+        }
+    }
+
     SkinnedMesh skin;
     std::vector<std::vector<float>> shapeBinds;
     if (!SkinnedMeshFromNif(nif, skin, &shapeBinds)) return 0xFFFFFFFF;
@@ -1435,7 +1735,32 @@ void Engine::UpdateEntityAnimation(EntityID id, bool moving, float dt) {
     AnimRig& rig = m_animRigs[ac->rigIndex];
     AnimationController& ctrl = rig.controller;
 
-    if (moving != ac->wasMoving) {
+    // Track 24: grapple hold. With a loaded grapple clip it plays on both
+    // rigs; without one the pose freezes at the current frame (fallback).
+    // wasMoving absorbs the current flag so playback resumes cleanly when
+    // the grapple ends (EndGrapple also re-Plays idle after a clip hold).
+    if (CombatComponent* cc = m_entities.GetCombat(id)) {
+        if (cc->state != CombatState::None) {
+            ac->wasMoving = moving;
+            if (m_grappleClipIndex >= 0) {
+                if (!rig.grapplePlaying) {
+                    ctrl.Play(m_grappleClipIndex, true, 0.2f);
+                    rig.grapplePlaying = true;
+                }
+                ctrl.Update(dt);
+            }
+            return;
+        }
+    }
+
+    // Track 23: while Attacking/Stunned/KnockedDown the walk/idle switcher
+    // must not stomp the attack (or hit-reaction) animation. The controller
+    // still advances below; UpdateMeleeCombat re-selects idle/walk when the
+    // melee state returns to Idle.
+    const Melee::CombatComponent* mcom = m_entities.GetMeleeCombat(id);
+    const bool meleeLocked = mcom && mcom->state != Melee::CombatState::Idle;
+
+    if (!meleeLocked && (moving != ac->wasMoving || !ctrl.IsPlaying())) {
         if (moving && rig.walkClip >= 0) {
             ctrl.Play(rig.walkClip, true, 0.2f);
             ac->playing = true;
@@ -1445,6 +1770,7 @@ void Engine::UpdateEntityAnimation(EntityID id, bool moving, float dt) {
         }
         ac->wasMoving = moving;
     }
+    if (!meleeLocked) {
     // Speed-match the walk cycle: playback rate = actual speed / authored
     // ground speed (m per cycle over the cycle duration).
     if (moving && rig.walkClip >= 0 && m_walkTravelM > 0.01f) {
@@ -1454,6 +1780,7 @@ void Engine::UpdateEntityAnimation(EntityID id, bool moving, float dt) {
             std::max(0.05f, m_sharedClips[size_t(m_walkClipIndex)].duration);
         if (AnimClip* clip = ctrl.ClipAt(rig.walkClip))
             clip->speed = std::clamp(speed / base, 0.25f, 4.0f);
+    }
     }
     if (ac->playing) ctrl.Update(dt);
 }
@@ -1467,6 +1794,318 @@ void Engine::UpdateAnimations(float dt) {
             return;
         m_animRigs[ac->rigIndex].controller.Update(dt);
     });
+}
+
+// =========================================================================
+// Track 23: melee combat.
+// =========================================================================
+
+// Decodes Anim/C_Player.agr (the World.img player animation group) once.
+// The .agr carries no names; attack clips are picked by index through the
+// MAINPED.HXD dictionary mapping (see combat.h for the verification table:
+// 439 group records whose sizes sum to the file size exactly).
+bool Engine::LoadCombatAnimations() {
+    if (m_combatClipsLoaded) return true;
+    for (const char* dir : { "data/extracted/combat", "../data/extracted/combat" }) {
+        const std::string path = std::string(dir) + "/C_Player.agr";
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) continue;
+        std::fseek(f, 0, SEEK_END);
+        long sz = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (sz <= 0) { std::fclose(f); continue; }
+        std::vector<uint8_t> buf(static_cast<size_t>(sz));
+        const size_t got = std::fread(buf.data(), 1, buf.size(), f);
+        std::fclose(f);
+        if (got != buf.size()) continue;
+        if (!AgrLoadGroup(buf.data(), buf.size(), m_combatClips) || m_combatClips.empty())
+            continue;
+        Logger::Info("Combat anims: %zu decoded from %s (expect 439)",
+                     m_combatClips.size(), path.c_str());
+        break;
+    }
+    if (m_combatClips.empty()) {
+        Logger::Warning("LoadCombatAnimations: C_Player.agr not found/decodable "
+                        "(melee attacks will be pose-only)");
+        return false;
+    }
+    // Clip-index sanity: every attack must point inside the decoded group.
+    for (int t = 0; t < Melee::kAttackTypeCount; ++t) {
+        const Melee::AttackData& atk = Melee::GetAttackData(Melee::GetAttackType(t));
+        if (atk.clipIndex >= int(m_combatClips.size())) {
+            Logger::Warning("Combat anims: %s index %d out of range (%zu decoded)",
+                            atk.clipName, atk.clipIndex, m_combatClips.size());
+            return false;
+        }
+        Logger::Info("Combat anims: %s = #%d (authored %.3fs)",
+                     atk.clipName, atk.clipIndex, atk.authoredDur);
+    }
+    m_combatClipsLoaded = true;
+    return true;
+}
+
+// Starts a player attack: locks the melee state machine into Attacking for
+// the attack's effective duration, faces camera-forward and one-shot plays
+// the attack clip at speed = authored / effective duration.
+void Engine::StartMeleeAttack(Melee::AttackType type) {
+    if (!m_jimmyId.IsValid()) return;
+    Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId);
+    PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    AnimationComponent* ac = m_entities.GetAnimation(m_jimmyId);
+    if (!mc || !ac || mc->state != Melee::CombatState::Idle) return;
+    if (ac->rigIndex == 0xFFFFFFFF || ac->rigIndex >= m_animRigs.size()) return;
+    AnimRig& rig = m_animRigs[ac->rigIndex];
+    if (rig.attackClips[int(type)] < 0) return; // clips not loaded
+
+    const Melee::AttackData& atk = Melee::GetAttackData(type);
+    mc->state       = Melee::CombatState::Attacking;
+    mc->attack      = type;
+    mc->attackTimer = atk.duration;
+    mc->hitApplied  = false;
+
+    if (pc) { // attack in the direction the camera looks
+        pc->facingYaw  = m_camera.GetYaw();
+        pc->facingValid = true;
+        mc->attackYaw  = pc->facingYaw; // ResolveMeleeHit uses this
+    }
+    if (AnimClip* clip = rig.controller.ClipAt(rig.attackClips[int(type)])) {
+        clip->speed = atk.authoredDur > 0.01f ? atk.authoredDur / atk.duration : 1.0f;
+        rig.controller.Play(rig.attackClips[int(type)], /*loop=*/false, 0.1f);
+    }
+    Logger::Info("Melee: %s started (%.0f dmg, range %.1f, %.2fs)",
+                 atk.clipName, atk.damage, atk.range, atk.duration);
+}
+
+// Per-frame melee update: input -> attack start, attack progression -> hit
+// frames, damage/knockback/stun application, combo bookkeeping, and
+// stun/knockdown timers for every melee-carrying entity.
+void Engine::UpdateMeleeCombat(float dt) {
+    if (dt <= 0.0f) return;
+    if (m_meleePopupTimer > 0.0f) m_meleePopupTimer -= dt;
+
+    // --- 1. Jimmy: attack input + progression -------------------------------
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId);
+        PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+        AnimationComponent* ac = m_entities.GetAnimation(m_jimmyId);
+        if (mc && pc && ac) {
+            // Input (LMB light / RMB heavy / Q light kick / E heavy kick).
+            // The demo script calls StartMeleeAttack directly instead. RMB is
+            // also Track 25's block hold: the heavy attack fires on the press
+            // edge, the block state applies while held (both specs coexist).
+            static const bool s_demo = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
+            if (!s_demo && pc->equippedSlot < 0 &&
+                pc->state != DefenseState::Dodge &&
+                mc->state == Melee::CombatState::Idle) {
+                if      (m_input.IsPressed(Button::Attack))
+                    StartMeleeAttack(Melee::AttackType::LightPunch);
+                else if (m_input.IsPressed(Button::Block))
+                    StartMeleeAttack(Melee::AttackType::HeavyPunch);
+                else if (m_input.WasKeyPressed(SDL_SCANCODE_Q))
+                    StartMeleeAttack(Melee::AttackType::LightKick);
+                else if (m_input.WasKeyPressed(SDL_SCANCODE_E))
+                    StartMeleeAttack(Melee::AttackType::HeavyKick);
+            }
+
+            // Progression: tick the timer; inside the hit window run the
+            // sphere check ONCE; on expiry return to Idle (miss resets combo).
+            if (mc->state == Melee::CombatState::Attacking) {
+                const Melee::AttackData& atk = Melee::GetAttackData(mc->attack);
+                mc->attackTimer -= dt;
+                const float progress = 1.0f - mc->attackTimer / atk.duration;
+                if (!mc->hitApplied &&
+                    progress >= atk.hitWindowStart && progress <= atk.hitWindowEnd) {
+                    mc->hitApplied = true;
+                    ResolveMeleeHit(mc, atk);
+                }
+                if (mc->attackTimer <= 0.0f) {
+                    const bool missed = !mc->hitApplied;
+                    mc->state = Melee::CombatState::Idle;
+                    if (missed) mc->ResetCombo();
+                }
+            } else if (mc->state == Melee::CombatState::Idle) {
+                // Task spec: combo resets after >2 s without a hit.
+                if (mc->comboCount > 0) {
+                    mc->comboIdleTimer += dt;
+                    if (mc->comboIdleTimer > 2.0f) mc->ResetCombo();
+                }
+            }
+        }
+    }
+
+    // --- 2. Every melee entity: stun / knockdown timers + knockback drift --
+    m_entities.ForEach([&](EntityID id, Transform& t,
+                           const EntityManager::EntityRecord&) {
+        Melee::CombatComponent* c = m_entities.GetMeleeCombat(id);
+        if (!c || id == m_jimmyId) return;
+        // Knockback: positional drift (NPC physics is not integrated by
+        // UpdateEntities, so the impulse decays here).
+        if (glm::dot(c->knockbackVel, c->knockbackVel) > 1e-6f) {
+            t.position += c->knockbackVel * dt;
+            c->knockbackVel *= std::exp(-8.0f * dt);
+        }
+        if (c->state == Melee::CombatState::Stunned) {
+            c->stunTimer -= dt;
+            if (c->stunTimer <= 0.0f) c->state = Melee::CombatState::Idle;
+        } else if (c->state == Melee::CombatState::KnockedDown) {
+            if (c->downTimer > 0.0f) {
+                c->downTimer -= dt;
+                if (c->downTimer <= 0.0f) {
+                    // Downed for good this demo (health is spent); drop out of
+                    // the AI rotation but stay on the floor.
+                    c->downTimer = 0.0f;
+                }
+            }
+        }
+    });
+}
+
+// The attacker's hit frame fired: find the enemy the forward sphere touches
+// (sphere center = attacker + forward * range/2, radius = range/2), then
+// apply damage, stun and knockback and update the combo.
+void Engine::ResolveMeleeHit(Melee::CombatComponent* mc, const Melee::AttackData& atk) {
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt || !mc) return;
+    const glm::vec3 fwd(std::sin(mc->attackYaw), 0.0f, std::cos(mc->attackYaw));
+    const glm::vec3 center = jt->position + fwd * (0.5f * atk.range);
+    const float radius = 0.5f * atk.range;
+
+    // Nearest NPC whose world AABB the sphere overlaps (QuerySphere returns
+    // only one arbitrary hit and may pick Jimmy, so the candidates are
+    // filtered by AI-component + sphere-vs-AABB here).
+    EntityID best{};
+    float bestDist = FLT_MAX;
+    glm::vec3 bestPos(0.0f);
+    m_entities.ForEach([&](EntityID id, Transform& t,
+                           const EntityManager::EntityRecord&) {
+        if (id == m_jimmyId) return;
+        if (!m_entities.GetAI(id)) return;
+        glm::vec3 bmin, bmax;
+        if (!m_entities.GetWorldAABB(id, bmin, bmax)) return;
+        const glm::vec3 closest = glm::clamp(center, bmin, bmax);
+        if (glm::distance(closest, center) > radius) return;
+        const glm::vec3 to = t.position - jt->position;
+        const float dxz = glm::length(glm::vec3(to.x, 0.0f, to.z));
+        if (dxz > atk.range + 0.4f) return; // reach guard
+        if (dxz < bestDist) { bestDist = dxz; best = id; bestPos = t.position; }
+    });
+    if (!best.IsValid()) {
+        Logger::Info("Melee: %s whiffed (nothing in the %.1f sphere)",
+                     atk.clipName, atk.range);
+        return; // miss: combo resets on attack end
+    }
+
+    // Damage (+ combo finisher), stun, knockback.
+    const float mult = mc->RegisterHit(mc->attack);
+    const int dmg = int(atk.damage * mult + 0.5f);
+    AIComponent* ai = m_entities.GetAI(best);
+    Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(best);
+    if (ai) ai->health.Damage(dmg);
+    if (tmc) {
+        tmc->damageTaken += dmg;
+        const bool dead = !ai || ai->health.current <= 0;
+        if (dead) {
+            tmc->state    = Melee::CombatState::KnockedDown;
+            tmc->downTimer = 3.0f;
+        } else {
+            tmc->state    = Melee::CombatState::Stunned;
+            tmc->stunTimer = atk.stunTime;
+        }
+        glm::vec3 dir = bestPos - jt->position;
+        dir.y = 0.0f;
+        const float len = glm::length(dir);
+        if (len > 1e-4f)
+            tmc->knockbackVel = (dir / len) * atk.knockback +
+                                glm::vec3(0.0f, 0.6f, 0.0f);
+    }
+    mc->damageDealt += dmg;
+
+    std::snprintf(m_meleePopup, sizeof(m_meleePopup),
+                  mult > 1.0f ? "FINISHER -%d   COMBO x%d" : "HIT -%d   COMBO x%d",
+                  dmg, mc->comboCount);
+    m_meleePopupTimer = 1.5f;
+    Logger::Info("Melee: %s hit NPC idx=%u for %d%s (health %d/%d, combo %d)",
+                 atk.clipName, best.index, dmg,
+                 mult > 1.0f ? " FINISHER" : "",
+                 ai ? ai->health.current : 0, ai ? ai->health.max : 100,
+                 mc->comboCount);
+}
+
+// OPENBULLY_MELEE_DEMO: scripted headless verification. Drives Jimmy straight
+// toward the nearest NPC and chains Light -> Light -> Heavy so the attack
+// animations, damage, stun and the 3-hit combo finisher show up in logs and
+// screenshots without real input. Position is driven directly (not through
+// button injection): this anchor's roof shell has no collision beneath the
+// spawn (committed Track 21 runs free-fall identically), so the character is
+// held at the target's plane for the duration of the combat script.
+// (Own switch — OPENBULLY_COMBAT_DEMO is Track 25's dodge/block script.)
+void Engine::DriveMeleeDemo(float dt) {
+    if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
+    Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId);
+    PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    if (!mc || !pc) return;
+
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    // Nearest living NPC.
+    EntityID best{};
+    float bestDist = 1e9f;
+    m_entities.ForEach([&](EntityID id, Transform& t,
+                           const EntityManager::EntityRecord&) {
+        if (id == m_jimmyId || !m_entities.GetAI(id)) return;
+        if (const Melee::CombatComponent* c = m_entities.GetMeleeCombat(id))
+            if (c->state == Melee::CombatState::KnockedDown) return;
+        const float d = glm::length(t.position - jt->position);
+        if (d < bestDist) { bestDist = d; best = id; }
+    });
+    if (!best.IsValid()) return;
+    const Transform* nt = m_entities.GetTransform(best);
+    if (!nt) return;
+
+    // Walk (position-direct): face and approach the target.
+    Transform* pt = m_entities.GetTransform(m_jimmyId);
+    PhysicsComponent* pphys = m_entities.GetPhysics(m_jimmyId);
+    if (!pt) return;
+    glm::vec3 pos = pt->position;
+    if (pphys && pos.y < nt->position.y - 1.0f) { // fallen off the shell
+        pos.y = nt->position.y;
+        pphys->velocity.y = 0.0f;
+    }
+    glm::vec3 to = nt->position - pos;
+    to.y = 0.0f;
+    const float dist = glm::length(to);
+    if (dist > 1.1f && dist < 50.0f) {
+        const glm::vec3 dir = to / dist;
+        pos += dir * (3.0f * dt);
+        pc->facingYaw   = std::atan2(dir.x, dir.z);
+        pc->facingValid = true;
+        pt->rotation.y  = pc->facingYaw;
+    }
+    pt->position = pos;
+
+    // Snap the follow camera behind Jimmy: the exponential lerp trails a
+    // position-driven demo badly (screenshots missed the fight entirely).
+    {
+        const float cy = std::cos(pc->facingYaw), sy = std::sin(pc->facingYaw);
+        const glm::vec3 focus = pos + glm::vec3(0.0f, 1.2f, 0.0f);
+        m_camera.SetPosition(focus - glm::vec3(sy, 0.0f, cy) * 3.2f +
+                             glm::vec3(0.0f, 1.4f, 0.0f));
+        m_camera.SetLookAt(focus - m_camera.GetPosition());
+    }
+
+    // Chain: light, light, heavy (3-hit combo), repeat.
+    const double t = m_time;
+    if (dist < 1.4f && mc->state == Melee::CombatState::Idle &&
+        t - m_meleeDemoLastAtk > 1.4) {
+        m_meleeDemoLastAtk = t;
+        switch (m_meleeDemoStep++ % 3) {
+        case 0: StartMeleeAttack(Melee::AttackType::LightPunch); break;
+        case 1: StartMeleeAttack(Melee::AttackType::LightPunch); break;
+        case 2: StartMeleeAttack(Melee::AttackType::HeavyPunch); break;
+        }
+        // Demo attacks aim at the scripted target, not the camera.
+        if (dist > 1e-3f) mc->attackYaw = std::atan2(to.x, to.y);
+    }
 }
 
 // Track 14: integrate entity physics. Only entities with a PhysicsComponent
@@ -1521,6 +2160,17 @@ void Engine::BuildEntityRenderList() {
                     return;
                 }
             }
+        }
+        if (mc->isWeaponPickup) {
+            // Track 26: weapon pickup — its own NIF model, transform-driven.
+            if (mc->weaponModelIndex >= m_weaponModels.size()) return;
+            const WeaponModel& wmodel = m_weaponModels[mc->weaponModelIndex];
+            if (!wmodel.gpu.valid()) return;
+            er.model = t.Matrix();
+            er.gpu   = &wmodel.gpu;
+            er.subs  = wmodel.subs;
+            m_entityRender.push_back(std::move(er));
+            return;
         }
         if (mc->isJimmy) {
             if (!m_jimmyMeshValid) return;
@@ -1864,6 +2514,11 @@ bool Engine::Init(const Window& window) {
         Logger::Info("Animation rig ready: walk=%d idle=%d (%zu clips)",
                      m_walkClipIndex, m_idleClipIndex, m_sharedClips.size());
 
+    // Track 23: melee combat clips (Anim/C_Player.agr, MAINPED.HXD-indexed).
+    // Loaded before any rig is built so CreateRig can register the punch/kick
+    // clips on every skinned controller.
+    LoadCombatAnimations();
+
     // Track 15: Jimmy, the player character. OPENBULLY_NO_JIMMY=1 skips the
     // spawn (Phase 3 free-camera mode preserved for regression).
     const bool noJimmy = std::getenv("OPENBULLY_NO_JIMMY") != nullptr;
@@ -1895,6 +2550,8 @@ bool Engine::Init(const Window& window) {
         }
         m_jimmySpawn = jimmySpawn;
         m_jimmyActive = SpawnJimmy(jimmySpawn);
+        // Track 23: melee combat state on the player (covers every spawn path).
+        if (m_jimmyActive) m_entities.AddMeleeCombat(m_jimmyId);
     } else {
         Logger::Info("OPENBULLY_NO_JIMMY set: free-camera mode (no player spawn)");
     }
@@ -1920,6 +2577,14 @@ bool Engine::Init(const Window& window) {
         SpawnNpcs(npcCenter);
     }
 
+    // Track 26: weapon models (bat/garbage lid/yardstick/slingshot from
+    // World.img) + ground pickups around Jimmy so E-collect/1-5 equip are
+    // immediately exercisable.
+    if (!LoadWeaponModels()) {
+        Logger::Warning("Weapons: no models loaded (weapon system disabled)");
+    }
+    SpawnWeaponPickups(m_jimmySpawn);
+
     if (!m_worldMeshes.empty()) {
         const WorldMesh* anchor = &m_worldMeshes.front();
         for (const WorldMesh& wm : m_worldMeshes)
@@ -1942,6 +2607,9 @@ bool Engine::Init(const Window& window) {
         Logger::Warning("UI renderer init failed; HUD disabled");
     else
         m_ui.SetScreenSize(unsigned(window.GetWidth()), unsigned(window.GetHeight()));
+        // Track 23: popup centering uses the same backbuffer size.
+        m_screenWidth  = unsigned(window.GetWidth());
+        m_screenHeight = unsigned(window.GetHeight());
 
     Logger::Info("Engine initialized successfully");
     return true;
@@ -1982,6 +2650,7 @@ void Engine::Update() {
     // of the character movement (same injection approach as CAM_DEMO).
     static const bool s_jimmyDemo   = std::getenv("OPENBULLY_JIMMY_DEMO") != nullptr;
     static const bool s_missionDemo = std::getenv("OPENBULLY_MISSION_DEMO") != nullptr;
+    static const bool s_combatDemo  = std::getenv("OPENBULLY_COMBAT_DEMO") != nullptr;
     if (s_missionDemo && m_jimmyActive) {
         // Track 20: scripted walk toward the active objective (beacon target)
         // so headless runs exercise trigger activation, objective completion,
@@ -2001,17 +2670,66 @@ void Engine::Update() {
         // Slow orbit during the last stretch so the camera never clips a
         // wall the same way twice.
         m_input.SetMouseDelta(phase >= 10.0 && phase < 14.0 ? 2 : 0, 0);
+    } else if (s_combatDemo && m_jimmyActive) {
+        // Track 25: scripted dodge/block/attack drive for headless
+        // verification. Pair with OPENBULLY_HUD_DEMO=1, which damages Jimmy
+        // 10 at t=2,3,4,... so the scripted windows line up:
+        //   1.9-3.2  block (RMB)    -> t=2 hit BLOCKED + COUNTER armed;
+        //                               t=3 hit BLOCKED (plain)
+        //   3.95-4.15 Shift+W tap   -> dodge roll; t=4 hit lands inside the
+        //                               0.5 s i-frames -> DODGED (0 damage)
+        //   6.0-6.1  LMB            -> punch spends 10 stamina; the armed
+        //                               counter is consumed for the bonus
+        //   7-9      idle           -> stamina regen (20/s) visible in the
+        //                               once-per-second stamina log
+        const double t = m_time;
+        m_input.SetButton(Button::Block,  t >= 1.9 && t < 3.2);
+        m_input.SetButton(Button::Sprint, t >= 3.95 && t < 4.5);
+        m_input.SetButton(Button::Forward, t >= 3.95 && t < 4.15);
+        m_input.SetButton(Button::Attack, t >= 6.0 && t < 6.1);
+        // Once-per-second stamina trace so the log shows deplete + regen.
+        static double s_lastStamLog = -1e9;
+        if (t - s_lastStamLog >= 1.0) {
+            s_lastStamLog = t;
+            if (PlayerController* cpc = m_entities.GetPlayer(m_jimmyId))
+                Logger::Info("Stamina: %.0f/%.0f (t=%.1f)",
+                             cpc->stamina.current, cpc->stamina.max, t);
+        }
     }
+
+    // Track 23: scripted melee demo. Must inject BEFORE UpdateJimmy reads
+    // m_input: Poll() at the top of the next frame wipes bottom-of-frame
+    // SetButton writes (this bit us once — see git history).
+    static const bool s_meleeDemoDrive = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
+    if (s_meleeDemoDrive && m_jimmyActive) DriveMeleeDemo(float(deltaTime));
 
     m_camera.Update(float(deltaTime), m_input, /*ignoreMove=*/m_jimmyActive);
 
     // Track 14: entity update (physics integration on gravity carriers).
     UpdateEntities(float(deltaTime));
 
-    // Track 15: Jimmy input/physics, then the 3rd-person follow camera.
+    // Track 15: Jimmy combat state, then input/physics, then the camera.
+    UpdateJimmyCombat(float(deltaTime));
     UpdateJimmy(float(deltaTime));
     // Track 16: NPC AI (after physics so ground/wall state is settled).
     UpdateNpcs(float(deltaTime));
+
+    // Track 24: combat input + grapple state machine (after the NPC update
+    // so hold positions settle this frame). The demo script runs ahead of
+    // input handling the same way CAM/JIMMY demos inject buttons.
+    static const bool s_grappleDemo = std::getenv("OPENBULLY_GRAPPLE_DEMO") != nullptr;
+    if (s_grappleDemo) DriveGrappleDemo();
+    HandleCombatInput();
+    UpdateGrapple(float(deltaTime));
+
+    // Track 23: melee combat — attack input/progression, hit frames,
+    // damage/stun/knockback, combo. (The OPENBULLY_MELEE_DEMO script runs at
+    // the top of Update so its button injection survives Poll().)
+    UpdateMeleeCombat(float(deltaTime));
+
+    // Track 26: weapon pickups/equip/attacks, then projectile integration.
+    UpdateWeapons(float(deltaTime));
+    UpdateProjectiles(float(deltaTime));
     UpdateJimmyCamera(float(deltaTime));
 
     // Track 20 (UI): H/J/K debug keys mutate vitals, then refresh the HUD
@@ -2073,6 +2791,286 @@ void Engine::Update() {
     }
 }
 
+// --- Track 24: grappling system -------------------------------------------------
+
+// Nearest alive NPC (AI carrier) within maxDist of pos (XZ distance).
+EntityID Engine::FindNearestNpc(const glm::vec3& pos, float maxDist) {
+    EntityID best; // default = invalid
+    float bestD2 = maxDist * maxDist;
+    m_entities.ForEachAI([&](EntityID id, const Transform& t, AIComponent&) {
+        const glm::vec3 d = t.position - pos;
+        const float d2 = d.x * d.x + d.z * d.z;
+        if (d2 < bestD2) { bestD2 = d2; best = id; }
+    });
+    return best;
+}
+
+// Pairs Jimmy (attacker, CombatState::Grabbing) with the nearest NPC
+// (target, CombatState::Grappled) within maxDist units.
+bool Engine::TryStartGrapple(float maxDist) {
+    if (!m_jimmyActive || !m_jimmyId.IsValid() || m_grappleTarget.IsValid())
+        return false;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return false;
+    const EntityID target = FindNearestNpc(jt->position, maxDist);
+    if (!target.IsValid()) {
+        Logger::Info("Grapple: no NPC within %.1f units", maxDist);
+        return false;
+    }
+    CombatComponent* jc = m_entities.AddCombat(m_jimmyId);
+    CombatComponent* tc = m_entities.AddCombat(target);
+    if (!jc || !tc) return false;
+    // Re-fetch: the second AddCombat may reallocate the dense component
+    // array, leaving the first pointer dangling (classic sparse-set hazard).
+    jc = m_entities.GetCombat(m_jimmyId);
+    tc = m_entities.GetCombat(target);
+    if (!jc || !tc) return false;
+    jc->state = CombatState::Grabbing;
+    jc->stateTimer = 0.0f;
+    jc->moveCooldown = 0.0f;
+    jc->move = GrappleMove::None;
+    tc->state = CombatState::Grappled;
+    tc->stateTimer = 0.0f;
+    tc->mashCount = 0;
+    tc->npcMashTimer = 0.0f;
+    m_grappleTarget = target;
+    Logger::Info("Grapple: started (npc #%u, mash threshold %d)",
+                 target.index, tc->mashRequired);
+    // Grapple animation: the World.img grapple clip plays on both rigs when
+    // it loaded; otherwise UpdateEntityAnimation freezes the current pose.
+    if (m_grappleClipIndex >= 0) {
+        for (EntityID id : { m_jimmyId, target }) {
+            AnimationComponent* ac = m_entities.GetAnimation(id);
+            if (ac && ac->rigIndex < m_animRigs.size()) {
+                m_animRigs[ac->rigIndex].controller.Play(m_grappleClipIndex,
+                                                          true, 0.2f);
+                m_animRigs[ac->rigIndex].grapplePlaying = true;
+            }
+        }
+    }
+    return true;
+}
+
+// Tears the grapple down: both combat states reset, walk/idle playback
+// resumes cleanly. `targetBrokeFree` only labels the log line.
+void Engine::EndGrapple(bool targetBrokeFree) {
+    if (!m_grappleTarget.IsValid()) return;
+    if (CombatComponent* jc = m_entities.GetCombat(m_jimmyId)) {
+        jc->state = CombatState::None;
+        jc->moveCooldown = 0.0f;
+        jc->move = GrappleMove::None;
+    }
+    if (CombatComponent* tc = m_entities.GetCombat(m_grappleTarget)) {
+        tc->state = CombatState::None;
+        tc->mashCount = 0;
+    }
+    Logger::Info("Grapple: ended (%s)",
+                 targetBrokeFree ? "target broke free" : "released");
+    for (EntityID id : { m_jimmyId, m_grappleTarget }) {
+        AnimationComponent* ac = m_entities.GetAnimation(id);
+        if (!ac) continue;
+        ac->wasMoving = false; // forces the walk/idle state machine to re-Play
+        if (ac->rigIndex >= m_animRigs.size()) continue;
+        AnimRig& rig = m_animRigs[ac->rigIndex];
+        rig.grapplePlaying = false;
+        // With a grapple clip active we must hand playback back explicitly
+        // (the walk/idle edge detector only fires on a moving-state change).
+        if (m_grappleClipIndex >= 0 && rig.idleClip >= 0)
+            rig.controller.Play(rig.idleClip, true, 0.2f);
+    }
+    m_grappleTarget = EntityID{};
+}
+
+// Attacker grapple move: damage the held target; the throw (and a KO) end
+// the grapple. Cooldowns keep the moves from machine-gunning.
+void Engine::GrappleAttack(GrappleMove move) {
+    if (!m_grappleTarget.IsValid()) return;
+    CombatComponent* jc = m_entities.GetCombat(m_jimmyId);
+    CombatComponent* tc = m_entities.GetCombat(m_grappleTarget);
+    if (!jc || !tc || jc->state != CombatState::Grabbing) return;
+    if (jc->moveCooldown > 0.0f) return;
+
+    static const GrappleMoveInfo kMoves[3] = {
+        {  8, 0.6f, false, "headlock strike" },
+        { 12, 0.8f, false, "knee strike"     },
+        { 20, 1.0f, true,  "throw"           },
+    };
+    const int idx = int(move) - int(GrappleMove::HeadlockStrike);
+    if (idx < 0 || idx > 2) return;
+    const GrappleMoveInfo& info = kMoves[idx];
+    jc->move = move;
+    jc->moveCooldown = info.cooldown;
+    tc->health -= info.damage;
+    Logger::Info("Grapple %s: %d damage -> NPC health %d",
+                 info.name, info.damage, tc->health);
+    if (tc->health <= 0) {
+        Logger::Info("Grapple: NPC KO'd by %s", info.name);
+        EndGrapple(false);
+        return;
+    }
+    if (info.endsGrapple) {
+        Logger::Info("Grapple: throw completes - target released");
+        EndGrapple(false);
+    }
+}
+
+// Per-frame combat input: G enters/ends the grapple, U/I/O are grapple moves
+// for the attacker and mash presses for a held human target.
+void Engine::HandleCombatInput() {
+    if (!m_jimmyId.IsValid()) return;
+    CombatComponent* jc = m_entities.GetCombat(m_jimmyId);
+    if (!jc) return;
+    const bool active = m_grappleTarget.IsValid();
+
+    if (m_input.WasKeyPressed(SDL_SCANCODE_G)) {
+        if (!active) {
+            TryStartGrapple();
+        } else if (jc->state == CombatState::Grabbing) {
+            Logger::Info("Grapple: attacker released (G)");
+            EndGrapple(false);
+        }
+    }
+    if (!active) return;
+
+    if (jc->state == CombatState::Grabbing) {
+        // Attacker: grapple-specific moves.
+        if (m_input.WasKeyPressed(SDL_SCANCODE_U))
+            GrappleAttack(GrappleMove::HeadlockStrike);
+        else if (m_input.WasKeyPressed(SDL_SCANCODE_I))
+            GrappleAttack(GrappleMove::KneeStrike);
+        else if (m_input.WasKeyPressed(SDL_SCANCODE_O))
+            GrappleAttack(GrappleMove::Throw);
+    } else if (jc->state == CombatState::Grappled) {
+        // Held human target: rapid button mashing counts presses; after
+        // mashRequired edges the target breaks free.
+        const bool mash = m_input.WasKeyPressed(SDL_SCANCODE_U) ||
+                          m_input.WasKeyPressed(SDL_SCANCODE_I) ||
+                          m_input.WasKeyPressed(SDL_SCANCODE_O) ||
+                          m_input.WasKeyPressed(SDL_SCANCODE_SPACE);
+        if (mash) {
+            jc->mashCount++;
+            Logger::Info("Grapple: mash %d/%d",
+                         jc->mashCount, jc->mashRequired);
+            if (jc->mashCount >= jc->mashRequired) {
+                jc->state = CombatState::BreakingFree;
+                jc->stateTimer = 0.0f;
+                Logger::Info("Grapple: broke free after %d presses",
+                             jc->mashCount);
+            }
+        }
+    }
+}
+
+// Grapple state machine: cooldowns, target break-free progress (NPC targets
+// mash on a simulated timer; human targets via HandleCombatInput), and the
+// pair hold (arm's-length offset + mutual facing).
+void Engine::UpdateGrapple(float dt) {
+    if (dt <= 0.0f) return;
+    if (!m_jimmyId.IsValid()) return;
+    if (!m_grappleTarget.IsValid()) return;
+    if (!m_entities.IsAlive(m_jimmyId) || !m_entities.IsAlive(m_grappleTarget)) {
+        m_grappleTarget = EntityID{};
+        return;
+    }
+    CombatComponent* jc = m_entities.GetCombat(m_jimmyId);
+    CombatComponent* tc = m_entities.GetCombat(m_grappleTarget);
+    if (!jc || !tc) { m_grappleTarget = EntityID{}; return; }
+
+    if (jc->moveCooldown > 0.0f) jc->moveCooldown -= dt;
+
+    // Target break-free progress.
+    if (tc->state == CombatState::Grappled) {
+        // NPC targets mash on a simulated cadence (one press per interval).
+        tc->npcMashTimer += dt;
+        if (tc->npcMashTimer >= tc->npcMashInterval) {
+            tc->npcMashTimer = 0.0f;
+            tc->mashCount++;
+            if (tc->mashCount >= tc->mashRequired) {
+                tc->state = CombatState::BreakingFree;
+                tc->stateTimer = 0.0f;
+                Logger::Info("Grapple: NPC broke free after %d presses",
+                             tc->mashCount);
+            }
+        }
+    } else if (tc->state == CombatState::BreakingFree) {
+        tc->stateTimer += dt;
+        if (tc->stateTimer >= 0.6f) EndGrapple(true);
+    }
+
+    // Pair maintenance: target held at arm's length, both face each other.
+    if (!m_grappleTarget.IsValid()) return; // ended by the break above
+    Transform* jt = m_entities.GetTransform(m_jimmyId);
+    Transform* tt = m_entities.GetTransform(m_grappleTarget);
+    if (!jt || !tt) return;
+    glm::vec3 toT = tt->position - jt->position;
+    toT.y = 0.0f;
+    const float d = glm::length(toT);
+    if (d > 1e-4f) {
+        const glm::vec3 dir = toT / d;
+        if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+            pc->facingYaw = std::atan2(dir.x, dir.z);
+            pc->facingValid = true;
+            jt->rotation.y = pc->facingYaw;
+        }
+        const float hold = 0.85f;
+        tt->position = jt->position + dir * hold;
+        if (AIComponent* ai = m_entities.GetAI(m_grappleTarget)) {
+            ai->facingYaw = std::atan2(-dir.x, -dir.z);
+            tt->rotation.y = ai->facingYaw;
+        }
+    }
+    tt->position.y = jt->position.y;
+}
+
+// OPENBULLY_GRAPPLE_DEMO=1: scripted headless verification. Teleports Jimmy
+// in front of the nearest NPC, starts the grapple, lands a headlock strike
+// and a knee strike, then accelerates the NPC's mash so the break-free path
+// runs. Pair with OPENBULLY_SHOT for the verification screenshot.
+void Engine::DriveGrappleDemo() {
+    if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
+    static int sStage = 0;
+    const double t = m_time;
+    if (sStage == 0 && t >= 1.0) {
+        Transform* jt = m_entities.GetTransform(m_jimmyId);
+        if (!jt) return;
+        const EntityID target = FindNearestNpc(jt->position, 30.0f);
+        if (!target.IsValid()) return;
+        const Transform* tt = m_entities.GetTransform(target);
+        if (!tt) return;
+        glm::vec3 to = tt->position - jt->position;
+        to.y = 0.0f;
+        const float d = glm::length(to);
+        if (d > 1e-4f) {
+            const glm::vec3 dir = to / d;
+            jt->position = tt->position - dir * 1.2f;
+            if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+                pc->facingYaw = std::atan2(dir.x, dir.z);
+                jt->rotation.y = pc->facingYaw;
+            }
+        }
+        sStage = 1;
+    }
+    if (sStage == 1 && t >= 1.5) {
+        if (TryStartGrapple(2.0f)) sStage = 2;
+        else sStage = 0; // retry: the NPC may have wandered out of reach
+    }
+    if (sStage == 2 && t >= 3.5) {
+        Logger::Info("GrappleDemo: stage 2 -> headlock strike");
+        GrappleAttack(GrappleMove::HeadlockStrike);
+        sStage = 3;
+    }
+    if (sStage == 3 && t >= 4.5) {
+        Logger::Info("GrappleDemo: stage 3 -> knee strike");
+        GrappleAttack(GrappleMove::KneeStrike);
+        sStage = 4;
+    }
+    if (sStage == 4 && t >= 5.5) {
+        if (CombatComponent* tc = m_entities.GetCombat(m_grappleTarget))
+            tc->npcMashInterval = 0.05f; // rapid mash -> break-free demo
+        sStage = 5;
+    }
+}
+
 // Track 20 (UI): debug keys for HUD verification.
 //   H - damage Jimmy 10 (health bar shrinks)
 //   J - wanted level +1 (star fills, clamped 0..5)
@@ -2096,14 +3094,16 @@ void Engine::HandleHudDebugKeys() {
         static double s_lastHit = -1e9;
         if (m_time >= 2.0 && m_time - s_lastHit >= 1.0) {
             s_lastHit = m_time;
-            pc->health.Damage(10);
+            // Track 25: route through DamagePlayer so the HUD demo also
+            // exercises dodge i-frames / block reduction / counter window.
+            DamagePlayer(10, "HUD demo");
             Logger::Info("HUD demo: damage 10 -> health %d/%d",
                          pc->health.current, pc->health.max);
         }
     }
 
     if (m_input.WasKeyPressed(SDL_SCANCODE_H)) {
-        pc->health.Damage(10);
+        DamagePlayer(10, "HUD debug");
         Logger::Info("HUD debug: damage 10 -> health %d/%d",
                      pc->health.current, pc->health.max);
     }
@@ -2133,6 +3133,38 @@ void Engine::UpdateHUD(float dt) {
             m_hudState.maxHealth = pc->health.max;
             m_hudState.wanted = pc->wanted;
             m_hudState.money = pc->money;
+            // Track 26: weapon inventory slots for the HUD.
+            for (int i = 0; i < HUDState::kMaxWeaponSlots; ++i) {
+                HUDState::WeaponSlotInfo& info = m_hudState.weaponSlots[i];
+                info.valid = info.equipped = false;
+                info.name[0] = '\0'; info.durability = info.ammo = 0;
+                const InventorySlot& slot = pc->slots[i];
+                if (slot.type == WeaponType::Unarmed) continue;
+                const WeaponData& data = GetWeaponDataById(slot.weaponId);
+                info.valid = true;
+                info.equipped = (pc->equippedSlot == i);
+                std::snprintf(info.name, sizeof(info.name), "%s", data.name);
+                info.durability = slot.durability;
+                info.ammo = slot.ammo;
+            }
+            // Track 25: stamina pool + combat state for the HUD.
+            m_hudState.stamina = int(pc->stamina.current);
+            m_hudState.maxStamina = int(pc->stamina.max);
+            m_hudState.combatState = int(pc->state);
+        }
+
+        // Track 24: grapple HUD status + mash progress.
+        m_hudState.grappleState = 0;
+        m_hudState.grappleMash = 0;
+        if (m_grappleTarget.IsValid()) {
+            if (CombatComponent* jc = m_entities.GetCombat(m_jimmyId)) {
+                m_hudState.grappleState =
+                    jc->state == CombatState::Grabbing ? 1 :
+                    jc->state == CombatState::Grappled ? 2 :
+                    jc->state == CombatState::BreakingFree ? 3 : 0;
+            }
+            if (CombatComponent* tc = m_entities.GetCombat(m_grappleTarget))
+                m_hudState.grappleMash = std::min(tc->mashCount, tc->mashRequired);
         }
         if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
             m_hudState.playerX = jt->position.x;
@@ -2264,6 +3296,10 @@ void Engine::Render() {
             }
         }
 
+        // Track 26: the equipped weapon drawn in Jimmy's hand (position
+        // offset in facing-yaw space; bone attach comes with skinned hands).
+        RenderWeaponInHand(view, proj);
+
         // Camera collision: resolve against entity world AABBs (layer 0 =
         // world). Push the camera out of any box it intersects.
         {
@@ -2332,6 +3368,29 @@ void Engine::Render() {
     if (m_ui.IsInitialized()) {
         m_ui.BeginFrame();
         m_ui.DrawHUD(m_hudState);
+        // Track 23: melee hit feedback. Top-center damage popup with the
+        // combo count, and a bottom-left combo meter while a chain is live.
+        const float white = 0xffffffffu;
+        if (m_meleePopupTimer > 0.0f && m_meleePopup[0]) {
+            const float w = m_ui.MeasureText(m_meleePopup);
+            const float scale = 3.0f; // chunky; text metrics are 6 px/char
+            m_ui.DrawText(0.5f * (float(m_screenWidth) - w * scale),
+                          0.22f * float(m_screenHeight), m_meleePopup,
+                          m_meleePopupTimer < 0.4f ? 0xffff8000u : white);
+        }
+        if (m_jimmyId.IsValid()) {
+            if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId)) {
+                if (mc->comboCount > 1) {
+                    char buf[48];
+                    std::snprintf(buf, sizeof(buf), "COMBO x%d", mc->comboCount);
+                    m_ui.DrawText(24.0f, float(m_screenHeight) - 48.0f, buf, white);
+                    // Combo timer bar (2 s window per the task spec).
+                    const float frac = 1.0f - std::min(mc->comboIdleTimer, 2.0f) / 2.0f;
+                    m_ui.DrawRect(24.0f, float(m_screenHeight) - 38.0f,
+                                  120.0f * frac, 6.0f, 0xff40a0ffff);
+                }
+            }
+        }
     }
 
     m_renderer->Frame(); // present (VSync via BGFX_RESET_VSYNC)
@@ -2404,6 +3463,482 @@ void Engine::Shutdown() {
     }
     m_initialized = false;
     Logger::Info("Engine shutdown complete");
+}
+
+// --- Track 26: weapon system ---------------------------------------------------
+
+// Loads the weapon NIFs (bat / garbage lid / yardstick / slingshot) from the
+// extracted World.img set. Each model is normalized to ~0.9 units for hand
+// carrying; pickups draw at 1.3x that. Returns false when nothing loaded.
+bool Engine::LoadWeaponModels() {
+    static const char* kDirs[] = { "data/extracted/world", "../data/extracted/world" };
+    size_t loaded = 0;
+    for (int wi = 1; wi <= 4; ++wi) { // table order: Bat..Slingshot (skip Unarmed)
+        const WeaponData& data = GetWeaponData(WeaponType(wi));
+        if (!data.modelNif) continue;
+        bool ok = false;
+        for (const char* dir : kDirs) {
+            const std::string path = std::string(dir) + "/" + data.modelNif;
+            NifLoadResult nif = LoadNifFile(path);
+            if (!nif.ok || nif.totalVertices < 10) continue;
+            Mesh mesh;
+            if (!MeshFromNif(nif, mesh)) continue;
+            // Bake node-hierarchy transforms (same as level geometry) when
+            // the NIF carries them.
+            {
+                size_t vertBase = 0;
+                for (const NifGeometryData& geo : nif.geometries) {
+                    float wm[16];
+                    if (NifWorldTransform(nif, geo.nodeIndex, wm)) {
+                        for (size_t v = 0; v < geo.vertices.size(); v++) {
+                            MeshVertex& mv = mesh.vertices[vertBase + v];
+                            const NifVector3& p = geo.vertices[v];
+                            mv.x = wm[0]*p.x + wm[4]*p.y + wm[8]*p.z  + wm[12];
+                            mv.y = wm[1]*p.x + wm[5]*p.y + wm[9]*p.z  + wm[13];
+                            mv.z = wm[2]*p.x + wm[6]*p.y + wm[10]*p.z + wm[14];
+                        }
+                    }
+                    vertBase += geo.vertices.size();
+                }
+            }
+            // Normalize: max dimension -> 0.9u (a bat-sized prop in hand).
+            glm::vec3 lo( FLT_MAX), hi(-FLT_MAX);
+            for (uint32_t idx : mesh.indices) {
+                const MeshVertex& v = mesh.vertices[idx];
+                lo = glm::min(lo, glm::vec3(v.x, v.y, v.z));
+                hi = glm::max(hi, glm::vec3(v.x, v.y, v.z));
+            }
+            const float maxDim = std::max(hi.x - lo.x,
+                                 std::max(hi.y - lo.y, hi.z - lo.z));
+            const float drawScale = maxDim > 1e-4f ? 0.9f / maxDim : 1.0f;
+
+            GpuMesh gpu = m_renderer->UploadMeshGpu(mesh);
+            if (!gpu.valid()) continue;
+            WeaponModel model;
+            model.name = data.modelNif;
+            model.type = data.type;
+            model.id = wi;
+            model.gpu = gpu;
+            model.drawScale = drawScale;
+            for (const MeshSubMesh& sub : mesh.subMeshes) {
+                WorldMesh::SubRange sr;
+                sr.indexOffset = sub.indexOffset;
+                sr.indexCount = sub.indexCount;
+                sr.texture = AcquireTexture(m_texDir.c_str(), sub.textureName);
+                model.subs.push_back(sr);
+            }
+            m_weaponModels.push_back(std::move(model));
+            Logger::Info("Weapon model '%s' loaded (%zu verts, scale %.3f)",
+                         data.modelNif, mesh.vertices.size(), drawScale);
+            ok = true;
+            break;
+        }
+        if (!ok) Logger::Warning("Weapon model '%s' failed to load", data.modelNif);
+        else loaded++;
+    }
+    return loaded > 0;
+}
+
+// Spawns one pickup entity per weapon model near `center`, ground-snapped.
+void Engine::SpawnWeaponPickups(const glm::vec3& center) {
+    if (m_weaponModels.empty()) return;
+    static const glm::vec3 kOffsets[] = {
+        { 2.0f, 0.0f,  1.0f }, { -2.5f, 0.0f, 0.5f },
+        { 1.5f, 0.0f, -2.0f }, {  0.5f, 0.0f, 2.5f },
+    };
+    for (size_t i = 0; i < m_weaponModels.size(); ++i) {
+        const WeaponModel& wmodel = m_weaponModels[i];
+        const WeaponData& data = GetWeaponDataById(wmodel.id);
+        glm::vec3 pos = center + kOffsets[i % 4];
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = pos.x; down.origin[1] = pos.y + 6.0f; down.origin[2] = pos.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+        }
+
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos + glm::vec3(0.0f, 0.45f, 0.0f); // hover above ground
+        t.scale = glm::vec3(wmodel.drawScale * 1.3f);
+        t.rotation.y = float(i) * 1.7f; // varied initial spin
+        m_entities.AddTransform(e, t);
+
+        MeshComponent mc;
+        mc.isWeaponPickup = true;
+        mc.weaponModelIndex = uint32_t(i);
+        m_entities.AddMesh(e, mc);
+
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+        cc.layerMask = 2u;
+        m_entities.AddCollision(e, cc);
+
+        WeaponComponent w;
+        w.type = wmodel.type;
+        w.weaponId = wmodel.id;
+        w.durability = data.durability;
+        w.ammo = data.ammo;
+        m_entities.AddWeapon(e, w);
+
+        Logger::Info("Weapon pickup '%s' spawned at (%.1f, %.1f, %.1f)",
+                     data.name, pos.x, pos.y, pos.z);
+    }
+}
+
+// Per-frame weapon logic: pickup (E), slot selection (1-5), pickup bob/spin.
+void Engine::UpdateWeapons(float dt) {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+
+    // Track 26 verification hook: OPENBULLY_WEAPON_DEMO=1 scripts pickup ->
+    // equip -> slingshot fire for headless screenshots (t=1s pickup, t=2.5s
+    // fire). Same philosophy as CAM_DEMO/JIMMY_DEMO.
+    static const bool s_weaponDemo = std::getenv("OPENBULLY_WEAPON_DEMO") != nullptr;
+    if (s_weaponDemo && m_jimmyActive) {
+        if (m_time >= 1.0 && pc->equippedSlot < 0) {
+            // Auto-pickup: prefer the slingshot (projectile proof for the
+            // screenshot); otherwise the nearest weapon pickup entity.
+            EntityID best{};
+            float bestDist = 1e9f;
+            bool bestRanged = false;
+            m_entities.ForEach([&](EntityID id, Transform& t,
+                                   const EntityManager::EntityRecord&) {
+                if (id == m_jimmyId || !m_entities.GetWeapon(id)) return;
+                const WeaponComponent* w = m_entities.GetWeapon(id);
+                const bool ranged = w && w->type == WeaponType::RangedProjectile;
+                const float d = glm::length(t.position - jt->position);
+                if (ranged || d < bestDist) {
+                    if (ranged || (!bestRanged && d < bestDist)) {
+                        bestDist = d; best = id; bestRanged = ranged;
+                    }
+                }
+            });
+            if (best.IsValid() && m_entities.IsAlive(best)) {
+                const WeaponComponent* wc = m_entities.GetWeapon(best);
+                for (int i = 0; i < 5 && wc; ++i) {
+                    if (pc->slots[i].type != WeaponType::Unarmed) continue;
+                    pc->slots[i].type = wc->type;
+                    pc->slots[i].weaponId = wc->weaponId;
+                    pc->slots[i].durability = wc->durability;
+                    pc->slots[i].ammo = wc->ammo;
+                    pc->equippedSlot = i;
+                    const WeaponData& data = GetWeaponDataById(wc->weaponId);
+                    Logger::Info("Weapon demo: picked up %s (slot %d)",
+                                 data.name, i);
+                    m_entities.Destroy(best);
+                    break;
+                }
+            }
+        }
+        if (m_time >= 2.5 && pc->equippedSlot >= 0 && pc->attackCooldown <= 0.0f) {
+            WeaponTryAttack(pc); // slingshot if picked, else melee swing
+        }
+    }
+
+    // --- Pickup: E near a dropped weapon -------------------------------------
+    if (m_input.WasKeyPressed(SDL_SCANCODE_E)) {
+        EntityID best{};
+        float bestDist = 2.2f; // pickup radius
+        m_entities.ForEach([&](EntityID id, Transform& t,
+                               const EntityManager::EntityRecord&) {
+            if (id == m_jimmyId) return;
+            if (!m_entities.GetWeapon(id)) return;
+            const float d = glm::length(t.position - jt->position);
+            if (d < bestDist) { bestDist = d; best = id; }
+        });
+        if (best.IsValid() && m_entities.IsAlive(best)) {
+            const WeaponComponent* wc = m_entities.GetWeapon(best);
+            int freeSlot = -1;
+            for (int i = 0; i < 5; ++i)
+                if (pc->slots[i].type == WeaponType::Unarmed) { freeSlot = i; break; }
+            if (freeSlot < 0) {
+                Logger::Info("Pickup failed: inventory full");
+            } else if (wc) {
+                const WeaponData& data = GetWeaponDataById(wc->weaponId);
+                pc->slots[freeSlot].type = wc->type;
+                pc->slots[freeSlot].weaponId = wc->weaponId;
+                pc->slots[freeSlot].durability = wc->durability > 0
+                    ? wc->durability : data.durability;
+                pc->slots[freeSlot].ammo = wc->ammo;
+                if (pc->equippedSlot < 0) pc->equippedSlot = freeSlot;
+                Logger::Info("Picked up %s -> slot %d (durability %d, ammo %d)",
+                             data.name, freeSlot, pc->slots[freeSlot].durability,
+                             pc->slots[freeSlot].ammo);
+                m_entities.Destroy(best);
+            }
+        }
+    }
+
+    // --- Slot selection: 1-5 ---------------------------------------------------
+    static const SDL_Scancode kSlotKeys[5] = {
+        SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4, SDL_SCANCODE_5,
+    };
+    for (int i = 0; i < 5; ++i) {
+        if (m_input.WasKeyPressed(kSlotKeys[i])) {
+            if (pc->slots[i].type == WeaponType::Unarmed) {
+                Logger::Info("Slot %d empty", i + 1);
+            } else {
+                pc->equippedSlot = (pc->equippedSlot == i) ? -1 : i; // toggle sheath
+                const WeaponData& data = GetWeaponDataById(pc->slots[i].weaponId);
+                Logger::Info("Equipped slot %d: %s", i + 1,
+                             pc->equippedSlot == i ? data.name : "(unarmed)");
+            }
+        }
+    }
+
+    // --- Pickup bob + spin (visual only) --------------------------------------
+    m_entities.ForEach([&](EntityID id, Transform& t,
+                           const EntityManager::EntityRecord&) {
+        if (id == m_jimmyId) return;
+        if (!m_entities.GetWeapon(id)) return;
+        t.rotation.y += dt * 1.5f;
+        t.position.y += std::sin(float(m_time) * 2.0f + float(id.index)) * dt * 0.08f;
+    });
+}
+
+// LMB attack with an equipped weapon. Melee: hits every NPC within the
+// weapon's range in front of Jimmy; the counter bonus (Track 25) multiplies
+// damage. Ranged: consumes one ammo and spawns a projectile entity. Each
+// successful hit (or shot) decrements durability; 0 breaks the weapon.
+void Engine::WeaponTryAttack(PlayerController* pc) {
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt || pc->equippedSlot < 0 || pc->equippedSlot >= 5) return;
+    InventorySlot& slot = pc->slots[pc->equippedSlot];
+    if (slot.type == WeaponType::Unarmed) return;
+    const WeaponData& data = GetWeaponDataById(slot.weaponId);
+
+    const glm::vec3 fwd(std::sin(pc->facingYaw), 0.0f, std::cos(pc->facingYaw));
+    int damage = data.damage;
+    if (pc->counterArmed) {
+        damage = int(float(damage) * 4.0f); // Track 25 counter bonus
+        pc->counterArmed = false;
+        pc->state = DefenseState::Normal;
+        Logger::Info("COUNTER ATTACK with %s!", data.name);
+    }
+    pc->attackCooldown = data.attackCooldown;
+
+    bool hitSomething = false;
+    if (data.type == WeaponType::RangedProjectile) {
+        // --- Slingshot: ammo gate + projectile spawn --------------------------
+        if (slot.ammo <= 0) {
+            Logger::Info("%s: out of ammo", data.name);
+            return;
+        }
+        slot.ammo--;
+        const glm::vec3 origin = jt->position + glm::vec3(0.0f, 1.3f, 0.0f) +
+                                 fwd * 0.5f;
+        const glm::vec3 vel = fwd * 18.0f + glm::vec3(0.0f, 1.2f, 0.0f);
+        SpawnProjectile(origin, vel, damage);
+        Logger::Info("%s fired (ammo left %d, damage %d)",
+                     data.name, slot.ammo, damage);
+        hitSomething = true; // durability still wears on each shot
+    } else {
+        // --- Melee: sweep every NPC inside the extended hit arc ---------------
+        const float reach = data.range + 0.4f;
+        m_entities.ForEach([&](EntityID id, Transform& t,
+                               const EntityManager::EntityRecord&) {
+            if (id == m_jimmyId) return;
+            AIComponent* ai = m_entities.GetAI(id);
+            if (!ai) return; // NPCs only (grapple targets keep their own flow)
+            const glm::vec3 to = t.position - jt->position;
+            const float dy = std::fabs(to.y);
+            const float dxz = glm::length(glm::vec3(to.x, 0.0f, to.z));
+            if (dy > 1.6f || dxz > reach) return;
+            // Must be roughly in front of Jimmy (dot > 0.1).
+            if (dxz > 1e-3f && glm::dot(glm::vec3(to.x, 0.0f, to.z) / dxz, fwd) < 0.1f)
+                return;
+            ai->health.Damage(damage);
+            hitSomething = true;
+            Logger::Info("%s hit NPC idx=%u for %d (health %d/%d)", data.name,
+                         id.index, damage, ai->health.current, ai->health.max);
+            if (ai->health.current <= 0) {
+                Logger::Info("NPC idx=%u defeated", id.index);
+                m_entities.Destroy(id);
+            }
+        });
+        if (!hitSomething)
+            Logger::Info("%s swing: no target in range (%.1f)", data.name, reach);
+    }
+
+    // --- Durability: wear + break ---------------------------------------------
+    if (hitSomething && data.durability > 0) {
+        slot.durability--;
+        Logger::Info("%s durability %d", data.name, slot.durability);
+        if (slot.durability <= 0) {
+            Logger::Info("%s BROKE!", data.name);
+            SpawnDebris(jt->position + glm::vec3(0.0f, 1.2f, 0.0f));
+            slot.type = WeaponType::Unarmed;
+            slot.ammo = 0;
+            pc->equippedSlot = -1;
+        }
+    }
+}
+
+// Projectile entity: Transform + Mesh(isBox); velocity/life live engine-side.
+void Engine::SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg) {
+    if (!m_testBoxValid) return;
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = pos;
+    t.scale = glm::vec3(0.12f); // small rock
+    m_entities.AddTransform(e, t);
+    MeshComponent mc;
+    mc.isBox = true;
+    m_entities.AddMesh(e, mc);
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+    cc.layerMask = 4u; // projectile layer (excluded from player queries)
+    m_entities.AddCollision(e, cc);
+
+    Projectile p;
+    p.id = e;
+    p.velocity = vel;
+    p.life = 3.0f;
+    p.damage = dmg;
+    m_projectiles.push_back(p);
+}
+
+// Weapon-break effect: a short-lived spray of inert debris cubes.
+void Engine::SpawnDebris(const glm::vec3& pos) {
+    if (!m_testBoxValid) return;
+    for (int i = 0; i < 6; ++i) {
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos;
+        t.scale = glm::vec3(0.08f + 0.02f * float(i % 3));
+        m_entities.AddTransform(e, t);
+        MeshComponent mc;
+        mc.isBox = true;
+        m_entities.AddMesh(e, mc);
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+        cc.layerMask = 4u;
+        m_entities.AddCollision(e, cc);
+
+        const float a = float(i) * 1.0472f; // 60 deg steps
+        Projectile p;
+        p.id = e;
+        p.velocity = glm::vec3(std::cos(a) * 2.5f, 3.0f + 0.5f * float(i % 3),
+                               std::sin(a) * 2.5f);
+        p.life = 0.7f;
+        p.damage = 0; // inert
+        m_projectiles.push_back(p);
+    }
+}
+
+// Integrates projectiles: straight-line flight, world raycast per step,
+// sphere hit vs NPC torsos (damage), life expiry. Debris (damage 0) gets
+// gravity and damages nobody.
+void Engine::UpdateProjectiles(float dt) {
+    if (m_projectiles.empty()) return;
+    for (size_t i = 0; i < m_projectiles.size();) {
+        Projectile& p = m_projectiles[i];
+        Transform* t = m_entities.GetTransform(p.id);
+        if (!t) { // entity destroyed elsewhere: drop the record
+            m_projectiles.erase(m_projectiles.begin() + long(i));
+            continue;
+        }
+        p.life -= dt;
+        if (p.damage > 0) { // flying rock: light drop
+            p.velocity.y -= 2.5f * dt;
+        } else { // debris: full gravity
+            p.velocity.y -= 9.8f * dt;
+        }
+        const glm::vec3 oldPos = t->position;
+        const glm::vec3 step = p.velocity * dt;
+
+        bool kill = p.life <= 0.0f;
+        // World hit: segment raycast from old to new position.
+        if (!kill && m_collisionWorld && glm::length(step) > 1e-6f) {
+            Ray r;
+            r.origin[0] = oldPos.x; r.origin[1] = oldPos.y; r.origin[2] = oldPos.z;
+            const float len = glm::length(step);
+            r.direction[0] = step.x / len; r.direction[1] = step.y / len;
+            r.direction[2] = step.z / len;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(r, hit) &&
+                glm::length(glm::make_vec3(hit.point) - oldPos) <= len) {
+                Logger::Info("Projectile hit world at (%.1f, %.1f, %.1f)",
+                             hit.point[0], hit.point[1], hit.point[2]);
+                kill = true;
+            }
+        }
+        // NPC hit: sphere vs torso (damage projectiles only).
+        if (!kill && p.damage > 0) {
+            const glm::vec3 newPos = oldPos + step;
+            m_entities.ForEachAI([&](EntityID id, Transform& nt, AIComponent& ai) {
+                if (kill || id == m_jimmyId) return;
+                const glm::vec3 torso = nt.position + glm::vec3(0.0f, 1.0f, 0.0f);
+                if (glm::length(newPos - torso) < 0.8f) {
+                    ai.health.Damage(p.damage);
+                    Logger::Info("Projectile hit NPC idx=%u for %d (health %d/%d)",
+                                 id.index, p.damage, ai.health.current, ai.health.max);
+                    if (ai.health.current <= 0) {
+                        Logger::Info("NPC idx=%u defeated (projectile)", id.index);
+                        m_entities.Destroy(id);
+                    }
+                    kill = true;
+                }
+            });
+        }
+
+        if (kill) {
+            m_entities.Destroy(p.id);
+            m_projectiles.erase(m_projectiles.begin() + long(i));
+            continue;
+        }
+        t->position = oldPos + step;
+        ++i;
+    }
+}
+
+// Resolves the equipped inventory slot to its loaded model (nullptr/unarmed).
+const Engine::WeaponModel* Engine::EquippedWeaponModel(
+    const PlayerController* pc, int* slotOut) const {
+    if (slotOut) *slotOut = -1;
+    if (!pc || pc->equippedSlot < 0 || pc->equippedSlot >= 5) return nullptr;
+    const InventorySlot& slot = pc->slots[pc->equippedSlot];
+    if (slot.type == WeaponType::Unarmed) return nullptr;
+    for (const WeaponModel& m : m_weaponModels)
+        if (m.id == slot.weaponId ||
+            (slot.weaponId == 0 && m.type == slot.type)) {
+            if (slotOut) *slotOut = pc->equippedSlot;
+            return &m;
+        }
+    return nullptr;
+}
+
+// Draws the equipped weapon in Jimmy's hand: position offset in facing-yaw
+// space (right side, chest height), pitched forward like a carried prop.
+void Engine::RenderWeaponInHand(const glm::mat4& view, const glm::mat4& proj) {
+    if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
+    const PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!pc || !jt) return;
+    const WeaponModel* model = EquippedWeaponModel(pc);
+    if (!model || !model->gpu.valid()) return;
+
+    const float cy = std::cos(pc->facingYaw), sy = std::sin(pc->facingYaw);
+    const glm::vec3 fwd(sy, 0.0f, cy);
+    const glm::vec3 right(cy, 0.0f, -sy);
+    const glm::vec3 handPos = jt->position + fwd * 0.30f + right * 0.30f +
+                              glm::vec3(0.0f, 1.20f, 0.0f);
+    const glm::mat4 modelM =
+        glm::translate(glm::mat4(1.0f), handPos) *
+        glm::rotate(glm::mat4(1.0f), pc->facingYaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
+        glm::rotate(glm::mat4(1.0f), -0.5f, glm::vec3(1.0f, 0.0f, 0.0f)) *
+        glm::scale(glm::mat4(1.0f), glm::vec3(model->drawScale));
+    const glm::mat4 mvp = proj * view * modelM;
+    for (const WorldMesh::SubRange& sr : model->subs) {
+        m_renderer->BindTexture(sr.texture);
+        m_renderer->DrawMesh3DSub(model->gpu, sr.indexOffset, sr.indexCount,
+                                  glm::value_ptr(mvp));
+    }
 }
 
 } // namespace OpenBully

@@ -23,8 +23,10 @@ enum class Button : int {
     Right,        // D
     Up,           // Space (fly up / jump later)
     Down,         // LCtrl (fly down)
-    Sprint,       // LShift (speed multiplier)
+    Sprint,       // LShift (speed multiplier / dodge modifier, Track 25)
     Mute,         // M (Track 21: toggle audio mute)
+    Attack,       // Track 25: LMB (punch; stamina 10)
+    Block,        // Track 25: RMB (hold to block; 50% damage reduction)
     Count
 };
 

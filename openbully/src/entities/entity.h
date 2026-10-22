@@ -14,6 +14,9 @@
 #include "../rendering/mesh.h"
 #include "../rendering/renderer.h"
 #include "../game/player.h"
+#include "../game/combat.h"
+#include "../game/weapon.h" // Track 26: WeaponType for WeaponComponent
+#include "../combat/combat.h" // Track 23: melee CombatComponent (Melee ns)
 #include "../animation/animation_controller.h"
 #include "npc.h"
 
@@ -53,7 +56,9 @@ struct MeshComponent {
     bool           isBox     = false;    // true = draw the shared test box
     bool           isJimmy   = false;    // true = draw the dedicated player mesh (Track 15)
     bool           isNpc     = false;    // true = draw an NPC model (Track 16)
+    bool           isWeaponPickup = false; // Track 26: draw a weapon model (pickup on ground)
     uint32_t       npcModelIndex = 0xFFFFFFFF; // index into Engine::m_npcModels
+    uint32_t       weaponModelIndex = 0xFFFFFFFF; // Track 26: index into Engine::m_weaponModels
     uint32_t       worldMeshIndex = 0xFFFFFFFF; // index into Engine::m_worldMeshes
     GpuTexture     texture;              // invalid = renderer placeholder
 };
@@ -92,6 +97,16 @@ struct AnimationComponent {
     uint32_t rigIndex = 0xFFFFFFFF; // engine rig pool index
     bool     playing = false;
     bool     wasMoving = false;    // last-frame movement flag (state switching)
+};
+
+// Track 26: weapon data on an entity. World pickups carry it (what Jimmy
+// picks up); his inventory mirrors it in PlayerController::InventorySlot.
+// weaponId (kTable index) is authoritative — WeaponType is shared by kind.
+struct WeaponComponent {
+    WeaponType type       = WeaponType::Unarmed;
+    int        weaponId   = 0;
+    int        durability = 0;
+    int        ammo       = 0;
 };
 
 // --- Entity manager -----------------------------------------------------------
@@ -136,6 +151,18 @@ public:
     AIComponent*        AddAI(EntityID id, const AIComponent& a = {});
     AIComponent*        GetAI(EntityID id);
 
+    // Track 26: weapon component (world pickups).
+    WeaponComponent*    AddWeapon(EntityID id, const WeaponComponent& w = {});
+    WeaponComponent*    GetWeapon(EntityID id);
+
+    // Track 24: combat / grapple component.
+    CombatComponent*    AddCombat(EntityID id, const CombatComponent& c = {});
+    CombatComponent*    GetCombat(EntityID id);
+
+    // Track 23: melee combat component (attack/stun/combo state).
+    Melee::CombatComponent* AddMeleeCombat(EntityID id, const Melee::CombatComponent& c = {});
+    Melee::CombatComponent* GetMeleeCombat(EntityID id);
+
     void RemoveMesh(EntityID id);
     void RemoveCollision(EntityID id);
 
@@ -152,6 +179,9 @@ public:
         uint32_t player      = 0xFFFFFFFF;
         uint32_t ai          = 0xFFFFFFFF;
         uint32_t animation   = 0xFFFFFFFF;
+        uint32_t weapon      = 0xFFFFFFFF; // Track 26
+        uint32_t combat      = 0xFFFFFFFF;
+        uint32_t melee       = 0xFFFFFFFF; // Track 23
 
         bool HasMesh() const      { return mesh      != 0xFFFFFFFF; }
         bool HasCollision() const { return collision != 0xFFFFFFFF; }
@@ -228,6 +258,9 @@ private:
     std::vector<AnimationComponent> m_animations;
     std::vector<PlayerController>   m_players;
     std::vector<AIComponent>        m_ai;
+    std::vector<WeaponComponent>    m_weapons; // Track 26
+    std::vector<CombatComponent>    m_combats;
+    std::vector<Melee::CombatComponent> m_melees; // Track 23
 };
 
 } // namespace OpenBully

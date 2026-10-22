@@ -63,6 +63,7 @@ target_include_directories(glm_headers INTERFACE "${OPENBULLY_GLM_DIR}")
 add_executable(openbully
     src/main.cpp
     src/engine/engine.cpp
+    src/combat/combat.cpp
     src/engine/resource_manager.cpp
     src/mission/mission.cpp
     src/engine/formats/nif_loader.cpp

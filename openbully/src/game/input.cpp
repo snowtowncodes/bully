@@ -17,8 +17,14 @@ const SDL_Scancode kButtonScancodes[int(Button::Count)] = {
     SDL_SCANCODE_SPACE, // Up
     SDL_SCANCODE_LCTRL, // Down
     SDL_SCANCODE_LSHIFT, // Sprint
-    SDL_SCANCODE_M       // Mute (Track 21)
+    SDL_SCANCODE_M,     // Mute
+    SDL_SCANCODE_UNKNOWN, // Attack  (mouse)
+    SDL_SCANCODE_UNKNOWN // Block   (mouse)
 };
+
+// Track 25: mouse-button bit for the mouse-mapped tail of the Button enum
+// (Attack, Block). Index 0 = Button::Attack.
+const Uint32 kMouseButtonMask[] = { SDL_BUTTON_LMASK, SDL_BUTTON_RMASK };
 
 } // namespace
 
@@ -42,6 +48,12 @@ void Input::Poll() {
     std::memcpy(m_lastRawDown, m_rawDown, sizeof(m_rawDown));
     for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
         m_rawDown[i] = keys[i] != 0;
+
+    // Track 25: mouse buttons polled after the keyboard loop (the two tail
+    // entries of kButtonScancodes are 0 = not keyboard-mapped).
+    const Uint32 mouseButtons = SDL_GetMouseState(nullptr, nullptr);
+    for (int i = int(Button::Attack); i < int(Button::Count); ++i)
+        m_down[i] = (mouseButtons & kMouseButtonMask[i - int(Button::Attack)]) != 0;
 
     // Escape -> quit. Also accept SDL_QUIT (window close) via the event pump:
     // main.cpp owns the event loop, but events may not have been pumped yet

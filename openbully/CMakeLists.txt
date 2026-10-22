@@ -80,6 +80,7 @@ add_executable(openbully
     src/vehicles/vehicle_feel.cpp
     src/game/input.cpp
     src/game/camera.cpp
+    src/weather/weather.cpp
     src/physics/collision.cpp
     src/vehicles/vehicle_physics.cpp
     src/platform/window.cpp
@@ -87,6 +88,7 @@ add_executable(openbully
     src/rendering/mesh.cpp
     src/rendering/renderer.cpp
     src/ui/ui.cpp
+    src/engine/save_system.cpp
 )
 
 # NIF loader test harness (standalone, no SDL/bgfx dependency).
@@ -210,7 +212,7 @@ set(OPENBULLY_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/shaders")
 set(OPENBULLY_SHADER_OUT_DIR "$<TARGET_FILE_DIR:openbully>/shaders")
 
 set(OPENBULLY_SHADER_TARGETS "")
-foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_ui fs_ui)
+foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_particle fs_particle vs_ui fs_ui)
     # Direct3D11 (SM 5.0) - pinned Phase-2 backend on Windows
     if(SHADER_NAME MATCHES "^vs_")
         set(SHADER_TYPE vertex)
@@ -246,7 +248,7 @@ foreach(BACKEND IN ITEMS opengl vulkan)
         set(PROFILE_FS "spirv")
         set(PLATFORM "vulkan")
     endif()
-    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_ui fs_ui)
+    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_particle fs_particle vs_ui fs_ui)
         if(SHADER_NAME MATCHES "^vs_")
             set(SHADER_TYPE vertex)
             set(SHADER_PROFILE ${PROFILE_VS})

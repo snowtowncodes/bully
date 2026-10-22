@@ -1,5 +1,5 @@
 $input a_position a_normal a_texcoord0 a_indices a_weight
-$output v_color0 v_normal v_texcoord0
+$output v_color0 v_normal v_texcoord0 v_fogDepth
 
 #include <bgfx_shader.sh>
 
@@ -19,7 +19,13 @@ void main()
 
 	// Skinned position: bone palette maps bind-pose model space to the
 	// current pose; u_mvp carries entity transform + view + projection.
-	gl_Position = mul(u_mvp, mul(skin, vec4(a_position, 1.0)));
+	vec4 skinnedPos = mul(skin, vec4(a_position, 1.0));
+
+	// Compute view-space position for fog depth (positive distance in LH).
+	vec4 viewPos = mul(u_view, skinnedPos);
+	v_fogDepth = -viewPos.z;
+
+	gl_Position = mul(u_mvp, skinnedPos);
 
 	// Normals: rotate by the skinned 3x3 (no inverse-transpose yet; bone
 	// matrices are near-rigid so this stays acceptable for lighting).

@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <dirent.h>
 #include <fstream>
 #include <memory>
@@ -3485,6 +3486,10 @@ bool Engine::Init(const Window& window) {
     // non-spatialized bed; idempotent).
     if (m_audio)
         m_audio->StartAmbient();
+
+    // Track 34: weather system — initialize state machine + particle buffers.
+    WeatherManager::Get().Init();
+    m_renderer->InitParticleSystems();
     if (worldLoaded == 0) {
         Logger::Info("No World.img geometry loaded; triangle-only mode");
         // Default spawn: spec fallback (0, 5, -10) looking toward origin.
@@ -3733,6 +3738,37 @@ void Engine::Update() {
     m_input.Poll();
     if (m_input.QuitRequested()) m_quitRequested = true;
 
+    // OPENBULLY_SAVE_DEMO=1: scripted save/load for headless verification.
+    // Saves at t=5s, loads at t=15s — exercises the same F5/F9 paths.
+    // Latched one-shots (not time windows): a frame hitch can skip a 0.1s
+    // window entirely, so the demo must fire on the first frame past t.
+    static const bool s_saveDemo = std::getenv("OPENBULLY_SAVE_DEMO") != nullptr;
+    static const bool s_loadDemo = std::getenv("OPENBULLY_LOAD_DEMO") != nullptr;
+    if (s_saveDemo) {
+        static bool s_saved = false;
+        static bool s_loaded = false;
+        if (!s_saved && m_time >= 5.0) {
+            s_saved = true;
+            SaveGame(0);
+            Logger::Info("Save demo: scripted F5 save at t=%.1f", m_time);
+        }
+        if (!s_loaded && m_time >= 15.0) {
+            s_loaded = true;
+            LoadGame(0);
+            Logger::Info("Save demo: scripted F9 load at t=%.1f", m_time);
+        }
+    }
+    if (s_loadDemo) {
+        // Load-only path: no prior save in this run -> exercises the
+        // missing-file error branch (must log, must not crash).
+        static bool s_loadedOnly = false;
+        if (!s_loadedOnly && m_time >= 5.0) {
+            s_loadedOnly = true;
+            LoadGame(0);
+            Logger::Info("Load demo: scripted F9 load-only at t=%.1f", m_time);
+        }
+    }
+
     // OPENBULLY_CAM_DEMO=1: scripted flythrough for headless verification of
     // the movement integration (OS-level key injection is unreliable from
     // automated environments). Drives the same Camera::Update path as real
@@ -3857,10 +3893,19 @@ void Engine::Update() {
     if (m_mountedVehicle.IsValid()) UpdateVehicleCamera(float(deltaTime));
     else UpdateJimmyCamera(float(deltaTime));
 
+    // Track 37: M toggles minimap visibility.
+    if (m_input.WasKeyPressed(SDL_SCANCODE_M))
+        m_hudState.minimapVisible = !m_hudState.minimapVisible;
+
     // Track 20 (UI): H/J/K debug keys mutate vitals, then refresh the HUD
     // snapshot the renderer draws from (called again in Render so pauses
     // still present an accurate overlay).
     HandleHudDebugKeys();
+    // Track 36: F5 save / F9 load.
+    if (m_input.WasKeyPressed(SDL_SCANCODE_F5))
+        SaveGame(0);
+    if (m_input.WasKeyPressed(SDL_SCANCODE_F9))
+        LoadGame(0);
     UpdateHUD(float(deltaTime));
 
     // Track 20: mission system — fire trigger zones and check objective
@@ -3876,6 +3921,33 @@ void Engine::Update() {
         if (m_input.IsPressed(Button::Mute))
             m_audio->ToggleMute();
         m_audio->SetListener(m_camera.GetPosition(), m_camera.GetYaw());
+    }
+
+    // Track 34: weather system update — state machine, particles, fog.
+    // Also handles W key for manual weather cycling and audio transitions.
+    {
+        WeatherManager& weather = WeatherManager::Get();
+        const glm::vec3 camPos = m_camera.GetPosition();
+        const glm::mat4 view = m_camera.GetViewMatrix();
+        weather.Update(float(deltaTime), camPos, view);
+
+        // Manual weather cycling: W key.
+        if (m_input.WasKeyPressed(SDL_SCANCODE_W)) {
+            weather.CycleWeatherManual();
+        }
+
+        // Audio transitions: start/stop rain loop on weather change.
+        const WeatherType curWeather = weather.GetType();
+        if (curWeather != m_prevWeather) {
+            if (m_prevWeather == WeatherType::RAIN && m_audio) {
+                m_audio->StopSound(SoundId::RainLoop);
+            }
+            if (curWeather == WeatherType::RAIN && m_audio) {
+                m_audio->PlaySound(SoundId::RainLoop, 0.4f, nullptr, /*loop=*/true);
+                Logger::Info("Weather: rain loop started");
+            }
+            m_prevWeather = curWeather;
+        }
     }
 
     // Track 13: camera collision (free camera only; the 3rd-person follow
@@ -5221,14 +5293,50 @@ void Engine::UpdateHUD(float dt) {
     }
 
     // Nearby NPC dots for the minimap (player-relative screen mapping
-    // happens in UIRenderer::DrawHUD; here we only collect world XZ).
+    // happens in UIRenderer::DrawHUD; here we collect world XZ + type).
     m_hudState.npcDotCount = 0;
-    m_entities.ForEachAI([&](EntityID, const Transform& t, const AIComponent&) {
+    m_entities.ForEachAI([&](EntityID, const Transform& t, const AIComponent& ai) {
         if (m_hudState.npcDotCount >= HUDState::kMaxMinimapDots) return;
         m_hudState.npcDots[m_hudState.npcDotCount].x = t.position.x;
         m_hudState.npcDots[m_hudState.npcDotCount].z = t.position.z;
+        // Track 37: color coding — red=hostile/prefect, green=friendly civilian,
+        // yellow=neutral (transitioning/KO states).
+        if (ai.role == AIRole::Prefect || ai.state == AIState::Alert ||
+            ai.state == AIState::Chase || ai.state == AIState::Attack)
+            m_hudState.npcDots[m_hudState.npcDotCount].type = 1;
+        else if (ai.role == AIRole::Civilian &&
+                 (ai.state == AIState::Idle || ai.state == AIState::Wander ||
+                  ai.state == AIState::Patrol || ai.state == AIState::Watch ||
+                  ai.state == AIState::FacePlayer))
+            m_hudState.npcDots[m_hudState.npcDotCount].type = 2;
+        else
+            m_hudState.npcDots[m_hudState.npcDotCount].type = 0;
         ++m_hudState.npcDotCount;
     });
+
+    // Track 37: vehicle dots (cyan squares on the minimap).
+    m_hudState.vehicleDotCount = 0;
+    for (EntityID vid : m_vehicleIds) {
+        if (m_hudState.vehicleDotCount >= HUDState::kMaxMinimapVehicles) break;
+        if (const Transform* vt = m_entities.GetTransform(vid)) {
+            m_hudState.vehicleDots[m_hudState.vehicleDotCount].x = vt->position.x;
+            m_hudState.vehicleDots[m_hudState.vehicleDotCount].z = vt->position.z;
+            ++m_hudState.vehicleDotCount;
+        }
+    }
+
+    // Track 37: active mission objective marker (gold star on the minimap).
+    m_hudState.objectiveActive = false;
+    if (const Mission* m = m_missions.ActiveMission()) {
+        if (m->currentObjective < m->objectives.size()) {
+            const Objective& obj = m->objectives[m->currentObjective];
+            if (!obj.complete) {
+                m_hudState.objectiveActive = true;
+                m_hudState.objectiveX = obj.targetPosition.x;
+                m_hudState.objectiveZ = obj.targetPosition.z;
+            }
+        }
+    }
 }
 
 // --- Track 29: time-of-day + NPC schedules -----------------------------------
@@ -5632,6 +5740,50 @@ void Engine::Render() {
         m_renderer->SetCameraView(view);
         const glm::mat4 proj = m_renderer->GetProjection();
 
+        // Track 35: day/night cycle — compute sky color and lighting from
+        // the game clock. SetSkyColor and SetLight are read by DrawMesh3DRange
+        // on every 3D draw below, so they must be set before the first submit.
+        // Track 34: weather fog is set here too, using the WeatherManager's
+        // current density and color.
+        {
+            const float hour = float(m_gameTimeMinutes) / 60.0f;
+            const DayNight::State dn = DayNight::Compute(hour);
+            
+            // Compute weather-modified sky color (base sky * weather factor).
+            WeatherManager& weather = WeatherManager::Get();
+            float skyR = dn.sky[0], skyG = dn.sky[1], skyB = dn.sky[2];
+            
+            // Weather modifies the sky color based on current state and intensity.
+            const float intensity = weather.GetIntensity();
+            switch (weather.GetType()) {
+                case WeatherType::CLEAR:
+                    break; // no modification
+                case WeatherType::RAIN:
+                    skyR = skyR * (1.0f - intensity) + 0.18f * intensity;
+                    skyG = skyG * (1.0f - intensity) + 0.22f * intensity;
+                    skyB = skyB * (1.0f - intensity) + 0.28f * intensity;
+                    break;
+                case WeatherType::SNOW:
+                    skyR = skyR * (1.0f - intensity) + 0.75f * intensity;
+                    skyG = skyG * (1.0f - intensity) + 0.78f * intensity;
+                    skyB = skyB * (1.0f - intensity) + 0.82f * intensity;
+                    break;
+                case WeatherType::FOG:
+                    skyR = skyR * (1.0f - intensity) + 0.55f * intensity;
+                    skyG = skyG * (1.0f - intensity) + 0.55f * intensity;
+                    skyB = skyB * (1.0f - intensity) + 0.55f * intensity;
+                    break;
+            }
+            
+            m_renderer->SetSkyColor(skyR, skyG, skyB);
+            
+            // Track 34: set weather fog density and color.
+            m_renderer->SetFog(weather.GetFogDensity(), weather.GetFogColor());
+            
+            const float ambient[3] = { dn.ambient, dn.ambient, dn.ambient };
+            m_renderer->SetLight(dn.lightDir, dn.lightColor, ambient);
+        }
+
         // World meshes draw in view 1 (3D), one draw per sub-mesh so each
         // binds its own base texture (Track 11).
         // Track 14: all 3D geometry draws through the entity list — level
@@ -5675,6 +5827,10 @@ void Engine::Render() {
         // Track 26: the equipped weapon drawn in Jimmy's hand (position
         // offset in facing-yaw space; bone attach comes with skinned hands).
         RenderWeaponInHand(view, proj);
+
+        // Track 34: weather particles (rain drops, snowflakes, splashes).
+        // Drawn after world geometry so they depth-test against the scene.
+        WeatherManager::Get().Render(m_renderer.get(), view, proj);
 
         // Camera collision: resolve against entity world AABBs (layer 0 =
         // world). Push the camera out of any box it intersects.
@@ -5786,6 +5942,7 @@ void Engine::Render() {
         }
     }
 
+    m_renderer->FlushScreenshot(); // flush pending screenshot before present
     m_renderer->Frame(); // present (VSync via BGFX_RESET_VSYNC)
 
     // One-shot verification capture (see OPENBULLY_SHOT in Init).
@@ -6330,6 +6487,251 @@ void Engine::RenderWeaponInHand(const glm::mat4& view, const glm::mat4& proj) {
         m_renderer->DrawMesh3DSub(model->gpu, sr.indexOffset, sr.indexCount,
                                   glm::value_ptr(mvp));
     }
+}
+
+// =========================================================================
+// Track 36: Save/Load system
+// =========================================================================
+
+// Captures the current runtime state into a SaveData struct. Called by
+// SaveGame(); reads from the live engine (entities, game clock, missions).
+SaveData Engine::CaptureSaveState() {
+    SaveData data;
+    data.version = 1;
+    data.slot    = 0;
+
+    // ISO-8601 UTC timestamp.
+    {
+        std::time_t now = std::time(nullptr);
+        std::tm tm_buf = *std::gmtime(&now);
+        char ts[32];
+        std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+        data.savedAt = ts;
+    }
+
+    // --- Player ---
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+            data.playerPos[0] = jt->position.x;
+            data.playerPos[1] = jt->position.y;
+            data.playerPos[2] = jt->position.z;
+            data.playerRot[0] = jt->rotation.x;
+            data.playerRot[1] = jt->rotation.y;
+            data.playerRot[2] = jt->rotation.z;
+        }
+        if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+            data.healthCurrent  = pc->health.current;
+            data.healthMax      = pc->health.max;
+            data.staminaCurrent = pc->stamina.current;
+            data.staminaMax     = pc->stamina.max;
+            data.money          = pc->money;
+            data.wanted         = pc->wanted;
+            data.facingYaw      = pc->facingYaw;
+            data.facingValid    = pc->facingValid;
+            data.equippedSlot   = pc->equippedSlot;
+            for (int i = 0; i < 5; ++i) {
+                data.slots[i].type       = static_cast<int>(pc->slots[i].type);
+                data.slots[i].weaponId   = pc->slots[i].weaponId;
+                data.slots[i].durability = pc->slots[i].durability;
+                data.slots[i].ammo       = pc->slots[i].ammo;
+            }
+        }
+    }
+
+    // --- Mission ---
+    data.missions  = m_missions.SnapshotMissions();
+    data.triggers  = m_missions.SnapshotTriggers();
+
+    // --- World ---
+    data.gameTimeMinutes = m_gameTimeMinutes;
+    data.weather         = 0; // placeholder (Track 34 not yet implemented)
+
+    return data;
+}
+
+// Applies a SaveData to the engine: restores player position/vitals,
+// game time, mission state, and respawns dynamic entities.
+void Engine::ApplySaveState(const SaveData& data) {
+    // --- Restore player ---
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        Transform* jt = m_entities.GetTransform(m_jimmyId);
+        if (jt) {
+            jt->position = glm::vec3(data.playerPos[0], data.playerPos[1], data.playerPos[2]);
+            jt->rotation = glm::vec3(data.playerRot[0], data.playerRot[1], data.playerRot[2]);
+        }
+        PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+        if (pc) {
+            pc->health.current = data.healthCurrent;
+            pc->health.max     = data.healthMax;
+            pc->stamina.current = data.staminaCurrent;
+            pc->stamina.max     = data.staminaMax;
+            pc->money          = data.money;
+            pc->wanted         = data.wanted;
+            pc->facingYaw      = data.facingYaw;
+            pc->facingValid    = data.facingValid;
+            pc->equippedSlot   = data.equippedSlot;
+            for (int i = 0; i < 5; ++i) {
+                pc->slots[i].type       = static_cast<WeaponType>(data.slots[i].type);
+                pc->slots[i].weaponId   = data.slots[i].weaponId;
+                pc->slots[i].durability = data.slots[i].durability;
+                pc->slots[i].ammo       = data.slots[i].ammo;
+            }
+            // Reset combat/grapple state on load.
+            pc->state = DefenseState::Normal;
+            pc->stateTimer = 0.0f;
+            pc->invincibleTimer = 0.0f;
+            pc->dodgeCooldown = 0.0f;
+            pc->counterArmed = false;
+            pc->blockStartTime = -1e9f;
+            pc->attackCooldown = 0.0f;
+        }
+        // Reset the camera to follow the new player position.
+        m_camDesired = jt ? jt->position : m_jimmySpawn;
+    }
+
+    // --- Restore game time ---
+    m_gameTimeMinutes = data.gameTimeMinutes;
+    SyncGameClock();
+
+    // --- Restore mission state ---
+    m_missions.RestoreMissions(data.missions);
+    m_missions.RestoreTriggers(data.triggers);
+
+    // --- Clear combat/grapple state ---
+    m_grappleTarget = EntityID{};
+    m_mountedVehicle = EntityID{};
+    m_projectiles.clear();
+    m_meleePopup[0] = '\0';
+    m_meleePopupTimer = 0.0f;
+
+    // --- Clear dialogue ---
+    m_dialogue.EndDialogue();
+    m_dialogueNpc = EntityID{};
+
+    // --- Clear AI event queue + fight history ---
+    m_aiEvents.clear();
+    m_fights.clear();
+
+    // --- Clear and respawn scheduled NPCs ---
+    for (auto& sn : m_scheduledNpcs) {
+        if (sn.entity.IsValid() && m_entities.IsAlive(sn.entity))
+            m_entities.Destroy(sn.entity);
+        sn.entity = EntityID{};
+        sn.lastWindowIndex = -1;
+    }
+
+    // --- Destroy weapon pickups ---
+    m_entities.ForEach([&](EntityID eid, const Transform&, const EntityManager::EntityRecord& rec) {
+        if (rec.mesh == 0xFFFFFFFF) return;
+        MeshComponent* mc = m_entities.GetMesh(eid);
+        if (mc && mc->isWeaponPickup) m_entities.Destroy(eid);
+    });
+
+    // --- Destroy vehicles ---
+    for (EntityID vid : m_vehicleIds) {
+        if (vid.IsValid() && m_entities.IsAlive(vid))
+            m_entities.Destroy(vid);
+    }
+    m_vehicleIds.clear();
+    m_vehiclePhysSeeded = false;
+
+    // --- Respawn dynamic entities at the player's position ---
+    RespawnDynamicEntities();
+
+    // --- Update schedules immediately ---
+    UpdateSchedules();
+
+    // --- Refresh HUD ---
+    UpdateHUD(0.0f);
+}
+
+// Destroy all dynamic entities (NPCs, projectiles, pickups, vehicles)
+// that are not part of the static level geometry.
+void Engine::DestroyDynamicEntities() {
+    // Destroy scheduled NPCs.
+    for (auto& sn : m_scheduledNpcs) {
+        if (sn.entity.IsValid() && m_entities.IsAlive(sn.entity))
+            m_entities.Destroy(sn.entity);
+        sn.entity = EntityID{};
+    }
+
+    // Destroy projectiles.
+    for (const Projectile& p : m_projectiles) {
+        if (p.id.IsValid() && m_entities.IsAlive(p.id))
+            m_entities.Destroy(p.id);
+    }
+    m_projectiles.clear();
+
+    // Destroy weapon pickups.
+    // Collect IDs first to avoid modifying the entity list during iteration.
+    std::vector<EntityID> toDestroy;
+    m_entities.ForEach([&](EntityID eid, const Transform&, const EntityManager::EntityRecord& rec) {
+        if (rec.mesh == 0xFFFFFFFF) return;
+        MeshComponent* mc = m_entities.GetMesh(eid);
+        if (mc && mc->isWeaponPickup) toDestroy.push_back(eid);
+    });
+    for (EntityID eid : toDestroy) m_entities.Destroy(eid);
+
+    // Destroy vehicles.
+    for (EntityID vid : m_vehicleIds) {
+        if (vid.IsValid() && m_entities.IsAlive(vid))
+            m_entities.Destroy(vid);
+    }
+    m_vehicleIds.clear();
+}
+
+// Respawn dynamic entities (weapons, vehicles) at the player's current
+// position. NPCs are handled by UpdateSchedules() called separately.
+void Engine::RespawnDynamicEntities() {
+    glm::vec3 center = m_jimmyActive && m_jimmyId.IsValid()
+        ? (m_entities.GetTransform(m_jimmyId) ? m_entities.GetTransform(m_jimmyId)->position : m_jimmySpawn)
+        : m_jimmySpawn;
+
+    // Respawn weapon pickups.
+    SpawnWeaponPickups(center);
+
+    // Respawn vehicles.
+    SpawnVehicles(center);
+}
+
+// F5: save current state to slot 0.
+bool Engine::SaveGame(int slot) {
+    const SaveData data = CaptureSaveState();
+    const char* baseDir = SDL_GetBasePath();
+    const std::string path = SaveSystem::SlotPath(baseDir ? baseDir : ".", slot);
+    if (SaveSystem::WriteToFile(path, data)) {
+        Logger::Info("Game saved to slot %d (%s)", slot, path.c_str());
+        return true;
+    }
+    return false;
+}
+
+// F9: load state from slot 0. Restores all saved state; NPCs respawn
+// from schedules. If the file doesn't exist, logs an error and does not crash.
+bool Engine::LoadGame(int slot) {
+    const char* baseDir = SDL_GetBasePath();
+    const std::string base = baseDir ? baseDir : ".";
+    if (!SaveSystem::Exists(base, slot)) {
+        Logger::Error("LoadGame: no save file found at slot %d (use F5 to save first)", slot);
+        return false;
+    }
+    SaveData data;
+    const std::string path = SaveSystem::SlotPath(base, slot);
+    if (!SaveSystem::ReadFromFile(path, data)) {
+        Logger::Error("LoadGame: failed to read/parse '%s'", path.c_str());
+        return false;
+    }
+
+    Logger::Info("Loading game from slot %d (saved %s, pos (%.1f,%.1f,%.1f), hp %d/%d, time %02d:%02d)",
+                 slot, data.savedAt.c_str(),
+                 data.playerPos[0], data.playerPos[1], data.playerPos[2],
+                 data.healthCurrent, data.healthMax,
+                 (int)(data.gameTimeMinutes / 60.0),
+                 (int)(data.gameTimeMinutes) % 60);
+
+    ApplySaveState(data);
+    Logger::Info("Game loaded from slot %d", slot);
+    return true;
 }
 
 } // namespace OpenBully

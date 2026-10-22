@@ -18,6 +18,7 @@
 //     stands in for the scripted beat it replaces.
 
 #include "../entities/entity.h"
+#include "../engine/save_system.h" // Track 36: MissionSave / TriggerSave
 
 #include <glm/glm.hpp>
 
@@ -118,6 +119,18 @@ public:
     // First mission in Active state (nullptr when none).
     const Mission*     ActiveMission() const;
     const TriggerZone* GetTrigger(size_t index) const;
+
+    // --- Track 36: save/load ----------------------------------------------------
+    // Collects all mission state (id, state, currentObjective, per-objective
+    // complete flags) into a vector for serialization.
+    std::vector<MissionSave> SnapshotMissions() const;
+    // Restores mission state from a save: sets state, currentObjective, and
+    // per-objective complete flags for every registered mission.
+    void RestoreMissions(const std::vector<MissionSave>& saved);
+    // Collects trigger zone fired states.
+    std::vector<TriggerSave> SnapshotTriggers() const;
+    // Restores trigger zone fired states from a save.
+    void RestoreTriggers(const std::vector<TriggerSave>& saved);
 
 private:
     void UpdateTriggerZones(const glm::vec3& playerPos);

@@ -76,6 +76,7 @@ const char* SoundFileName(SoundId id) {
         case SoundId::Footstep:    return "footstep.wav";
         case SoundId::UiClick:     return "click.wav";
         case SoundId::AmbientWind: return "wind.wav";
+        case SoundId::RainLoop:    return "rain_loop.wav";
         default:                   return "";
     }
 }
@@ -85,6 +86,7 @@ const char* SoundName(SoundId id) {
         case SoundId::Footstep:    return "footstep";
         case SoundId::UiClick:     return "ui-click";
         case SoundId::AmbientWind: return "ambient-wind";
+        case SoundId::RainLoop:    return "rain-loop";
         default:                   return "?";
     }
 }
@@ -172,13 +174,15 @@ bool AudioManager::GenerateProceduralSounds() {
     m_sounds[size_t(SoundId::Footstep)]    = GenerateFootstep();
     m_sounds[size_t(SoundId::UiClick)]     = GenerateClick();
     m_sounds[size_t(SoundId::AmbientWind)] = GenerateWind();
+    m_sounds[size_t(SoundId::RainLoop)]    = GenerateRain();
     for (const Sound& s : m_sounds)
         if (!s.valid())
             return false;
-    Logger::Info("Audio: procedural SFX ready (footstep %u frames, click %u, wind %u @ %d Hz)",
+    Logger::Info("Audio: procedural SFX ready (footstep %u frames, click %u, wind %u, rain %u @ %d Hz)",
                  m_sounds[size_t(SoundId::Footstep)].FrameCount(m_deviceChannels),
                  m_sounds[size_t(SoundId::UiClick)].FrameCount(m_deviceChannels),
                  m_sounds[size_t(SoundId::AmbientWind)].FrameCount(m_deviceChannels),
+                 m_sounds[size_t(SoundId::RainLoop)].FrameCount(m_deviceChannels),
                  m_deviceRate);
     return true;
 }
@@ -275,6 +279,53 @@ Sound AudioManager::GenerateWind() const {
         }
         const int16_t q = int16_t(std::lround(std::max(-1.0f, std::min(1.0f, v)) *
                                               32767.0f * 0.35f));
+        for (int c = 0; c < m_deviceChannels; ++c)
+            s.samples[size_t(f) * m_deviceChannels + c] = q;
+    }
+    return s;
+}
+
+// Track 34: rain loop. White noise passed through a band-pass filter
+// (~1-4 kHz) for a "shower" character, with a slow LFO for variation.
+// The head is crossfaded against the post-loop tail for a seamless loop.
+Sound AudioManager::GenerateRain() const {
+    const float rate = float(m_deviceRate);
+    const float loopSec = 6.0f;
+    const float fadeSec = 0.5f;
+    const int loopFrames = int(rate * loopSec);
+    const int fadeFrames = int(rate * fadeSec);
+
+    // Raw signal runs loopLen + fade long.
+    std::vector<float> raw(size_t(loopFrames + fadeFrames));
+    uint32_t rng = 0xA5A5A5A5u;
+    // Two low-pass filters forming a simple band-pass (cascade then subtract).
+    LowPass lpLow, lpHigh;
+    lpLow.Setup(rate, 1000.0f);   // passes 0-1 kHz
+    lpHigh.Setup(rate, 5000.0f);  // passes 0-5 kHz
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const float t = float(i) / rate;
+        // LFO: integer cycles over the loop (0.5 Hz * 6 s = 3 cycles).
+        const float lfo = 0.8f + 0.2f * std::sin(2.0f * kPi * 0.5f * t);
+        const float noise = RandomFloat(rng);
+        // Band-pass: high-pass by subtracting the low-pass output.
+        const float lp = lpLow.Process(noise);
+        const float hp = lpHigh.Process(noise);
+        raw[i] = (hp - lp) * lfo;
+    }
+
+    // Crossfade the head into the tail.
+    Sound s;
+    s.samples.assign(size_t(loopFrames) * m_deviceChannels, 0);
+    for (int f = 0; f < loopFrames; ++f) {
+        float v;
+        if (f < fadeFrames) {
+            const float w = float(f) / float(fadeFrames);
+            v = raw[size_t(loopFrames + f)] * (1.0f - w) + raw[size_t(f)] * w;
+        } else {
+            v = raw[size_t(f)];
+        }
+        const int16_t q = int16_t(std::lround(std::max(-1.0f, std::min(1.0f, v)) *
+                                              32767.0f * 0.4f));
         for (int c = 0; c < m_deviceChannels; ++c)
             s.samples[size_t(f) * m_deviceChannels + c] = q;
     }
@@ -432,6 +483,17 @@ void AudioManager::StopAll() {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_voices.clear();
     m_ambientPlaying = false;
+}
+
+// Track 34: stop every voice playing a specific sound ID. Used by weather
+// transitions to stop the rain loop when leaving rain weather.
+void AudioManager::StopSound(SoundId id) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const Sound* target = &m_sounds[size_t(id)];
+    m_voices.erase(
+        std::remove_if(m_voices.begin(), m_voices.end(),
+            [target](const Voice& v) { return v.sound == target; }),
+        m_voices.end());
 }
 
 void AudioManager::SetMasterVolume(float volume) {

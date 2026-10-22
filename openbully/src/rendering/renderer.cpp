@@ -175,6 +175,16 @@ bool Renderer::Init(void* windowHandle, uint32_t width, uint32_t height, const c
         Logger::Error("Renderer::Init: light uniform creation failed");
         return false;
     }
+
+    // Track 34: fog + particle uniforms.
+    m_uFogDensity    = bgfx::createUniform("u_fogDensity", bgfx::UniformType::Vec4);
+    m_uFogColor      = bgfx::createUniform("u_fogColor", bgfx::UniformType::Vec4);
+    m_uParticleColor = bgfx::createUniform("u_particleColor", bgfx::UniformType::Vec4);
+    if (!bgfx::isValid(m_uFogDensity) || !bgfx::isValid(m_uFogColor)
+        || !bgfx::isValid(m_uParticleColor)) {
+        Logger::Error("Renderer::Init: fog/particle uniform creation failed");
+        return false;
+    }
     {
         const NftTexture ph = MakePlaceholderTexture();
         const bgfx::Memory* mem =
@@ -238,7 +248,38 @@ bool Renderer::LoadShaders(const char* shaderRoot) {
                         "render in bind pose");
     m_uBones = bgfx::createUniform("u_bones", bgfx::UniformType::Mat4,
                                    kMaxSkinBones);
+
+    // Track 34: particle shader program (unlit, position-only vertex layout).
+    m_progParticle = LoadProgram(dir, "vs_particle", "fs_particle");
+    if (!bgfx::isValid(m_progParticle))
+        Logger::Warning("Particle shader program not found; weather particles disabled");
+
     return true;
+}
+
+// Track 34: initialize particle systems (dynamic vertex buffers for rain/snow).
+void Renderer::InitParticleSystems() {
+    if (!m_initialized) return;
+
+    // Position-only vertex layout for particles.
+    bgfx::VertexLayout layout;
+    layout.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float).end();
+
+    // Pre-allocate max capacity. Rain: 500 drops * 6 verts * 3 floats.
+    // Snow: 300 flakes * 6 verts * 3 floats.
+    const uint32_t kMaxRainVerts = 500 * 6;
+    const uint32_t kMaxSnowVerts = 300 * 6;
+
+    std::vector<float> zeros(kMaxRainVerts * 3, 0.0f);
+    const bgfx::Memory* mem = bgfx::copy(zeros.data(), kMaxRainVerts * 3 * sizeof(float));
+    m_rainVbh = bgfx::createDynamicVertexBuffer(mem, layout, 0);
+
+    std::vector<float> zerosSnow(kMaxSnowVerts * 3, 0.0f);
+    mem = bgfx::copy(zerosSnow.data(), kMaxSnowVerts * 3 * sizeof(float));
+    m_snowVbh = bgfx::createDynamicVertexBuffer(mem, layout, 0);
+
+    Logger::Info("Particle systems initialized (rain %u max verts, snow %u max verts)",
+                 kMaxRainVerts, kMaxSnowVerts);
 }
 
 void Renderer::Shutdown() {
@@ -256,6 +297,19 @@ void Renderer::Shutdown() {
     if (bgfx::isValid(m_uLightDir)) bgfx::destroy(m_uLightDir);
     if (bgfx::isValid(m_uLightColor)) bgfx::destroy(m_uLightColor);
     if (bgfx::isValid(m_uAmbientColor)) bgfx::destroy(m_uAmbientColor);
+    // Track 34: destroy fog/particle resources.
+    if (bgfx::isValid(m_uFogDensity)) bgfx::destroy(m_uFogDensity);
+    if (bgfx::isValid(m_uFogColor)) bgfx::destroy(m_uFogColor);
+    if (bgfx::isValid(m_uParticleColor)) bgfx::destroy(m_uParticleColor);
+    if (bgfx::isValid(m_progParticle)) bgfx::destroy(m_progParticle);
+    if (bgfx::isValid(m_rainVbh)) bgfx::destroy(m_rainVbh);
+    if (bgfx::isValid(m_snowVbh)) bgfx::destroy(m_snowVbh);
+    m_rainVbh = BGFX_INVALID_HANDLE;
+    m_snowVbh = BGFX_INVALID_HANDLE;
+    m_progParticle = BGFX_INVALID_HANDLE;
+    m_uFogDensity = BGFX_INVALID_HANDLE;
+    m_uFogColor = BGFX_INVALID_HANDLE;
+    m_uParticleColor = BGFX_INVALID_HANDLE;
     if (m_debugBoxValid) DestroyGpuMesh(m_debugBox);
     m_debugBoxValid = false;
     DestroyTexture(m_boundTex);
@@ -462,10 +516,35 @@ void Renderer::SetLight(const float dir[3], const float color[3], const float am
     }
 }
 
+// Track 34: set weather fog density and color.
+void Renderer::SetFog(float density, const glm::vec3& color) {
+    m_fogDensityPack[0] = density;
+    m_fogDensityPack[1] = 0.0f;
+    m_fogDensityPack[2] = 0.0f;
+    m_fogDensityPack[3] = 0.0f;
+    m_fogColorPack[0] = color.x;
+    m_fogColorPack[1] = color.y;
+    m_fogColorPack[2] = color.z;
+    m_fogColorPack[3] = 0.0f;
+}
+
+void Renderer::SetSkyColor(float r, float g, float b) {
+    m_skyColor[0] = r;
+    m_skyColor[1] = g;
+    m_skyColor[2] = b;
+}
+
 void Renderer::RequestScreenshot(const char* name) {
     if (!name || !*name) return;
     m_screenshotName = name;
     m_screenshotRequested = true;
+}
+
+void Renderer::FlushScreenshot() {
+    if (!m_screenshotRequested) return;
+    m_screenshotRequested = false;
+    bgfx::requestScreenShot(BGFX_INVALID_HANDLE, m_screenshotName.c_str());
+    Logger::Info("Screenshot requested: %s (.tga)", m_screenshotName.c_str());
 }
 
 bgfx::ProgramHandle Renderer::LoadProgramFiles(const char* dir,
@@ -534,6 +613,73 @@ void Renderer::DrawBeacon(const GpuMesh& mesh, const float model[16]) {
     SetLight(savedDir, savedCol, savedAmb);
 }
 
+// Track 34: draw rain particles (thin vertical billboard quads).
+// `verts` is a flat array of xyz positions; `vertCount` is the number of
+// vertices. `mvp` is view*projection (model=identity). `alpha` is 0-1.
+void Renderer::DrawRain(const float* verts, uint32_t vertCount,
+                        const float mvp[16], float alpha) {
+    if (!m_initialized || !bgfx::isValid(m_rainVbh) ||
+        !bgfx::isValid(m_progParticle)) return;
+    if (vertCount == 0) return;
+
+    // Update vertex buffer with current positions.
+    const bgfx::Memory* mem = bgfx::copy(verts, vertCount * 3 * sizeof(float));
+    bgfx::update(m_rainVbh, 0, mem);
+
+    // Set uniforms.
+    bgfx::setTransform(mvp);
+    bgfx::setUniform(m_uMvp, mvp);
+    bgfx::setUniform(m_uFogDensity, m_fogDensityPack);
+    bgfx::setUniform(m_uFogColor, m_fogColorPack);
+    const float colorPack[4] = { 1.0f, 1.0f, 1.0f, alpha };
+    bgfx::setUniform(m_uParticleColor, colorPack);
+
+    bgfx::setVertexBuffer(0, m_rainVbh, 0, vertCount);
+
+    const uint64_t state = 0
+        | BGFX_STATE_WRITE_RGB
+        | BGFX_STATE_WRITE_A
+        | BGFX_STATE_BLEND_ALPHA
+        | BGFX_STATE_DEPTH_TEST_LESS
+        | BGFX_STATE_MSAA;
+    bgfx::setState(state);
+
+    const bgfx::ViewId kView3d = 1;
+    bgfx::submit(kView3d, m_progParticle);
+}
+
+// Track 34: draw snow particles (small billboard quads). Same convention
+// as DrawRain.
+void Renderer::DrawSnow(const float* verts, uint32_t vertCount,
+                        const float mvp[16], float alpha) {
+    if (!m_initialized || !bgfx::isValid(m_snowVbh) ||
+        !bgfx::isValid(m_progParticle)) return;
+    if (vertCount == 0) return;
+
+    const bgfx::Memory* mem = bgfx::copy(verts, vertCount * 3 * sizeof(float));
+    bgfx::update(m_snowVbh, 0, mem);
+
+    bgfx::setTransform(mvp);
+    bgfx::setUniform(m_uMvp, mvp);
+    bgfx::setUniform(m_uFogDensity, m_fogDensityPack);
+    bgfx::setUniform(m_uFogColor, m_fogColorPack);
+    const float colorPack[4] = { 1.0f, 1.0f, 1.0f, alpha };
+    bgfx::setUniform(m_uParticleColor, colorPack);
+
+    bgfx::setVertexBuffer(0, m_snowVbh, 0, vertCount);
+
+    const uint64_t state = 0
+        | BGFX_STATE_WRITE_RGB
+        | BGFX_STATE_WRITE_A
+        | BGFX_STATE_BLEND_ALPHA
+        | BGFX_STATE_DEPTH_TEST_LESS
+        | BGFX_STATE_MSAA;
+    bgfx::setState(state);
+
+    const bgfx::ViewId kView3d = 1;
+    bgfx::submit(kView3d, m_progParticle);
+}
+
 void Renderer::DrawMesh3D(const GpuMesh& mesh, const float mvp[16]) {
     if (!m_initialized || !mesh.valid()) return;
     DrawMesh3DRange(mesh, 0, mesh.indexCount, mvp);
@@ -548,15 +694,23 @@ void Renderer::DrawMesh3DSub(const GpuMesh& mesh, uint32_t indexOffset,
 void Renderer::DrawMesh3DRange(const GpuMesh& mesh, uint32_t indexOffset,
                                uint32_t indexCount, const float mvp[16]) {
 
-    // View 1: 3D geometry, cleared to a dim blue-grey sky with depth.
-    // Set up here so the camera view set via SetCameraView() applies per-frame.
+    // View 1: 3D geometry, cleared to the day/night sky color with depth.
+    // Track 35: sky color is set dynamically each frame via SetSkyColor.
     const bgfx::ViewId kView3d = 1;
     static bool viewConfigured = false;
     if (!viewConfigured) {
-        bgfx::setViewClear(kView3d, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x00404c56, 1.0f, 0);
         bgfx::setViewRect(kView3d, 0, 0, bgfx::BackbufferRatio::Equal);
         viewConfigured = true;
     }
+    // Always update the sky clear color each frame (Track 35).
+    const float skyR = m_skyColor[0] < 0.0f ? 0.0f : (m_skyColor[0] > 1.0f ? 1.0f : m_skyColor[0]);
+    const float skyG = m_skyColor[1] < 0.0f ? 0.0f : (m_skyColor[1] > 1.0f ? 1.0f : m_skyColor[1]);
+    const float skyB = m_skyColor[2] < 0.0f ? 0.0f : (m_skyColor[2] > 1.0f ? 1.0f : m_skyColor[2]);
+    const uint32_t skyABGR = (0xffu << 24) |
+        (uint32_t(skyB * 255.0f) << 16) |
+        (uint32_t(skyG * 255.0f) << 8) |
+        uint32_t(skyR * 255.0f);
+    bgfx::setViewClear(kView3d, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, skyABGR, 1.0f, 0);
 
     // Projection is owned here; the view comes from the camera via
     // SetCameraView() (Engine calls it once per frame). Init builds it
@@ -590,6 +744,9 @@ void Renderer::DrawMesh3DRange(const GpuMesh& mesh, uint32_t indexOffset,
     bgfx::setUniform(m_uLightDir, lightDirPack);
     bgfx::setUniform(m_uLightColor, lightColorPack);
     bgfx::setUniform(m_uAmbientColor, ambientColorPack);
+    // Track 34: submit fog state (density + color).
+    bgfx::setUniform(m_uFogDensity, m_fogDensityPack);
+    bgfx::setUniform(m_uFogColor, m_fogColorPack);
     // Track 11: bind the current texture (BindTexture; placeholder default).
     bgfx::setTexture(0, m_sTex, m_boundTex.th);
 
@@ -610,12 +767,6 @@ void Renderer::DrawMesh3DRange(const GpuMesh& mesh, uint32_t indexOffset,
     bgfx::setIndexBuffer(mesh.ibh, indexOffset, indexCount);
     bgfx::submit(kView3d, m_pendingBoneUniform ? m_prog3dSkinned : m_prog3d);
 
-    // Track 12 verification hook: capture once after a submit has rendered.
-    if (m_screenshotRequested) {
-        m_screenshotRequested = false;
-        bgfx::requestScreenShot(BGFX_INVALID_HANDLE, m_screenshotName.c_str());
-        Logger::Info("Screenshot requested: %s (.tga)", m_screenshotName.c_str());
-    }
 }
 
 // --- Textures (Track 11, NFT loader) ----------------------------------------

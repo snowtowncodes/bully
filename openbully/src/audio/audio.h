@@ -37,6 +37,7 @@ enum class SoundId : int {
     Footstep,    // short low-passed noise burst (procedural)
     UiClick,     // sine blip (procedural)
     AmbientWind, // loopable low-passed noise bed (procedural)
+    RainLoop,    // loopable band-passed noise bed (procedural, Track 34)
     Count
 };
 
@@ -86,6 +87,10 @@ public:
     // Stops every active voice (including the ambient loop).
     void StopAll();
 
+    // Track 34: stops every voice playing `id` (weather transitions). Safe
+    // to call when no voice of that sound is active.
+    void StopSound(SoundId id);
+
     // Master volume in [0,1] (default 0.8). Mute multiplies it to 0 at mix
     // time without touching the stored value, so unmute restores it.
     void SetMasterVolume(float volume);
@@ -108,6 +113,7 @@ private:
     Sound GenerateFootstep() const;
     Sound GenerateClick() const;
     Sound GenerateWind() const;      // seamless loop (crossfaded head)
+    Sound GenerateRain() const;       // seamless loop (crossfaded head, Track 34)
     bool LoadWavInto(SoundId id, const char* path); // SDL_LoadWAV + convert
 
     SDL_AudioDeviceID m_device = 0;

@@ -1,6 +1,7 @@
 #include "mission.h"
 
 #include "../platform/logger.h"
+#include "../engine/save_system.h" // Track 36: MissionSave / TriggerSave
 
 #include <algorithm>
 #include <cmath>
@@ -534,6 +535,67 @@ void MissionManager::CompleteMission(uint32_t missionIndex) {
     m.state = MissionState::Complete;
     Logger::Info("MISSION COMPLETE: '%s' (%s) — all %zu objective(s) done",
                  m.name.c_str(), m.id.c_str(), m.objectives.size());
+}
+
+// =========================================================================
+// Track 36: Save/Load — snapshot and restore mission state
+// =========================================================================
+
+std::vector<MissionSave> MissionManager::SnapshotMissions() const {
+    std::vector<MissionSave> out;
+    out.reserve(m_missions.size());
+    for (const Mission& m : m_missions) {
+        MissionSave ms;
+        ms.id               = m.id;
+        ms.state            = static_cast<int>(m.state);
+        ms.currentObjective = static_cast<int>(m.currentObjective);
+        ms.objectives.reserve(m.objectives.size());
+        for (const Objective& o : m.objectives)
+            ms.objectives.push_back(o.complete);
+        out.push_back(std::move(ms));
+    }
+    return out;
+}
+
+void MissionManager::RestoreMissions(const std::vector<MissionSave>& saved) {
+    for (const MissionSave& ms : saved) {
+        // Find by ID (save may not align with runtime registration order).
+        const Mission* found = FindMission(ms.id);
+        if (!found) continue;
+        // Find the writable index.
+        size_t idx = 0;
+        for (; idx < m_missions.size(); ++idx)
+            if (m_missions[idx].id == ms.id) break;
+        if (idx >= m_missions.size()) continue;
+
+        Mission& m = m_missions[idx];
+        m.state            = static_cast<MissionState>(ms.state);
+        m.currentObjective = static_cast<size_t>(ms.currentObjective);
+        // Apply per-objective completion flags.
+        for (size_t j = 0; j < ms.objectives.size() && j < m.objectives.size(); ++j)
+            m.objectives[j].complete = ms.objectives[j];
+    }
+    Logger::Info("RestoreMissions: restored %zu mission(s)", saved.size());
+}
+
+std::vector<TriggerSave> MissionManager::SnapshotTriggers() const {
+    std::vector<TriggerSave> out;
+    out.reserve(m_triggers.size());
+    for (const TriggerZone& tz : m_triggers) {
+        TriggerSave ts;
+        ts.id    = tz.id;
+        ts.fired = tz.fired;
+        out.push_back(std::move(ts));
+    }
+    return out;
+}
+
+void MissionManager::RestoreTriggers(const std::vector<TriggerSave>& saved) {
+    for (const TriggerSave& ts : saved) {
+        for (auto& tz : m_triggers)
+            if (tz.id == ts.id) { tz.fired = ts.fired; break; }
+    }
+    Logger::Info("RestoreTriggers: restored %zu trigger(s)", saved.size());
 }
 
 } // namespace OpenBully

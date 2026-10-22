@@ -1,5 +1,5 @@
 $input a_position a_normal a_texcoord0
-$output v_color0 v_normal v_texcoord0
+$output v_color0 v_normal v_texcoord0 v_fogDepth
 
 #include <bgfx_shader.sh>
 
@@ -8,6 +8,10 @@ uniform mat4 u_mvp;
 
 void main()
 {
+	// Compute view-space position for fog depth (positive distance in LH).
+	vec4 viewPos = mul(u_view, vec4(a_position, 1.0));
+	v_fogDepth = -viewPos.z;
+
 	gl_Position = mul(u_mvp, vec4(a_position, 1.0));
 
 	// Pass the normal to the fragment shader in view space: transform by the

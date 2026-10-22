@@ -3,6 +3,7 @@
 // Engine: frame update + rendering orchestration (bgfx-backed, Phase 2).
 
 #include "rendering/renderer.h"
+#include "rendering/daynight.h"  // Track 35: day/night cycle
 #include "physics/collision.h"
 #include "rendering/mesh.h"
 #include "entities/entity.h"
@@ -20,6 +21,8 @@
 #include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
 #include "../vehicles/vehicle_physics.h" // Track 32: arcade vehicle physics
 #include "../vehicles/vehicle_feel.h"    // Track 33: handling feel (FeelState)
+#include "../weather/weather.h"            // Track 34: weather system
+#include "save_system.h" // Track 36: Save/Load system
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -70,6 +73,13 @@ public:
     // Track 20 (UI): HUD snapshot, refreshed each Update() and consumed by
     // UIRenderer::DrawHUD (health / wanted / clock / money / minimap dots).
     const HUDState& GetHUDState() const { return m_hudState; }
+
+    // Track 36: Save/Load system.
+    // F5 -> SaveGame(0): snapshots player/motion/time to saves/slot_0.json.
+    // F9 -> LoadGame(0): restores all saved state; NPCs respawn from schedules.
+    // Returns true on success, false on failure.
+    bool SaveGame(int slot = 0);
+    bool LoadGame(int slot = 0);
 
     // Track 29: global game time, advancing at 60x real time (1 real second
     // = 1 game minute). The HUD clock reads the same accumulator.
@@ -228,6 +238,17 @@ private:
     void     UpdateGrapple(float dt);
     void     DriveGrappleDemo(); // OPENBULLY_GRAPPLE_DEMO scripted sequence
 
+    // Track 36: Save/Load helpers.
+    // Captures the current runtime state into a SaveData struct.
+    SaveData CaptureSaveState();
+    // Applies a SaveData to the engine: restores player position/vitals,
+    // game time, mission state, and respawns NPCs/weapons/vehicles.
+    void ApplySaveState(const SaveData& data);
+    // Respawn all dynamic entities (NPCs, weapons, vehicles) after a load.
+    void RespawnDynamicEntities();
+    // Destroy all dynamic entities (NPCs, projectiles, pickups, vehicles).
+    void DestroyDynamicEntities();
+
     // Track 20: mission system. Loads data/missions/demo_missions.json,
     // registers trigger zones around the demo level, and drives the manager
     // with Jimmy's position every frame. RenderObjectiveMarker draws the
@@ -282,6 +303,11 @@ private:
     float     m_lastFovDeg = 60.0f;                    // projection rebuild guard
     glm::vec3 m_vehicleMountSeedPos{0.0f};             // Track 32: void-guard reset point
     float     m_vehicleVoidFloorY = -1e9f;             // falling below = off-geometry
+
+    // Track 34: weather system. WeatherManager singleton drives state,
+    // particles, fog, and audio. m_prevWeather tracks transitions for
+    // rain-loop start/stop.
+    WeatherType m_prevWeather = WeatherType::CLEAR;
 
     // Loads up to maxMeshes NIFs from `dir` into GPU meshes. Returns the
     // number loaded. Skips files that fail to parse, logs a summary.

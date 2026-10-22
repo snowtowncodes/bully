@@ -128,6 +128,19 @@ public:
     // column reads as a full-bright marker independent of sun shading.
     void DrawBeacon(const GpuMesh& mesh, const float model[16]);
 
+    // Track 34: particle system initialization. Creates dynamic vertex buffers
+    // and the particle shader program for rain and snow rendering.
+    void InitParticleSystems();
+    // Track 34: draws rain particles (thin vertical billboard quads).
+    // `verts` is a flat array of xyz positions (3 floats per vertex);
+    // `vertCount` is the number of vertices (not quads). `mvp` is the
+    // view-projection matrix (model = identity for world-space particles).
+    // `alpha` is the particle opacity (0-1).
+    void DrawRain(const float* verts, uint32_t vertCount, const float mvp[16], float alpha);
+    // Track 34: draws snow particles (small billboard quads). Same convention
+    // as DrawRain.
+    void DrawSnow(const float* verts, uint32_t vertCount, const float mvp[16], float alpha);
+
     // Column-major projection matrix for the 3D view (fov/aspect/near/far
     // owned here). Callers multiply: mvp = proj * view * model.
     const glm::mat4& GetProjection() const { return m_projection; }
@@ -154,15 +167,26 @@ public:
     // matrix supplied by the camera (Track 10) instead of eye/target/up.
     void SetCameraView(const glm::mat4& view);
 
+    // Track 34: weather fog. Sets the exponential fog density and color used
+    // by the 3D and particle shaders. density=0 disables fog.
+    void SetFog(float density, const glm::vec3& color);
+
     // Configures the single directional light used by the 3D path (Track 12).
     // `dir` points from the scene toward the light source ("to-light");
     // color/ambient are RGB tints (0..1).
     void SetLight(const float dir[3], const float color[3], const float ambient[3]);
 
+    // Track 35: sets the sky clear color for the 3D view (RGB 0-1).
+    void SetSkyColor(float r, float g, float b);
+
     // Asks bgfx to dump the backbuffer to a file next to the executable on an
     // upcoming frame (default callback appends .tga). Verification hook for
     // lighting work; harmless in normal play.
     void RequestScreenshot(const char* name);
+    // Flush a pending screenshot request (calls bgfx::requestScreenShot).
+    // Called from Engine::Render after all draws so it works in both 3D and
+    // triangle-only modes.
+    void FlushScreenshot();
 
     // Track 20: public wrapper over the internal program loader so the UI
     // renderer reuses the same compiled-binary convention (dir/vs.bin+fs.bin).
@@ -216,6 +240,9 @@ private:
     float m_lightDir[3]     = { -0.3f, 0.8f, 0.5f };  // default sun from +Y above
     float m_lightColor[3]   = { 1.0f, 1.0f, 1.0f };   // white sun
     float m_ambientColor[3] = { 0.2f, 0.2f, 0.2f };   // 0.2 gray ambient floor
+    // Track 35: dynamic sky color (default bright blue; updated each frame
+    // by Engine::Render via DayNight::Compute).
+    float m_skyColor[3] = { 0.35f, 0.55f, 0.90f };
 
     // Track 12 verification hook: one backbuffer capture requested at a time.
     bool        m_screenshotRequested = false;
@@ -232,6 +259,16 @@ private:
 
     uint32_t m_windowWidth  = 0;
     uint32_t m_windowHeight = 0;
+
+    // Track 34: weather fog + particle systems.
+    bgfx::UniformHandle m_uFogDensity = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle m_uFogColor = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle m_uParticleColor = BGFX_INVALID_HANDLE;
+    bgfx::ProgramHandle m_progParticle = BGFX_INVALID_HANDLE;
+    bgfx::DynamicVertexBufferHandle m_rainVbh = BGFX_INVALID_HANDLE;
+    bgfx::DynamicVertexBufferHandle m_snowVbh = BGFX_INVALID_HANDLE;
+    float m_fogDensityPack[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float m_fogColorPack[4] = {0.55f, 0.55f, 0.55f, 0.0f};
 
     bool m_initialized = false;
 };

@@ -1,0 +1,554 @@
+[INFO] OpenBully v0.1.0 - Bootstrap Phase 2 (bgfx)
+[INFO] Window created: 1280x720
+[INFO] Initializing engine...
+[INFO] bgfx renderer: Direct3D 11
+[INFO] Renderer initialized
+[INFO] GPU mesh uploaded: 3 verts, 3 indices
+[INFO] Texture index: 16434 names -> 4461 .nft dictionaries
+[INFO] GPU mesh uploaded: 694 verts, 1386 indices
+[INFO]   mesh extent: (-499.6,307.3,31.4)-(-489.3,315.7,35.3)
+[INFO]   collision box: (-499.6, 307.3, 31.4)-(-489.3, 315.7, 35.3)
+[INFO] GPU mesh uploaded: 1220 verts, 2262 indices
+[INFO]   mesh extent: (533.0,-419.9,3.3)-(539.8,-415.3,5.8)
+[INFO]   collision box: (533.0, -419.9, 3.3)-(539.8, -415.3, 5.8)
+[INFO] GPU mesh uploaded: 456 verts, 738 indices
+[INFO]   mesh extent: (59.1,16.7,-0.1)-(61.0,17.7,1.7)
+[INFO]   collision box: (59.1, 16.7, -0.1)-(61.0, 17.7, 1.7)
+[INFO] GPU mesh uploaded: 268 verts, 960 indices
+[INFO]   mesh extent: (-698.7,78.3,26.9)-(-697.7,79.4,27.9)
+[INFO]   collision box: (-698.7, 78.3, 26.9)-(-697.7, 79.4, 27.9)
+[INFO] GPU mesh uploaded: 260 verts, 960 indices
+[INFO]   mesh extent: (-700.7,74.6,26.8)-(-699.0,76.3,28.5)
+[INFO]   collision box: (-700.7, 74.6, 26.8)-(-699.0, 76.3, 28.5)
+[INFO] GPU mesh uploaded: 364 verts, 960 indices
+[INFO]   mesh extent: (-695.7,71.6,26.4)-(-693.2,74.1,28.8)
+[INFO]   collision box: (-695.7, 71.6, 26.4)-(-693.2, 74.1, 28.8)
+[INFO] GPU mesh uploaded: 182 verts, 249 indices
+[INFO]   mesh extent: (-699.9,72.2,26.8)-(-692.9,78.9,39.4)
+[INFO]   collision box: (-699.9, 72.2, 26.8)-(-692.9, 78.9, 39.4)
+[INFO] GPU mesh uploaded: 392 verts, 1077 indices
+[INFO]   mesh extent: (-700.1,70.7,26.7)-(-696.7,74.0,29.0)
+[INFO]   collision box: (-700.1, 70.7, 26.7)-(-696.7, 74.0, 29.0)
+[INFO] GPU mesh uploaded: 335 verts, 1035 indices
+[INFO]   mesh extent: (-694.2,76.8,27.2)-(-691.6,79.8,29.2)
+[INFO]   collision box: (-694.2, 76.8, 27.2)-(-691.6, 79.8, 29.2)
+[INFO] GPU mesh uploaded: 262 verts, 480 indices
+[INFO]   mesh extent: (-627.7,-293.6,6.4)-(-627.6,-293.5,6.8)
+[INFO]   collision box: (-627.7, -293.6, 6.4)-(-627.6, -293.5, 6.8)
+[INFO] GPU mesh uploaded: 120 verts, 180 indices
+[INFO]   mesh extent: (-2.8,-71.7,4.0)-(0.3,-66.2,5.5)
+[INFO]   collision box: (-2.8, -71.7, 4.0)-(0.3, -66.2, 5.5)
+[INFO] GPU mesh uploaded: 796 verts, 1224 indices
+[INFO]   mesh extent: (-615.9,-331.8,0.0)-(-582.0,-283.5,10.5)
+[INFO]   collision box: (-615.9, -331.8, 0.0)-(-582.0, -283.5, 10.5)
+[INFO] GPU mesh uploaded: 294 verts, 510 indices
+[INFO]   mesh extent: (523.4,-359.7,3.9)-(526.5,-352.0,7.3)
+[INFO]   collision box: (523.4, -359.7, 3.9)-(526.5, -352.0, 7.3)
+[INFO] GPU mesh uploaded: 1306 verts, 2235 indices
+[INFO]   mesh extent: (521.4,-326.6,2.9)-(529.7,-316.2,5.9)
+[INFO]   collision box: (521.4, -326.6, 2.9)-(529.7, -316.2, 5.9)
+[INFO] GPU mesh uploaded: 2665 verts, 4983 indices
+[INFO]   mesh extent: (512.4,-314.8,1.3)-(520.4,-294.7,12.7)
+[INFO]   collision box: (512.4, -314.8, 1.3)-(520.4, -294.7, 12.7)
+[INFO] GPU mesh uploaded: 403 verts, 624 indices
+[INFO]   mesh extent: (-15.8,-166.0,0.9)-(-13.7,-163.2,5.2)
+[INFO]   collision box: (-15.8, -166.0, 0.9)-(-13.7, -163.2, 5.2)
+[INFO] GPU mesh uploaded: 1348 verts, 4308 indices
+[INFO]   mesh extent: (-51.8,-46.4,1.2)-(-44.1,-33.0,2.7)
+[INFO]   collision box: (-51.8, -46.4, 1.2)-(-44.1, -33.0, 2.7)
+[INFO] GPU mesh uploaded: 1214 verts, 2364 indices
+[INFO]   mesh extent: (352.6,-241.1,2.4)-(354.5,-239.3,3.4)
+[INFO]   collision box: (352.6, -241.1, 2.4)-(354.5, -239.3, 3.4)
+[INFO] GPU mesh uploaded: 2723 verts, 6066 indices
+[INFO]   mesh extent: (-1.1,-2.6,0.2)-(1.1,2.5,1.4)
+[INFO]   collision box: (-1.1, -2.6, 0.2)-(1.1, 2.5, 1.4)
+[INFO] GPU mesh uploaded: 145 verts, 333 indices
+[INFO]   mesh extent: (2.4,2.8,-0.6)-(2.8,5.5,7.2)
+[INFO]   collision box: (2.4, 2.8, -0.6)-(2.8, 5.5, 7.2)
+[INFO] GPU mesh uploaded: 277 verts, 960 indices
+[INFO]   mesh extent: (5.0,3.8,-0.6)-(6.7,5.5,5.6)
+[INFO]   collision box: (5.0, 3.8, -0.6)-(6.7, 5.5, 5.6)
+[INFO] GPU mesh uploaded: 193 verts, 450 indices
+[INFO]   mesh extent: (-0.3,-0.4,-0.1)-(0.4,0.3,10.5)
+[INFO]   collision box: (-0.3, -0.4, -0.1)-(0.4, 0.3, 10.5)
+[INFO] GPU mesh uploaded: 266 verts, 714 indices
+[INFO]   mesh extent: (-0.1,-0.1,1.5)-(0.1,0.0,1.6)
+[INFO]   collision box: (-0.1, -0.1, 1.5)-(0.1, 0.0, 1.6)
+[INFO] GPU mesh uploaded: 384 verts, 948 indices
+[INFO]   mesh extent: (-0.1,-0.1,1.7)-(0.1,0.0,1.7)
+[INFO]   collision box: (-0.1, -0.1, 1.7)-(0.1, 0.0, 1.7)
+[INFO] GPU mesh uploaded: 175 verts, 708 indices
+[INFO]   mesh extent: (-0.2,-0.2,-0.2)-(0.2,0.2,0.2)
+[INFO]   collision box: (-0.2, -0.2, -0.2)-(0.2, 0.2, 0.2)
+[INFO] GPU mesh uploaded: 8078 verts, 13176 indices
+[INFO]   mesh extent: (-748.6,438.3,2.0)-(-722.1,464.9,8.1)
+[INFO]   collision box: (-748.6, 438.3, 2.0)-(-722.1, 464.9, 8.1)
+[INFO] GPU mesh uploaded: 164 verts, 246 indices
+[INFO]   mesh extent: (-742.4,438.5,-0.2)-(-728.4,464.3,8.1)
+[INFO]   collision box: (-742.4, 438.5, -0.2)-(-728.4, 464.3, 8.1)
+[INFO] GPU mesh uploaded: 642 verts, 1350 indices
+[INFO]   mesh extent: (-748.6,437.9,5.4)-(-722.0,464.6,7.3)
+[INFO]   collision box: (-748.6, 437.9, 5.4)-(-722.0, 464.6, 7.3)
+[INFO] GPU mesh uploaded: 1548 verts, 4368 indices
+[INFO]   mesh extent: (-742.2,444.6,2.0)-(-728.5,458.3,5.9)
+[INFO]   collision box: (-742.2, 444.6, 2.0)-(-728.5, 458.3, 5.9)
+[INFO] GPU mesh uploaded: 690 verts, 1800 indices
+[INFO]   mesh extent: (-735.7,429.5,4.8)-(-735.1,438.2,5.0)
+[INFO]   collision box: (-735.7, 429.5, 4.8)-(-735.1, 438.2, 5.0)
+[INFO] GPU mesh uploaded: 690 verts, 1800 indices
+[INFO]   mesh extent: (-735.7,429.5,4.8)-(-735.1,438.2,5.0)
+[INFO]   collision box: (-735.7, 429.5, 4.8)-(-735.1, 438.2, 5.0)
+[INFO] GPU mesh uploaded: 1840 verts, 4800 indices
+[INFO]   mesh extent: (-742.4,438.5,4.8)-(-728.3,464.5,5.0)
+[INFO]   collision box: (-742.4, 438.5, 4.8)-(-728.3, 464.5, 5.0)
+[INFO] World geometry: 32 loaded, 6 skipped (<100 verts), 0 failed, 5720 scanned
+[INFO] Textures: 29 cached, 0 failed, 180 textured / 2 placeholder submeshes
+[INFO] Camera spawn (-735.4, 460.3, -7.5) anchored on ASY_ABlock.nif (radius 19.0) -> center (-735.4, 451.6, 5.1)
+[INFO] Collision world: 32 registered objects
+[INFO] GPU mesh uploaded: 24 verts, 36 indices
+[INFO] Entities: 32 static level entities registered
+[INFO] AGR: F_Adult.agr -> 6/6 animations decoded
+[INFO] AGR: F_BULLY.agr -> 7/7 animations decoded
+[INFO] AGR: F_Crazy.agr -> 22/22 animations decoded
+[INFO] AGR: F_Douts.agr -> 3/3 animations decoded
+[INFO] AGR: F_Girls.agr -> 36/36 animations decoded
+[INFO] AGR: F_Greas.agr -> 11/11 animations decoded
+[INFO] AGR: F_Jocks.agr -> 19/19 animations decoded
+[INFO] AGR: F_Nerds.agr -> 12/12 animations decoded
+[INFO] AGR: F_OldPeds.agr -> 8/8 animations decoded
+[INFO] AGR: F_Pref.agr -> 2/2 animations decoded
+[INFO] AGR: F_Preps.agr -> 15/15 animations decoded
+[INFO] AGR: 141 animations total
+[INFO] AGR clips: walk=#76 (travel 1.41m) idle=#0
+[INFO] Animation rig ready: walk=76 idle=0 (141 clips)
+[INFO] GPU skinned mesh uploaded: 1768 verts, 5253 indices
+[INFO] Jimmy spawned SKINNED: 'Player_Mascot.nif' (36 bones, walk=0 idle=1) at (-735.4, 466.9, 5.1)
+[INFO] GPU mesh uploaded: 779 verts, 1314 indices
+[INFO] GPU mesh uploaded: 156 verts, 288 indices
+[INFO] GPU mesh uploaded: 2239 verts, 3438 indices
+[INFO] GPU mesh uploaded: 1126 verts, 1452 indices
+[INFO] GPU mesh uploaded: 1120 verts, 1452 indices
+[INFO] GPU mesh uploaded: 470 verts, 714 indices
+[INFO] GPU mesh uploaded: 1681 verts, 4026 indices
+[INFO] GPU mesh uploaded: 1962 verts, 4461 indices
+[INFO] GPU mesh uploaded: 1952 verts, 4437 indices
+[INFO] GPU mesh uploaded: 1946 verts, 4419 indices
+[INFO] GPU mesh uploaded: 1962 verts, 4446 indices
+[INFO] GPU mesh uploaded: 1832 verts, 4302 indices
+[INFO] GPU mesh uploaded: 1946 verts, 4419 indices
+[INFO] GPU mesh uploaded: 1931 verts, 3243 indices
+[INFO] GPU mesh uploaded: 1918 verts, 3300 indices
+[INFO] GPU mesh uploaded: 1926 verts, 3204 indices
+[INFO] NPC models: 16 loaded, 0 failed (from 5720 scanned)
+[INFO] GPU skinned mesh uploaded: 2239 verts, 3438 indices
+[INFO] NPC 'CS_BALC1.nif': skinned rig 1 (46 bones)
+[INFO] GPU skinned mesh uploaded: 1126 verts, 1452 indices
+[INFO] NPC 'CS_BALC2.nif': skinned rig 3 (6 bones)
+[INFO] GPU skinned mesh uploaded: 1120 verts, 1452 indices
+[INFO] NPC 'CS_BALC3.nif': skinned rig 5 (6 bones)
+[INFO] GPU skinned mesh uploaded: 470 verts, 714 indices
+[INFO] NPC 'CS_BWSign.nif': skinned rig 7 (6 bones)
+[INFO] GPU skinned mesh uploaded: 1681 verts, 4026 indices
+[INFO] NPC 'CS_B_Bald.nif': skinned rig 9 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1962 verts, 4461 indices
+[INFO] NPC 'CS_B_Bhat1.nif': skinned rig 11 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1952 verts, 4437 indices
+[INFO] NPC 'CS_B_Bhat2.nif': skinned rig 13 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1946 verts, 4419 indices
+[INFO] NPC 'CS_B_Bhat3.nif': skinned rig 15 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1962 verts, 4446 indices
+[INFO] NPC 'CS_B_Bhat4.nif': skinned rig 17 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1832 verts, 4302 indices
+[INFO] NPC 'CS_B_Bhat5.nif': skinned rig 19 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1946 verts, 4419 indices
+[INFO] NPC 'CS_B_Bhat6.nif': skinned rig 21 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1931 verts, 3243 indices
+[INFO] NPC 'CS_B_Boots1.nif': skinned rig 23 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1918 verts, 3300 indices
+[INFO] NPC 'CS_B_Boots2.nif': skinned rig 25 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1926 verts, 3204 indices
+[INFO] NPC 'CS_B_Boots3.nif': skinned rig 27 (64 bones)
+[INFO] NPCs: 18 spawned around (-735.4, 464.9, 5.1) from 16 models
+[INFO] Entities: 10 test boxes spawned around (-735.4, 451.6, 5.1)
+[INFO] Entities verify: CountNearby(layer2)=12 (expect 10), CountNearby(layer1)=5
+[INFO] Entities verify: QuerySphere hit=true idx=45 gen=1
+[INFO] Entities verify: destroyed idx=45 alive=false (expect false)
+[INFO] Entities verify: recycled idx=45 gen=2 (stale gen=1)
+[INFO] Entities verify: stale handle rejected=true
+[INFO] Engine initialized successfully
+[INFO] Frame timing: 8.03 ms avg (124.5 fps) | cam (-735.4, 470.1, 3.9) yaw 0.00 pitch -1.30
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=16 wander=1 face=0 sample: (-731.2, 464.9, -11.9) -> target (-729.7, -13.3)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 4.9) yaw 0.00 pitch -1.54
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=3 wander=14 face=0 sample: (-740.3, 464.9, 10.9) -> target (-737.4, 8.6)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=12 face=0 sample: (-739.2, 464.9, 10.0) -> target (-737.4, 8.6)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=10 wander=7 face=0 sample: (-738.2, 464.9, 9.2) -> target (-737.4, 8.6)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=14 wander=2 face=1 sample: (-724.8, 464.9, 13.5) -> target (-725.6, 18.0)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=7 face=1 sample: (-725.0, 464.9, 15.1) -> target (-725.6, 18.0)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=12 face=1 sample: (-725.3, 464.9, 16.7) -> target (-725.6, 18.0)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-729.4, 464.9, 18.8) -> target (-731.2, 18.1)
+[INFO] Frame timing: 4.22 ms avg (236.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-730.4, 464.9, 18.4) -> target (-731.2, 18.1)
+[INFO] Frame timing: 4.22 ms avg (237.2 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=11 face=1 sample: (-725.6, 464.9, 16.8) -> target (-726.0, 10.9)
+[INFO] Frame timing: 4.33 ms avg (230.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-725.7, 464.9, 15.3) -> target (-726.0, 10.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-725.8, 464.9, 13.7) -> target (-726.0, 10.9)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-726.0, 464.9, 12.1) -> target (-726.0, 10.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-731.6, 464.9, 20.0) -> target (-732.9, 23.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=7 face=1 sample: (-732.0, 464.9, 21.1) -> target (-732.9, 23.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=7 face=1 sample: (-732.4, 464.9, 22.1) -> target (-732.9, 23.6)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-725.9, 464.9, 12.7) -> target (-725.8, 13.8)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=11 wander=5 face=1 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=7 face=1 sample: (-732.9, 464.9, 23.3) -> target (-733.9, 16.4)
+[INFO] Screenshot requested: track16_final4 (.tga)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-733.1, 464.9, 22.1) -> target (-733.9, 16.4)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-724.6, 464.9, 12.9) -> target (-723.1, 12.1)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-733.4, 464.9, 19.9) -> target (-733.9, 16.4)
+[INFO] Frame timing: 4.22 ms avg (237.1 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-733.6, 464.9, 18.8) -> target (-733.9, 16.4)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-733.7, 464.9, 17.7) -> target (-733.9, 16.4)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=7 face=1 sample: (-723.2, 464.9, 13.7) -> target (-722.9, 17.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-723.1, 464.9, 15.3) -> target (-722.9, 17.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-722.9, 464.9, 16.9) -> target (-722.9, 17.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-734.8, 464.9, 18.7) -> target (-734.4, 12.9)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-733.8, 464.9, 17.6) -> target (-733.6, 19.8)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-723.4, 464.9, 17.2) -> target (-730.5, 15.5)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-725.0, 464.9, 16.8) -> target (-730.5, 15.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-726.6, 464.9, 16.5) -> target (-730.5, 15.5)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=11 face=1 sample: (-728.1, 464.9, 16.1) -> target (-730.5, 15.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-729.7, 464.9, 15.7) -> target (-730.5, 15.5)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=11 wander=5 face=1 sample: (-732.1, 464.9, 20.8) -> target (-729.2, 23.3)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-731.3, 464.9, 21.5) -> target (-729.2, 23.3)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-729.1, 464.9, 15.5) -> target (-722.5, 15.0)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=11 face=1 sample: (-727.5, 464.9, 15.4) -> target (-722.5, 15.0)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-725.9, 464.9, 15.3) -> target (-722.5, 15.0)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-724.3, 464.9, 15.2) -> target (-722.5, 15.0)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-722.8, 464.9, 15.1) -> target (-722.5, 15.0)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=10 wander=5 face=2 sample: (-729.3, 464.9, 23.0) -> target (-729.2, 21.8)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-737.6, 464.9, 19.0) -> target (-733.8, 17.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-723.4, 464.9, 13.9) -> target (-724.2, 12.4)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-728.1, 464.9, 21.3) -> target (-727.4, 20.8)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.0) yaw 0.00 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-738.7, 464.9, -8.2) -> target (-740.9, -8.6)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.0) yaw 1.39 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=10 face=3 sample: (-733.3, 464.9, 16.4) -> target (-732.4, 14.7)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.54 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=9 face=3 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.22 ms avg (237.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=5 face=3 sample: (-724.6, 464.9, 12.7) -> target (-727.1, 12.7)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-726.2, 464.9, 12.7) -> target (-727.1, 12.7)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-729.0, 464.9, 19.1) -> target (-730.2, 17.7)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=3 wander=11 face=3 sample: (-729.7, 464.9, 18.3) -> target (-730.2, 17.7)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=9 face=3 sample: (-740.6, 464.9, -10.4) -> target (-739.6, -12.7)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-727.0, 464.9, 13.0) -> target (-729.3, 16.6)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-727.8, 464.9, 14.3) -> target (-729.3, 16.6)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-728.7, 464.9, 15.7) -> target (-729.3, 16.6)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-729.2, 464.9, 17.8) -> target (-733.4, 21.9)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-730.0, 464.9, 18.5) -> target (-733.4, 21.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-730.8, 464.9, 19.3) -> target (-733.4, 21.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=5 face=3 sample: (-731.6, 464.9, 20.1) -> target (-733.4, 21.9)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=5 face=3 sample: (-732.4, 464.9, 20.9) -> target (-733.4, 21.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-734.9, 464.9, 18.1) -> target (-733.7, 18.7)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-740.2, 464.9, -7.1) -> target (-739.7, -5.3)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=5 face=3 sample: (-728.7, 464.9, 16.3) -> target (-724.2, 18.6)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-727.2, 464.9, 17.0) -> target (-724.2, 18.6)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-725.8, 464.9, 17.8) -> target (-724.2, 18.6)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=9 face=3 sample: (-724.4, 464.9, 18.5) -> target (-724.2, 18.6)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-727.9, 464.9, 21.2) -> target (-727.3, 21.1)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-724.6, 464.9, 17.5) -> target (-725.5, 13.9)
+[INFO] Frame timing: 4.24 ms avg (236.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-725.0, 464.9, 15.9) -> target (-725.5, 13.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-725.4, 464.9, 14.4) -> target (-725.5, 13.9)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-727.9, 464.9, 21.1) -> target (-734.0, 20.1)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-729.0, 464.9, 20.9) -> target (-734.0, 20.1)
+[INFO] Frame timing: 4.24 ms avg (235.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=6 face=3 sample: (-725.9, 464.9, 13.7) -> target (-727.6, 12.2)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=8 face=3 sample: (-727.1, 464.9, 12.7) -> target (-727.6, 12.2)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-732.4, 464.9, 20.3) -> target (-734.0, 20.1)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=7 face=3 sample: (-733.5, 464.9, 20.1) -> target (-734.0, 20.1)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=9 face=3 sample: (-726.3, 464.9, 12.9) -> target (-724.2, 14.1)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=9 face=3 sample: (-724.9, 464.9, 13.7) -> target (-724.2, 14.1)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-738.9, 464.9, -6.8) -> target (-739.8, -5.3)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-724.4, 464.9, 14.4) -> target (-724.8, 18.6)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-724.6, 464.9, 16.0) -> target (-724.8, 18.6)
+[INFO] Frame timing: 4.22 ms avg (237.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=3 wander=10 face=4 sample: (-724.7, 464.9, 17.6) -> target (-724.8, 18.6)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-732.5, 464.9, 17.0) -> target (-732.1, 15.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-726.1, 464.9, 18.9) -> target (-727.2, 19.4)
+[INFO] Frame timing: 4.24 ms avg (236.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-738.7, 464.9, -6.5) -> target (-741.2, -8.4)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-726.9, 464.9, 18.8) -> target (-726.7, 11.3)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-726.9, 464.9, 17.2) -> target (-726.7, 11.3)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-726.8, 464.9, 15.6) -> target (-726.7, 11.3)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-726.8, 464.9, 14.0) -> target (-726.7, 11.3)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-726.7, 464.9, 12.4) -> target (-726.7, 11.3)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-725.3, 464.9, 12.3) -> target (-724.6, 12.7)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-729.4, 464.9, 19.5) -> target (-732.2, 21.3)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-730.4, 464.9, 20.1) -> target (-732.2, 21.3)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-731.3, 464.9, 20.8) -> target (-732.2, 21.3)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-724.2, 464.9, 13.9) -> target (-724.0, 14.2)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-731.9, 464.9, 16.9) -> target (-732.1, 18.7)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-740.3, 464.9, -10.4) -> target (-735.3, -7.5)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-731.9, 464.9, 21.1) -> target (-730.5, 15.7)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-723.6, 464.9, 14.7) -> target (-722.3, 17.6)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=2 wander=11 face=4 sample: (-723.0, 464.9, 16.2) -> target (-722.3, 17.6)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-731.1, 464.9, 17.8) -> target (-730.5, 15.7)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-730.8, 464.9, 16.8) -> target (-730.5, 15.7)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.22 ms avg (237.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-722.8, 464.9, 17.2) -> target (-729.4, 14.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=3 wander=10 face=4 sample: (-724.3, 464.9, 16.6) -> target (-729.4, 14.5)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-725.8, 464.9, 16.0) -> target (-729.4, 14.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-727.2, 464.9, 15.4) -> target (-729.4, 14.5)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=2 wander=11 face=4 sample: (-728.7, 464.9, 14.8) -> target (-729.4, 14.5)
+[INFO] Frame timing: 4.20 ms avg (238.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-733.2, 464.9, 20.3) -> target (-734.4, 22.4)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-733.7, 464.9, 21.3) -> target (-734.4, 22.4)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=4 face=4 sample: (-741.2, 464.9, -7.1) -> target (-739.8, -11.3)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-728.9, 464.9, 15.0) -> target (-726.0, 18.1)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-727.8, 464.9, 16.2) -> target (-726.0, 18.1)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=4 wander=9 face=4 sample: (-726.7, 464.9, 17.3) -> target (-726.0, 18.1)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=5 wander=8 face=4 sample: (-735.0, 464.9, 20.1) -> target (-735.6, 18.3)
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-735.3, 464.9, 19.1) -> target (-735.6, 18.3)
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=8 wander=5 face=4 sample: (-725.9, 464.9, 17.2) -> target (-725.1, 14.3)
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-725.5, 464.9, 15.7) -> target (-725.1, 14.3)
+[INFO] Frame timing: 4.20 ms avg (237.9 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=6 wander=7 face=4 sample: (-730.3, 464.3, 1.5) -> target (-730.3, 2.9)
+[INFO] Frame timing: 4.22 ms avg (237.1 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=7 wander=6 face=4 sample: (-735.3, 464.9, 17.6) -> target (-733.2, 16.5)
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-735.4, 470.4, 5.1) yaw 1.57 pitch -1.55
+[INFO] Jimmy: (-735.36, 464.92, 5.06) onGround=1
+[INFO] NPC AI: idle=9 wander=4 face=4 sample: (-733.7, 464.9, 16.7) -> target (-733.2, 16.5)

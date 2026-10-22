@@ -9,9 +9,11 @@ namespace OpenBully {
 
 // --- Ray ---------------------------------------------------------------------
 
-bool Ray::IntersectsAABB(const AABB& box, float& outT) const {
+bool Ray::IntersectsAABB(const AABB& box, float& outT, float outNormal[3]) const {
     float tmin = 0.0f;
     float tmax = std::numeric_limits<float>::max();
+    int axis = -1;
+    float sign = 0.0f;
     for (int i = 0; i < 3; i++) {
         const float d = direction[i];
         if (std::fabs(d) < 1e-8f) {
@@ -22,13 +24,23 @@ bool Ray::IntersectsAABB(const AABB& box, float& outT) const {
         const float inv = 1.0f / d;
         float t0 = (box.min[i] - origin[i]) * inv;
         float t1 = (box.max[i] - origin[i]) * inv;
-        if (t0 > t1) std::swap(t0, t1);
-        tmin = std::max(tmin, t0);
+        float s = -1.0f;             // entered through the min face
+        if (t0 > t1) { std::swap(t0, t1); s = 1.0f; } // entered through max face
+        if (t0 > tmin) { tmin = t0; axis = i; sign = s; }
         tmax = std::min(tmax, t1);
         if (tmin > tmax) return false;
     }
     outT = tmin;
+    if (outNormal) {
+        for (int i = 0; i < 3; i++) outNormal[i] = 0.0f;
+        if (axis >= 0) outNormal[axis] = sign;
+        else outNormal[1] = 1.0f; // ray started inside: pick +Y as a guess
+    }
     return true;
+}
+
+bool Ray::IntersectsAABB(const AABB& box, float& outT) const {
+    return IntersectsAABB(box, outT, nullptr);
 }
 
 bool Ray::IntersectsSphere(const Sphere& s, float& outT) const {
@@ -120,53 +132,65 @@ bool CollisionWorld::Raycast(const Ray& ray, RayHit& hit) const {
     hit.objectId = 0;
     hit.t = -1.0f;
     float bestT = std::numeric_limits<float>::max();
+    float bestN[3] = { 0.0f, 1.0f, 0.0f };
     for (const Object& obj : m_objects) {
         float t = 0.0f;
-        if (!ray.IntersectsAABB(obj.bounds, t)) continue;
+        float n[3];
+        if (!ray.IntersectsAABB(obj.bounds, t, n)) continue;
         if (t < bestT) {
             bestT = t;
             hit.t = t;
             hit.objectId = static_cast<uint32_t>(&obj - m_objects.data());
+            std::copy(n, n + 3, bestN);
         }
     }
     if (!hit.hit()) return false;
     for (int i = 0; i < 3; i++)
         hit.point[i] = ray.origin[i] + ray.direction[i] * hit.t;
+    std::copy(bestN, bestN + 3, hit.normal);
     return true;
 }
 
-bool CollisionWorld::ResolveSphere(const float posIn[3], float radius,
-                                   float posOut[3], int maxIterations) const {
+// Shared core of the two ResolveSphere overloads: pushes the sphere out of
+// every overlapping box and records the largest-correction face normal.
+namespace {
+bool ResolveSphereCore(const CollisionWorld& world,
+                       const float posIn[3], float radius, float posOut[3],
+                       float outNormal[3], int maxIterations) {
     Sphere sphere;
     float p[3] = { posIn[0], posIn[1], posIn[2] };
     bool corrected = false;
+    float bestLen = -1.0f;
+    float bestN[3] = { 0.0f, 1.0f, 0.0f };
 
     for (int iter = 0; iter < maxIterations; iter++) {
         std::vector<uint32_t> nearIds;
-        QuerySphere(p, radius, nearIds);
+        world.QuerySphere(p, radius, nearIds);
         if (nearIds.empty()) break;
 
         bool moved = false;
         for (uint32_t id : nearIds) {
-            const AABB& box = m_objects[id].bounds;
-            // Overlap along each axis (sphere center vs box expanded by r).
+            const AABB& box = world.GetObjectBounds(id);
             float overlap[3];
             bool inside = true;
             for (int i = 0; i < 3; i++) {
                 const float lo = p[i] - (box.min[i] - radius);
                 const float hi = (box.max[i] + radius) - p[i];
                 if (lo <= 0.0f || hi <= 0.0f) { inside = false; break; }
-                // Push out through whichever face is closer.
                 overlap[i] = std::min(lo, hi);
             }
             if (!inside) continue;
 
-            // Minimum-penetration axis push-out.
             int axis = 0;
             for (int i = 1; i < 3; i++)
                 if (overlap[i] < overlap[axis]) axis = i;
             const float dir = (p[axis] * 2.0f < box.min[axis] + box.max[axis]) ? -1.0f : 1.0f;
             p[axis] += overlap[axis] * dir;
+            if (overlap[axis] > bestLen) {
+                bestLen = overlap[axis];
+                for (int i = 0; i < 3; i++) bestN[i] = 0.0f;
+                bestN[axis] = dir; // face normal the sphere was pushed through
+            }
             moved = true;
             corrected = true;
         }
@@ -174,7 +198,63 @@ bool CollisionWorld::ResolveSphere(const float posIn[3], float radius,
     }
 
     for (int i = 0; i < 3; i++) posOut[i] = p[i];
+    if (outNormal) std::copy(bestN, bestN + 3, outNormal);
     return corrected;
+}
+} // namespace
+
+bool CollisionWorld::ResolveSphere(const float posIn[3], float radius,
+                                   float posOut[3], int maxIterations) const {
+    return ResolveSphereCore(*this, posIn, radius, posOut, nullptr, maxIterations);
+}
+
+bool CollisionWorld::ResolveSphere(const float posIn[3], float radius,
+                                   float posOut[3], float outNormal[3],
+                                   int maxIterations) const {
+    return ResolveSphereCore(*this, posIn, radius, posOut, outNormal, maxIterations);
+}
+
+bool CollisionWorld::GroundProbe(const float pos[3], float probeHeight,
+                                 float& outGroundY, float outNormal[3]) const {
+    // Per-box down-ray instead of the shared Raycast: a hollow room AABB
+    // often contains the probe origin, and the generic slab test reports
+    // t=0 for it ("ground at chest height"). Boxes containing the origin
+    // are skipped; we want the topmost surface strictly below the feet.
+    float bestTop = -FLT_MAX;
+    bool found = false;
+    Ray down;
+    down.origin[0] = pos[0];
+    down.origin[1] = pos[1] + probeHeight;
+    down.origin[2] = pos[2];
+    down.direction[0] = 0.0f;
+    down.direction[1] = -1.0f;
+    down.direction[2] = 0.0f;
+
+    std::vector<uint32_t> ids;
+    QuerySphere(down.origin, probeHeight + 0.5f, ids);
+    for (uint32_t id : ids) {
+        const AABB& box = m_objects[id].bounds;
+        // Ray origin inside this box: skip (we are inside a hollow shell).
+        if (box.Contains(down.origin[0], down.origin[1], down.origin[2])) continue;
+        // Also skip boxes fully below the feet.
+        if (box.max[1] < pos[1] - 0.05f) continue;
+        float t = 0.0f;
+        if (!down.IntersectsAABB(box, t)) continue;
+        const float topY = down.origin[1] - t;
+        if (topY > bestTop) {
+            bestTop = topY;
+            found = true;
+            if (outNormal) {
+                // Down rays enter through a top face; AABBs are axis-aligned
+                // so the surface normal is +Y (triangle-mesh normals arrive
+                // with the mesh-based raycaster).
+                outNormal[0] = 0.0f; outNormal[1] = 1.0f; outNormal[2] = 0.0f;
+            }
+        }
+    }
+    if (!found) return false;
+    outGroundY = bestTop;
+    return true;
 }
 
 } // namespace OpenBully

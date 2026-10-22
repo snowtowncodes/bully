@@ -55,6 +55,9 @@ int main(int argc, char* argv[]) {
         }
 
         engine.Update();
+        if (engine.QuitRequested()) {
+            running = false;
+        }
         engine.Render();
         // Present handled by bgfx inside engine.Render() (Renderer::Frame).
     }

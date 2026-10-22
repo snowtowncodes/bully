@@ -7,10 +7,21 @@ namespace OpenBully {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Bounded reader: any read past `end` poisons the reader; callers check `ok`.
+// Strip export-machine directories: "z:\\bully\\temp\\school\\wall01.tga" ->
+// "wall01" (matches bully-re BaseNom; '/' and '\\' separators both accepted).
+std::string BaseTextureName(const std::string& path) {
+    size_t start = 0;
+    for (size_t i = 0; i < path.size(); i++)
+        if (path[i] == '/' || path[i] == '\\') start = i + 1;
+    size_t end = path.size();
+    const size_t dot = path.rfind('.', end);
+    if (dot != std::string::npos && dot >= start) end = dot;
+    return path.substr(start, end - start);
+}
 // Handles little- and big-endian files (Bully ships 247 big-endian CS_* NIFs;
 // the block count itself is always little-endian).
+// ---------------------------------------------------------------------------
+// Bounded reader: any read past `end` poisons the reader; callers check `ok`.
 // ---------------------------------------------------------------------------
 class Reader {
 public:
@@ -376,9 +387,28 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
     // --- Blocks ------------------------------------------------------------
     // Each block's declared size lets us skip unknown blocks exactly. Node
     // blocks (NiNode / NiTriShape / NiTriStrips) build the hierarchy table;
-    // geometry data blocks are decoded inside their declared range. Everything
-    // else is skipped by size.
+    // geometry data blocks are decoded inside their declared range;
+    // NiTexturingProperty / NiSourceTexture blocks are decoded to resolve
+    // per-shape base textures. Everything else is skipped by size.
     std::string lastShapeName;
+    std::vector<int32_t> lastShapeProps;
+    int32_t lastShapeSkinRef = -1; // NiSkinInstance ref of the current shape
+    // Block index -> base-map NiSourceTexture ref (from NiTexturingProperty).
+    std::vector<int32_t> texturingBaseSource(numBlocks, -1);
+    // Block index -> texture file name (from NiSourceTexture, stripped).
+    std::vector<std::string> sourceTextureNames(numBlocks);
+    // Track 17: raw skin payloads until cross-referenced post-pass.
+    std::vector<int32_t> blockToNode(numBlocks, -1); // block -> nodes[] position
+    struct RawSkinInstance { int32_t dataRef = -1; int32_t rootRef = -1;
+                             std::vector<int32_t> boneRefs; };
+    struct RawSkinData { struct Bone {
+        float rotation[9] = {1,0,0,0,1,0,0,0,1}; float translation[3] = {0,0,0};
+        float scale = 1.0f;
+        std::vector<uint32_t> vi; std::vector<float> vw; } ;
+        bool hasWeights = false; std::vector<Bone> bones; };
+    std::vector<RawSkinInstance> skinInstances(numBlocks);
+    std::vector<RawSkinData> skinDatas(numBlocks);
+    int32_t pendingSkinRef = -1; // last shape's NiSkinInstance ref
 
     result.nodes.reserve(numBlocks);
 
@@ -397,8 +427,86 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
         const bool isShape = (typeName == "NiTriShape" || typeName == "NiTriStrips");
         const bool isNode = isShape || typeName == "NiNode";
         const bool isGeomData = (typeName == "NiTriShapeData" || typeName == "NiTriStripsData");
+        const bool isTexBlock = (typeName == "NiTexturingProperty" ||
+                                 typeName == "NiSourceTexture");
+        const bool isSkinInstance = (typeName == "NiSkinInstance");
+        const bool isSkinData = (typeName == "NiSkinData");
 
-        if (isNode) {
+        if (isTexBlock) {
+            Reader block(blockStart, blockSize);
+            block.SetBigEndian(result.bigEndian);
+            if (typeName == "NiTexturingProperty") {
+                const int32_t base = ReadTexturingProperty(block);
+                if (block.Ok() && base >= 0 &&
+                    static_cast<uint32_t>(base) < numBlocks)
+                    texturingBaseSource[i] = base;
+            } else {
+                // NiSourceTexture: NiObjectNET (name, extra refs, controller),
+                // then u8 useExternal, fileName i32, pixelData i32, 3x u32,
+                // 3x u8. Identical size for internal (.nft pixels) and
+                // external (file reference) textures.
+                // (bully-re NifFile.cpp LireSourceTexture)
+                const int32_t nameIndex = block.I32();
+                int32_t numExtra = block.I32();
+                if (numExtra < 0 || numExtra > 100000) numExtra = 0;
+                for (int32_t e = 0; e < numExtra && block.Ok(); e++)
+                    block.I32();
+                block.I32(); // controller
+                block.U8();  // useExternal
+                const int32_t fileNameIdx = block.I32();
+                if (block.Ok() && fileNameIdx >= 0 &&
+                    static_cast<uint32_t>(fileNameIdx) < strings.size())
+                    sourceTextureNames[i] =
+                        BaseTextureName(strings[fileNameIdx]);
+            }
+        } else if (isSkinInstance) {
+            // NiSkinInstance in 20.3.0.9: data ref, partition ref, skeleton
+            // root ref, bone count i32, bone node refs. (bully-re NifFile.cpp
+            // LireSkinInstance.)
+            Reader block(blockStart, blockSize);
+            block.SetBigEndian(result.bigEndian);
+            RawSkinInstance& si = skinInstances[i];
+            si.dataRef = block.I32();
+            block.I32(); // partition ref (unused: weights come from NiSkinData)
+            si.rootRef = block.I32();
+            int32_t numBones = block.I32();
+            if (numBones >= 0 && numBones <= 1024) {
+                si.boneRefs.reserve(numBones);
+                for (int32_t b = 0; b < numBones && block.Ok(); b++)
+                    si.boneRefs.push_back(block.I32());
+            }
+        } else if (isSkinData) {
+            // NiSkinData in 20.3.0.9: overall transform (row-major 3x3, 3f,
+            // 1f), bone count i32, has-weights u8, then per bone a bind
+            // transform (13 floats), bounding sphere (center 3f, radius 1f),
+            // vertex count u16 and, when weighted, (u16 index, f weight) per
+            // vertex. (bully-re LireSkinData.)
+            Reader block(blockStart, blockSize);
+            block.SetBigEndian(result.bigEndian);
+            RawSkinData& sd = skinDatas[i];
+            for (int k = 0; k < 13; k++) block.F32(); // overall transform
+            int32_t numBones = block.I32();
+            sd.hasWeights = block.U8() != 0;
+            if (numBones < 0 || numBones > 1024) { block.Fail(); }
+            else {
+                sd.bones.resize(numBones);
+                for (int32_t b = 0; b < numBones && block.Ok(); b++) {
+                    RawSkinData::Bone& o = sd.bones[b];
+                    for (int k = 0; k < 9; k++) o.rotation[k] = block.F32();
+                    for (int k = 0; k < 3; k++) o.translation[k] = block.F32();
+                    o.scale = block.F32();
+                    for (int k = 0; k < 4; k++) block.F32(); // bounding sphere
+                    const uint16_t numVerts = block.U16();
+                    if (sd.hasWeights) {
+                        o.vi.reserve(numVerts); o.vw.reserve(numVerts);
+                        for (uint16_t v = 0; v < numVerts && block.Ok(); v++) {
+                            o.vi.push_back(block.U16());
+                            o.vw.push_back(block.F32());
+                        }
+                    }
+                }
+            }
+        } else if (isNode) {
             Reader block(blockStart, blockSize);
             block.SetBigEndian(result.bigEndian);
 
@@ -414,7 +522,7 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
                 block.I32();
             block.I32(); // controller
 
-            bool avOk = ReadAVObjectBody(block, &node);
+            bool avOk = ReadAVObjectBody(block, &node, isShape ? &lastShapeProps : nullptr);
 
             if (!isShape) {
                 // NiNode tail: child refs (i32 count + i32 refs).
@@ -428,7 +536,7 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
                 // NiTriShape/NiTriStrips tail: data ref, skin ref, materials,
                 // active material, dirty flag.
                 block.I32(); // data reference
-                block.I32(); // skin reference
+                lastShapeSkinRef = block.I32(); // skin reference
                 int32_t numMaterials = block.I32();
                 if (numMaterials < 0 || numMaterials > 10000) numMaterials = 0;
                 for (int32_t m = 0; m < numMaterials && block.Ok(); m++) {
@@ -440,11 +548,24 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
             }
 
             if (avOk && block.Ok()) {
-                if (isShape) lastShapeName = node.name;
+                if (isShape) {
+                    lastShapeName = node.name;
+                    // Property refs captured above (ReadAVObjectBody); clear
+                    // any stale refs from a failed previous decode.
+                    if (!avOk) lastShapeProps.clear();
+                    // Track 17: this shape's NiSkinInstance ref (invalidated
+                    // when the decode failed; reset per shape).
+                    // lastShapeSkinRef was set in the tail read above.
+                }
+                node.isShape = isShape;
+                blockToNode[i] = static_cast<int32_t>(result.nodes.size());
                 result.nodes.push_back(std::move(node));
             } else {
+                blockToNode[i] = static_cast<int32_t>(result.nodes.size());
                 result.nodes.push_back(NifNode{}); // placeholder keeps indices
             }
+            // Stash the skin ref for the geometry data block that follows.
+            if (isShape) pendingSkinRef = lastShapeSkinRef;
         } else if (isGeomData) {
             Reader block(blockStart, blockSize);
             block.SetBigEndian(result.bigEndian);
@@ -456,6 +577,23 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
             geo.nodeName = lastShapeName;
             geo.nodeIndex = result.nodes.empty()
                 ? 0 : static_cast<uint32_t>(result.nodes.size() - 1);
+            // Track 17: the shape this data belongs to carried a skin ref.
+            if (pendingSkinRef >= 0 &&
+                static_cast<uint32_t>(pendingSkinRef) < numBlocks)
+                geo.skinIndex = static_cast<uint32_t>(pendingSkinRef);
+            // Resolve this shape's base texture through its properties:
+            // shape -> NiTexturingProperty -> base NiSourceTexture -> name.
+            for (int32_t prop : lastShapeProps) {
+                if (prop < 0 || static_cast<uint32_t>(prop) >= numBlocks)
+                    continue;
+                const int32_t src = texturingBaseSource[prop];
+                if (src < 0 || static_cast<uint32_t>(src) >= numBlocks)
+                    continue;
+                if (!sourceTextureNames[src].empty()) {
+                    geo.textureName = sourceTextureNames[src];
+                    break;
+                }
+            }
             if (typeName == "NiTriShapeData")
                 ReadTriShapeData(block, geo);
             else
@@ -472,12 +610,86 @@ NifLoadResult LoadNifFromMemory(const uint8_t* data, size_t size) {
     }
 
 
-    // Fill parent links from the children refs (NIF stores one side only).
+    // --- Hierarchy index fix-up (Track 17) ----------------------------------
+    result.blockToNode = std::move(blockToNode);
+    // Node children were parsed as raw NiBlock references, but non-node
+    // blocks (geometry data, skins, textures...) interleave with nodes, so
+    // block index != nodes[] position on any NIF with such blocks. Remap
+    // children to nodes[] positions; drop refs that do not map.
+    for (NifNode& n : result.nodes) {
+        if (n.children.empty()) continue;
+        std::vector<uint32_t> mapped;
+        mapped.reserve(n.children.size());
+        for (uint32_t c : n.children) {
+            const int32_t ni = (c < result.blockToNode.size())
+                ? result.blockToNode[c] : -1;
+            if (ni >= 0) mapped.push_back(static_cast<uint32_t>(ni));
+        }
+        n.children = std::move(mapped);
+    }
+
+    // Fill parent links from the (now nodes[]-indexed) children refs.
     for (uint32_t n = 0; n < result.nodes.size(); n++)
         for (uint32_t c : result.nodes[n].children)
             if (c < result.nodes.size() &&
                 result.nodes[c].parent < 0)
                 result.nodes[c].parent = static_cast<int32_t>(n);
+
+    // --- Track 17: assemble skins from the raw blocks -----------------------
+    // skins[blockIndex] exists for every parsed NiSkinInstance; skinned
+    // geometries point at their instance via skinIndex and carry resolved
+    // per-vertex weights.
+    result.skins.resize(numBlocks);
+    std::vector<bool> skinValid(numBlocks, false);
+    for (uint32_t i = 0; i < numBlocks; i++) {
+        const RawSkinInstance& si = skinInstances[i];
+        if (si.dataRef < 0 || static_cast<uint32_t>(si.dataRef) >= numBlocks)
+            continue;
+        const RawSkinData& sd = skinDatas[static_cast<size_t>(si.dataRef)];
+        if (!sd.hasWeights || sd.bones.size() != si.boneRefs.size()) continue;
+        NifSkinData& out = result.skins[i];
+        out.skeletonRoot = si.rootRef >= 0 ? static_cast<uint32_t>(si.rootRef)
+                                           : 0xFFFFFFFF;
+        out.bones.resize(si.boneRefs.size());
+        for (size_t b = 0; b < si.boneRefs.size(); b++) {
+            out.boneNodes.push_back(static_cast<uint32_t>(si.boneRefs[b]));
+            NifSkinBone& ob = out.bones[b];
+            const RawSkinData::Bone& ib = sd.bones[b];
+            std::memcpy(ob.rotation, ib.rotation, sizeof ob.rotation);
+            std::memcpy(ob.translation, ib.translation, sizeof ob.translation);
+            ob.scale = ib.scale;
+            ob.vertexIndices = ib.vi;
+            ob.vertexWeights = ib.vw;
+        }
+        skinValid[i] = true;
+    }
+    // Resolve per-vertex weights for skinned geometries.
+    for (NifGeometryData& geo : result.geometries) {
+        if (geo.skinIndex >= numBlocks || !skinValid[geo.skinIndex]) {
+            geo.skinIndex = 0xFFFFFFFF;
+            continue;
+        }
+        const NifSkinData& skin = result.skins[geo.skinIndex];
+        geo.weights.assign(geo.vertices.size(), NifVertexWeights{});
+        // Per-vertex influence list, rebuilt from the per-bone weight lists.
+        struct Influ { uint8_t idx[4]; float w[4]; uint8_t n; };
+        std::vector<Influ> infl(geo.vertices.size());
+        for (size_t b = 0; b < skin.bones.size(); b++) {
+            const NifSkinBone& ob = skin.bones[b];
+            for (size_t k = 0; k < ob.vertexIndices.size(); k++) {
+                const uint32_t v = ob.vertexIndices[k];
+                if (v >= infl.size()) continue;
+                Influ& f = infl[v];
+                if (f.n < 4) { f.idx[f.n] = static_cast<uint8_t>(b);
+                               f.w[f.n] = ob.vertexWeights[k]; f.n++; }
+            }
+        }
+        for (size_t v = 0; v < infl.size(); v++) {
+            NifVertexWeights& w = geo.weights[v];
+            w.count = infl[v].n;
+            for (int k = 0; k < 4; k++) { w.index[k] = infl[v].idx[k]; w.weight[k] = infl[v].w[k]; }
+        }
+    }
 
     result.ok = !result.geometries.empty();
     if (!result.ok)

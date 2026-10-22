@@ -31,6 +31,8 @@ EntityID EntityManager::Create() {
             rec.collision = 0xFFFFFFFF;
             rec.physics   = 0xFFFFFFFF;
             rec.player    = 0xFFFFFFFF;
+            rec.ai        = 0xFFFFFFFF;
+            rec.animation = 0xFFFFFFFF;
             m_transforms.emplace_back();
             ++m_aliveCount;
             return EntityID{uint32_t(i), rec.generation};
@@ -43,6 +45,8 @@ EntityID EntityManager::Create() {
     rec.collision = 0xFFFFFFFF;
     rec.physics   = 0xFFFFFFFF;
     rec.player    = 0xFFFFFFFF;
+    rec.ai        = 0xFFFFFFFF;
+    rec.animation = 0xFFFFFFFF;
     m_transforms.emplace_back();
     m_entities.push_back(rec);
     ++m_aliveCount;
@@ -175,6 +179,44 @@ PlayerController* EntityManager::GetPlayer(EntityID id) {
     EntityRecord* rec = nullptr;
     if (!FindRecord(id, &rec) || rec->player == 0xFFFFFFFF) return nullptr;
     return &m_players[rec->player];
+}
+
+// -- AIComponent (Track 16) ---------------------------------------------------
+
+AIComponent* EntityManager::AddAI(EntityID id, const AIComponent& a) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->ai == 0xFFFFFFFF) {
+        rec->ai = uint32_t(m_ai.size());
+        m_ai.emplace_back();
+    }
+    m_ai[rec->ai] = a;
+    return &m_ai[rec->ai];
+}
+
+AIComponent* EntityManager::GetAI(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->ai == 0xFFFFFFFF) return nullptr;
+    return &m_ai[rec->ai];
+}
+
+// -- AnimationComponent (Track 17) ---------------------------------------------
+
+AnimationComponent* EntityManager::AddAnimation(EntityID id, const AnimationComponent& a) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->animation == 0xFFFFFFFF) {
+        rec->animation = uint32_t(m_animations.size());
+        m_animations.emplace_back();
+    }
+    m_animations[rec->animation] = a;
+    return &m_animations[rec->animation];
+}
+
+AnimationComponent* EntityManager::GetAnimation(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->animation == 0xFFFFFFFF) return nullptr;
+    return &m_animations[rec->animation];
 }
 
 // -- Spatial queries ----------------------------------------------------------

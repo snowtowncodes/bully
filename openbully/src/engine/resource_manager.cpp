@@ -45,9 +45,8 @@ bool ResourceManager::LoadMesh(const std::string& path, Mesh& outMesh) {
         Logger::Error("NIF produced an empty mesh for %s", path.c_str());
         return false;
     }
-    Logger::Info("Loaded mesh %s: %zu verts, %zu tris, %zu sub-meshes",
-                 path.c_str(), outMesh.VertexCount(), outMesh.TriangleCount(),
-                 outMesh.subMeshes.size());
+    Logger::Info("Loaded mesh %s: %zu verts, %zu tris",
+                 path.c_str(), outMesh.VertexCount(), outMesh.TriangleCount());
     return true;
 }
 

@@ -14,6 +14,8 @@
 #include "../rendering/mesh.h"
 #include "../rendering/renderer.h"
 #include "../game/player.h"
+#include "../animation/animation_controller.h"
+#include "npc.h"
 
 #include <glm/glm.hpp>
 
@@ -50,6 +52,8 @@ struct Transform {
 struct MeshComponent {
     bool           isBox     = false;    // true = draw the shared test box
     bool           isJimmy   = false;    // true = draw the dedicated player mesh (Track 15)
+    bool           isNpc     = false;    // true = draw an NPC model (Track 16)
+    uint32_t       npcModelIndex = 0xFFFFFFFF; // index into Engine::m_npcModels
     uint32_t       worldMeshIndex = 0xFFFFFFFF; // index into Engine::m_worldMeshes
     GpuTexture     texture;              // invalid = renderer placeholder
 };
@@ -64,6 +68,30 @@ struct PhysicsComponent {
     glm::vec3 velocity{0.0f};
     float     gravity  = -9.8f; // units/s^2 (0 disables)
     bool      onGround = false;
+
+    // --- Track 18: character movement tuning (used by Engine::UpdateJimmy) ---
+    float     slopeSlideCos = 0.70f; // cos(min slide angle): ground normals
+                                     // with n.y < cos(45 deg) start sliding
+    float     slopeSlideAccel = 12.0f; // downhill acceleration (u/s^2) on slides
+    float     stepHeight = 0.35f;   // max ledge the step-up logic climbs
+    float     maxFallSpeed = 30.0f; // terminal velocity clamp (u/s)
+    float     fallDamageThreshold = 10.0f; // landing speed that "hurts" (log)
+    float     groundNormalY = 1.0f; // surface normal Y of the ground we stand on
+    bool      sliding = false;      // on a too-steep slope (gravity slide active)
+
+    // Horizontal movement is stored here by the controller; the vertical
+    // component stays in `velocity.y` so gravity/landing stay independent.
+    glm::vec3 HorizontalVelocity() const { return { velocity.x, 0.0f, velocity.z }; }
+};
+
+// Track 17: skeletal animation state for one skinned entity. The controller
+// (skeleton + clips + pose) lives in the engine's shared rig pool; this
+// component references a rig and drives playback (walk when moving, idle
+// when stopped).
+struct AnimationComponent {
+    uint32_t rigIndex = 0xFFFFFFFF; // engine rig pool index
+    bool     playing = false;
+    bool     wasMoving = false;    // last-frame movement flag (state switching)
 };
 
 // --- Entity manager -----------------------------------------------------------
@@ -96,9 +124,17 @@ public:
     PhysicsComponent*   AddPhysics(EntityID id, const PhysicsComponent& p = {});
     PhysicsComponent*   GetPhysics(EntityID id);
 
+    // Track 17: skeletal animation component (one per skinned entity).
+    AnimationComponent* AddAnimation(EntityID id, const AnimationComponent& a = {});
+    AnimationComponent* GetAnimation(EntityID id);
+
     // Track 15: player-controller component (one per player entity).
     PlayerController*   AddPlayer(EntityID id, const PlayerController& p = {});
     PlayerController*   GetPlayer(EntityID id);
+
+    // Track 16: NPC AI component.
+    AIComponent*        AddAI(EntityID id, const AIComponent& a = {});
+    AIComponent*        GetAI(EntityID id);
 
     void RemoveMesh(EntityID id);
     void RemoveCollision(EntityID id);
@@ -114,10 +150,13 @@ public:
         uint32_t collision   = 0xFFFFFFFF;
         uint32_t physics     = 0xFFFFFFFF;
         uint32_t player      = 0xFFFFFFFF;
+        uint32_t ai          = 0xFFFFFFFF;
+        uint32_t animation   = 0xFFFFFFFF;
 
         bool HasMesh() const      { return mesh      != 0xFFFFFFFF; }
         bool HasCollision() const { return collision != 0xFFFFFFFF; }
         bool HasPhysics() const   { return physics   != 0xFFFFFFFF; }
+        bool HasAI() const        { return ai        != 0xFFFFFFFF; }
     };
 
     template <typename Fn>
@@ -161,6 +200,18 @@ public:
         }
     }
 
+    // Track 16: visits every alive entity carrying BOTH Transform and AI.
+    // The callback may mutate the transform (movement) and the AI state.
+    template <typename Fn>
+    void ForEachAI(Fn&& fn) {
+        for (size_t i = 0; i < m_entities.size(); ++i) {
+            EntityRecord& rec = m_entities[i];
+            if (!rec.alive || rec.ai == 0xFFFFFFFF) continue;
+            fn(EntityID{uint32_t(i), rec.generation},
+               m_transforms[rec.transform], m_ai[rec.ai]);
+        }
+    }
+
 private:
     // Dense index of a component for a live handle; aborts on stale handle
     // (callers must IsAlive-check first — internal use only).
@@ -174,7 +225,9 @@ private:
     std::vector<MeshComponent>      m_meshes;
     std::vector<CollisionComponent> m_collisions;
     std::vector<PhysicsComponent>   m_physics;
+    std::vector<AnimationComponent> m_animations;
     std::vector<PlayerController>   m_players;
+    std::vector<AIComponent>        m_ai;
 };
 
 } // namespace OpenBully

@@ -6,6 +6,7 @@
 #include "physics/collision.h"
 #include "rendering/mesh.h"
 #include "entities/entity.h"
+#include "animation/animation_controller.h"
 #include "game/camera.h"
 #include "game/input.h"
 #include "game/player.h"
@@ -29,6 +30,8 @@ struct WorldMesh {
         uint32_t indexOffset = 0;
         uint32_t indexCount = 0;
         GpuTexture texture;   // invalid = renderer placeholder
+        // Track 17: skinned-shape palette index (-1 = not skinned).
+        int shapeIndex = -1;
     };
     std::vector<SubRange> subs;
     float boundsMin[3] = {0, 0, 0};
@@ -59,6 +62,33 @@ private:
     bool SpawnJimmy(const glm::vec3& position);
     void UpdateJimmy(float dt);
     void UpdateJimmyCamera(float dt);
+
+    // Track 17: skeletal animation. Loads Anim/C_Player.agr once into a
+    // shared rig (skeleton + clips); attaches AnimationComponents to Jimmy
+    // and NPCs; per-frame playback update; skinned draws in Render.
+    bool   LoadAnimationRig();                       // .agr + rig setup
+    uint32_t CreateRig(const struct NifLoadResult& nif);
+    // Track 17: clone an existing rig's controller (same skeleton + clips +
+    // GPU buffers) so several entities can animate independently.
+    uint32_t CloneRig(uint32_t sourceRigIndex);
+    void   UpdateAnimations(float dt);               // drive all controllers
+    void   UpdateEntityAnimation(EntityID id, bool moving, float dt);
+
+    // Track 16: NPC models + spawn + AI update.
+    struct NpcModel {
+        std::string name;
+        GpuMesh gpu;
+        std::vector<WorldMesh::SubRange> subs;
+        float bodyScale = 1.0f;      // normalize to ~1.8u humanoid height
+        // Track 17: skinned rig for this model (0xFFFFFFFF = static mesh).
+        // Built lazily on first spawn from `sourcePath` when the .agr clips
+        // are loaded; all instances of the model share it.
+        std::string sourcePath;
+        uint32_t rigIndex = 0xFFFFFFFF;
+    };
+    size_t LoadNpcModels(const char* dir);
+    void   SpawnNpcs(const glm::vec3& center);
+    void   UpdateNpcs(float dt);
 
     // Loads up to maxMeshes NIFs from `dir` into GPU meshes. Returns the
     // number loaded. Skips files that fail to parse, logs a summary.
@@ -134,6 +164,31 @@ private:
     bool          m_jimmyMeshValid = false;
     std::vector<WorldMesh::SubRange> m_jimmySubs;
 
+    // Track 17: skinned character rendering.
+    struct AnimRig {
+        AnimationController controller;      // skeleton + skin matrices
+        GpuMesh             gpu;             // skinned vertex/index buffers
+        std::vector<WorldMesh::SubRange> subs;
+        float bodyScale = 1.0f;
+        int   walkClip = -1;
+        int   idleClip = -1;
+    };
+    std::vector<AnimRig> m_animRigs;
+    std::vector<AgrAnim> m_sharedClips;      // decoded .agr clips (shared)
+    int           m_walkClipIndex = -1;      // index into m_sharedClips
+    int           m_idleClipIndex = -1;
+    float         m_walkScore = 1e9f;        // |travel - 1.4m| clip picker
+    float         m_walkTravelM = 0.0f;      // walk clip ground travel (m/cycle)
+    GpuMesh       m_jimmySkinnedMesh;        // Jimmy's skinned GPU buffers
+    bool          m_jimmySkinnedValid = false;
+    std::vector<WorldMesh::SubRange> m_jimmySkinnedSubs;
+    uint32_t      m_jimmyRigIndex = 0xFFFFFFFF;
+    float         m_walkClipSpeed = 1.0f;  // clips/s tuning for walk playback
+
+    // Track 16: NPC model collection (character NIFs from World.img).
+    std::vector<NpcModel> m_npcModels;
+    uint32_t              m_npcCount = 0;
+
     // Per-entity GPU render record: which GpuMesh + sub-ranges to draw.
     // The WorldMesh list stays the storage for level geometry; entity
     // MeshComponent.subIndex points into it via m_worldMeshes.
@@ -142,6 +197,7 @@ private:
         const GpuMesh* gpu;
         std::vector<WorldMesh::SubRange> subs;
         glm::mat4 model;
+        uint32_t rigIndex = 0xFFFFFFFF; // Track 17: skinned draw when set
     };
     std::vector<EntityRender> m_entityRender;
 

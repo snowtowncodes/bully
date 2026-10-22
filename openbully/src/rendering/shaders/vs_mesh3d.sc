@@ -1,5 +1,5 @@
 $input a_position a_normal a_texcoord0
-$output v_color0
+$output v_color0 v_normal v_texcoord0
 
 #include <bgfx_shader.sh>
 
@@ -10,13 +10,17 @@ void main()
 {
 	gl_Position = mul(u_mvp, vec4(a_position, 1.0));
 
-	vec3 n = normalize(a_normal);
-	vec3 lightDir = normalize(vec3(0.4, -1.0, 0.3)); // shining down (-Y is down in Gamebryo LH)
-	float diff = clamp(dot(n, -lightDir), 0.0, 1.0);
-	float light = 0.35 + 0.65 * diff; // ambient + diffuse
+	// Pass the normal to the fragment shader in view space: transform by the
+	// view matrix (bgfx provides u_view from setViewTransform). The model
+	// transform is identity today, so u_view alone is the correct normal
+	// matrix; revisit with inverse-transpose when node transforms land.
+	v_normal = mul(u_view, vec4(a_normal, 0.0)).xyz;
 
-	// Checkered-ish tint from UV to break up flat surfaces.
+	// Track 11: pass UVs through for the base-color texture sample.
+	v_texcoord0 = a_texcoord0.xy;
+
+	// Albedo stand-in: checkered tint from UV to break up flat surfaces.
+	// Lighting itself happens per-fragment in fs_mesh3d.
 	float tint = 0.85 + 0.15 * sin(a_texcoord0.x * 40.0) * sin(a_texcoord0.y * 40.0);
-
-	v_color0 = vec4(light * tint, light * tint * 0.95, light * tint * 0.9, 1.0);
+	v_color0 = vec4(tint, tint * 0.95, tint * 0.9, 1.0);
 }

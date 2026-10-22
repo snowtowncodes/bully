@@ -66,6 +66,8 @@ add_executable(openbully
     src/engine/resource_manager.cpp
     src/engine/formats/nif_loader.cpp
     src/engine/formats/nft_loader.cpp
+    src/engine/formats/agr_loader.cpp
+    src/animation/animation_controller.cpp
     src/entities/entity.cpp
     src/game/input.cpp
     src/game/camera.cpp
@@ -85,6 +87,21 @@ add_executable(nif_test
 )
 target_include_directories(nif_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENBULLY_GLM_DIR}
+)
+
+# Track 17 animation harness (.agr + skin + skeleton + pose; no GPU).
+add_executable(anim_test
+    src/tools/anim_test.cpp
+    src/engine/formats/agr_loader.cpp
+    src/engine/formats/nif_loader.cpp
+    src/animation/animation_controller.cpp
+    src/rendering/mesh.cpp
+    src/physics/collision.cpp
+)
+target_include_directories(anim_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENBULLY_GLM_DIR}
 )
 
 # Collision self-test (Track 13; no GPU, no SDL/bgfx).
@@ -126,7 +143,7 @@ set(OPENBULLY_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/shaders")
 set(OPENBULLY_SHADER_OUT_DIR "$<TARGET_FILE_DIR:openbully>/shaders")
 
 set(OPENBULLY_SHADER_TARGETS "")
-foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d)
+foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned)
     # Direct3D11 (SM 5.0) - pinned Phase-2 backend on Windows
     if(SHADER_NAME MATCHES "^vs_")
         set(SHADER_TYPE vertex)
@@ -162,7 +179,7 @@ foreach(BACKEND IN ITEMS opengl vulkan)
         set(PROFILE_FS "spirv")
         set(PLATFORM "vulkan")
     endif()
-    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d)
+    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned)
         if(SHADER_NAME MATCHES "^vs_")
             set(SHADER_TYPE vertex)
             set(SHADER_PROFILE ${PROFILE_VS})

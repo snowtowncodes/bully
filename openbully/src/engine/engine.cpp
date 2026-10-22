@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "formats/nif_loader.h"
 #include "formats/nft_loader.h"
+#include "formats/agr_loader.h"
 #include "../entities/entity.h"
 #include "../platform/logger.h"
 #include "../platform/window.h"
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cctype>
 #include <cfloat>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
@@ -27,6 +29,15 @@
 
 namespace OpenBully {
 namespace {
+
+// Deterministic frame-loop RNG for AI idle timers / wander targets.
+// Seeded once per process; every NPC shares the stream (fine for demo AI).
+static uint32_t g_aiRng = 0x9E3779B9u;
+static float nextRandom01() {
+    uint32_t& x = g_aiRng;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return float(x % 10000u) / 10000.0f;
+}
 
 // Phase-2 test triangle in NDC, built with Track 3's Mesh/MeshVertex layout:
 // pos(x,y,z) + normal(nx,ny,nz) + uv(u,v). The shader derives color from uv.
@@ -398,7 +409,9 @@ bool Engine::SpawnJimmy(const glm::vec3& position) {
 
     // Preferred: a real player body from World.img. These are model-space
     // meshes (feet near origin), so the entity transform drives placement.
-    static const char* kPlayerNifs[] = { "Player_Mascot.nif", "GOG_Player.nif" };
+    // PLAYER.nif = the full skinned Jimmy body (verified in bully-re
+    // tests/test_skin); Player_Mascot is the costume-head fallback.
+    static const char* kPlayerNifs[] = { "PLAYER.nif", "Player_Mascot.nif", "GOG_Player.nif" };
     for (const char* playerNif : kPlayerNifs) {
         for (const char* dir : { "data/extracted/world", "../data/extracted/world" }) {
             const std::string path = std::string(dir) + "/" + playerNif;
@@ -406,6 +419,60 @@ bool Engine::SpawnJimmy(const glm::vec3& position) {
             if (!nif.ok || nif.totalVertices < 10) continue;
             Mesh mesh;
             if (!MeshFromNif(nif, mesh)) continue;
+
+            // Track 17: prefer a skinned rig (bone hierarchy + walk/idle
+            // clips). Falls through to the static bake when the NIF carries
+            // no skin or the .agr group was unavailable.
+            if (!m_sharedClips.empty()) {
+                const uint32_t rigIndex = CreateRig(nif);
+                if (rigIndex != 0xFFFFFFFF) {
+                    AnimRig& rig = m_animRigs[rigIndex];
+                    m_jimmySkinnedMesh = rig.gpu;
+                    m_jimmySkinnedValid = true;
+                    m_jimmySkinnedSubs = rig.subs;
+                    m_jimmyRigIndex = rigIndex;
+
+                    EntityID e = m_entities.Create();
+                    Transform t;
+                    t.position = position + glm::vec3(0.0f, 2.0f, 0.0f);
+                    t.scale = glm::vec3(rig.bodyScale);
+                    m_entities.AddTransform(e, t);
+
+                    MeshComponent mc;
+                    mc.isBox = false;
+                    mc.isJimmy = true;
+                    m_entities.AddMesh(e, mc);
+
+                    CollisionComponent cc;
+                    cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+                    cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+                    cc.layerMask = 2u;
+                    m_entities.AddCollision(e, cc);
+
+                    PhysicsComponent pc;
+                    pc.gravity = -9.8f;
+                    m_entities.AddPhysics(e, pc);
+                    m_entities.AddPlayer(e, PlayerController{});
+
+                    AnimationComponent ac;
+                    ac.rigIndex = rigIndex;
+                    ac.playing = true;
+                    ac.wasMoving = false;
+                    m_entities.AddAnimation(e, ac);
+                    // Start idle so the pose is alive even before moving.
+                    if (rig.idleClip >= 0)
+                        rig.controller.Play(rig.idleClip, true, 0.0f);
+
+                    m_jimmyId = e;
+                    Logger::Info("Jimmy spawned SKINNED: '%s' (%d bones, walk=%d "
+                                 "idle=%d) at (%.1f, %.1f, %.1f)", playerNif,
+                                 rig.controller.BoneCount(), rig.walkClip,
+                                 rig.idleClip, t.position.x, t.position.y,
+                                 t.position.z);
+                    return true;
+                }
+            }
+
             // Bake node-hierarchy transforms (same as level geometry).
             {
                 size_t vertBase = 0;
@@ -532,12 +599,21 @@ bool Engine::SpawnJimmy(const glm::vec3& position) {
     return true;
 }
 
-// Track 15: integrate Jimmy's physics + input each frame.
-//   - Gravity always applies (task: falls if spawned above ground).
-//   - On the ground (ground raycast within the snap window): WASD moves the
-//     character in camera-yaw space at moveSpeed; vertical velocity resets.
-//   - In the air: gravity only, no horizontal control.
-//   - Wall collision: horizontal sphere resolve against level AABBs (slide).
+// Track 15/18: integrate Jimmy's physics + input each frame.
+//
+// Track 18 character-controller pipeline (per frame):
+//   1. gravity: v.y += g*dt, clamped to maxFallSpeed; airborne applies
+//      slight air control so falls stay steerable.
+//   2. horizontal move: WASD in camera-yaw space; on slopes the move
+//      direction is projected onto the ground plane (n x up) so walking
+//      follows the surface angle instead of ploughing into it.
+//   3. step-up: a horizontal probe finds blocking boxes; obstacles whose
+//      top is within stepHeight raise the position (stair climbing).
+//   4. ground: down raycast (GroundProbe). Within the snap window =>
+//      stand on it, reset v.y; steep normal => slope slide accelerates
+//      downhill. High landing speed => fall-damage log.
+//   5. wall slide: sphere resolve with normal; incoming velocity projected
+//      onto the wall tangent so Jimmy slides along walls, not into them.
 void Engine::UpdateJimmy(float dt) {
     if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
     Transform* t = m_entities.GetTransform(m_jimmyId);
@@ -545,71 +621,185 @@ void Engine::UpdateJimmy(float dt) {
     PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
     if (!t || !p || !pc) return;
 
-    // --- Gravity -------------------------------------------------------------
-    p->velocity.y += p->gravity * dt;
-    glm::vec3 pos = t->position + p->velocity * glm::vec3(dt);
+    glm::vec3 pos = t->position;
 
-    // --- Ground detection: raycast straight down from the chest -------------
-    // Cast from well above (meshes can be hollow AABBs; starting inside one
-    // would report t=0) so we always hit the topmost surface below.
-    float groundY = -FLT_MAX;
-    if (m_collisionWorld) {
-        Ray down;
-        down.origin[0] = pos.x;
-        down.origin[1] = pos.y + 4.0f;
-        down.origin[2] = pos.z;
-        down.direction[0] = 0.0f;
-        down.direction[1] = -1.0f;
-        down.direction[2] = 0.0f;
-        RayHit hit;
-        if (m_collisionWorld->Raycast(down, hit))
-            groundY = hit.point[1];
-    }
+    // --- 1. Gravity ----------------------------------------------------------
+    if (!p->onGround || p->velocity.y > 0.0f)
+        p->velocity.y += p->gravity * dt;
+    p->velocity.y = std::max(p->velocity.y, -p->maxFallSpeed);
 
-    const float feetY = pos.y; // transform origin sits at the feet
-    const bool landed = feetY <= groundY + pc->groundSnapMax;
-    if (landed && p->velocity.y <= 0.0f) {
-        pos.y = groundY;             // stand exactly on the floor
-        p->velocity.y = 0.0f;
-        p->onGround = true;
-    } else {
-        p->onGround = false;
-    }
-
-    // --- Horizontal control (ground only; air keeps momentum) ---------------
-    if (p->onGround) {
-        glm::vec3 move(0.0f);
+    // --- 2. Horizontal control + slope following -----------------------------
+    glm::vec3 wishMove(0.0f);
+    {
+        // Track 17 verification hook: OPENBULLY_AUTO_WALK=1 holds Forward so
+        // headless screenshot runs exercise the walk cycle without input.
+        static const bool kAutoWalk = std::getenv("OPENBULLY_AUTO_WALK") != nullptr;
         const float cy = std::cos(m_camera.GetYaw()), sy = std::sin(m_camera.GetYaw());
-        if (m_input.IsDown(Button::Forward)) move += glm::vec3(sy, 0.0f, cy);
-        if (m_input.IsDown(Button::Back))    move -= glm::vec3(sy, 0.0f, cy);
-        if (m_input.IsDown(Button::Left))    move -= glm::vec3(cy, 0.0f, -sy);
-        if (m_input.IsDown(Button::Right))   move += glm::vec3(cy, 0.0f, -sy);
-        if (move.x != 0.0f || move.z != 0.0f) {
-            move = glm::normalize(move);
-            const float speed = pc->moveSpeed *
-                (m_input.IsDown(Button::Sprint) ? 2.0f : 1.0f);
-            pos += move * (speed * dt);
-            // Face the movement direction (shortest-arc turn).
-            const float targetYaw = std::atan2(move.x, move.z);
-            float dyaw = targetYaw - pc->facingYaw;
-            while (dyaw >  3.14159265f) dyaw -= 6.28318531f;
-            while (dyaw < -3.14159265f) dyaw += 6.28318531f;
-            pc->facingYaw += dyaw * std::min(1.0f, pc->turnSpeed * dt);
-            pc->facingValid = true;
-            t->rotation.y = pc->facingYaw;
+        if (m_input.IsDown(Button::Forward) || kAutoWalk) wishMove += glm::vec3(sy, 0.0f, cy);
+        if (m_input.IsDown(Button::Back))    wishMove -= glm::vec3(sy, 0.0f, cy);
+        if (m_input.IsDown(Button::Left))    wishMove -= glm::vec3(cy, 0.0f, -sy);
+        if (m_input.IsDown(Button::Right))   wishMove += glm::vec3(cy, 0.0f, -sy);
+    }
+    const bool wantsMove = wishMove.x != 0.0f || wishMove.z != 0.0f;
+
+    // Ground state for THIS frame, from the position we are about to leave.
+    float groundY = -FLT_MAX;
+    glm::vec3 groundNormal(0.0f, 1.0f, 0.0f);
+    bool haveGround = false;
+    if (m_collisionWorld) {
+        const float probe[3] = { pos.x, pos.y, pos.z };
+        float n[3];
+        if (m_collisionWorld->GroundProbe(probe, 1.0f, groundY, n))
+            haveGround = true, groundNormal = glm::vec3(n[0], n[1], n[2]);
+    }
+    // Allow a small tolerance so we keep "ground" state while walking over
+    // tiny height changes before the snap fixes it below.
+    const bool wasGrounded = haveGround && (pos.y - groundY) < pc->groundSnapMax + 0.1f;
+
+    if (wantsMove) {
+        glm::vec3 dir = glm::normalize(wishMove);
+        // Follow the surface: project the move direction onto the ground
+        // plane when standing on a non-flat surface (slope walking).
+        if (wasGrounded && haveGround && groundNormal.y < 0.999f) {
+            const glm::vec3 flat = dir - groundNormal * glm::dot(dir, groundNormal);
+            const float len = glm::length(flat);
+            if (len > 1e-4f) dir = flat / len;
+        }
+        const float speed = pc->moveSpeed *
+            (m_input.IsDown(Button::Sprint) ? 2.0f : 1.0f);
+        pos += dir * (speed * dt);
+
+        // Face the movement direction (shortest-arc turn).
+        const float targetYaw = std::atan2(dir.x, dir.z);
+        float dyaw = targetYaw - pc->facingYaw;
+        while (dyaw >  3.14159265f) dyaw -= 6.28318531f;
+        while (dyaw < -3.14159265f) dyaw += 6.28318531f;
+        pc->facingYaw += dyaw * std::min(1.0f, pc->turnSpeed * dt);
+        pc->facingValid = true;
+        t->rotation.y = pc->facingYaw;
+    }
+    // Slope slide: steep surface pulls the character downhill regardless of
+    // input (spec: character should naturally slide down steep slopes).
+    p->sliding = false;
+    if (wasGrounded && haveGround && groundNormal.y < p->slopeSlideCos) {
+        p->sliding = true;
+        const glm::vec3 downhill = glm::normalize(
+            glm::vec3(groundNormal.x, 0.0f, groundNormal.z));
+        glm::vec3 slideVel = p->HorizontalVelocity();
+        slideVel += downhill * (p->slopeSlideAccel * dt);
+        // Clamp slide speed so long slopes stay controllable.
+        const float sv = glm::length(slideVel);
+        if (sv > 8.0f) slideVel *= 8.0f / sv;
+        pos += slideVel * dt;
+    }
+    // Air: keep existing horizontal momentum (no input control mid-air).
+
+    // --- 3. Stair climbing / step-up -----------------------------------------
+    // Cast the sphere forward at foot level; if a wall stops us but the box
+    // top is within stepHeight, lift the position over it (smoothed).
+    if (m_collisionWorld && (wantsMove || p->sliding)) {
+        const float in[3] = { pos.x, pos.y + pc->radius, pos.z };
+        float out[3], wallN[3];
+        if (m_collisionWorld->ResolveSphere(in, pc->radius, out, wallN)) {
+            const float pushX = out[0] - in[0], pushZ = out[2] - in[2];
+            const bool horizontalBlock = std::fabs(pushX) + std::fabs(pushZ) > 1e-4f &&
+                                         wallN[1] < 0.5f; // vertical-ish face
+            if (horizontalBlock) {
+                // Re-probe ground AT the pushed-back position: the down ray
+                // from just above the climb ceiling lands on the step surface
+                // if the obstacle is climbable.
+                Ray probe;
+                probe.origin[0] = out[0] - wallN[0] * pc->radius;
+                probe.origin[1] = pos.y + p->stepHeight + 0.1f;
+                probe.origin[2] = out[2] - wallN[2] * pc->radius;
+                probe.direction[0] = 0.0f; probe.direction[1] = -1.0f; probe.direction[2] = 0.0f;
+                RayHit hit;
+                if (m_collisionWorld->Raycast(probe, hit) &&
+                    hit.point[1] > pos.y + 0.05f &&               // actually a step up
+                    hit.point[1] - pos.y <= p->stepHeight) {      // within climb height
+                    // Smooth step: raise Y to the step top; the ground snap
+                    // below keeps the motion visually continuous.
+                    pos = glm::vec3(out[0] - wallN[0] * pc->radius * 0.9f,
+                                    hit.point[1] + 0.01f,
+                                    out[2] - wallN[2] * pc->radius * 0.9f);
+                } else {
+                    pos.x = out[0]; pos.z = out[2]; // plain wall push-out
+                }
+            } else {
+                pos.x = out[0]; pos.y = out[1] - pc->radius; pos.z = out[2];
+            }
         }
     }
 
-    // --- Wall collision: resolve the 0.5-radius sphere against level AABBs ---
+    // Integrate vertical motion (falls / jumps).
+    pos.y += p->velocity.y * dt;
+
+    // --- 4. Ground detection + landing ---------------------------------------
+    float newGroundY = -FLT_MAX;
+    glm::vec3 newNormal(0.0f, 1.0f, 0.0f);
+    bool groundedNow = false;
     if (m_collisionWorld) {
-        const float in[3]  = { pos.x, pos.y + pc->radius, pos.z };
-        float out[3];
-        if (m_collisionWorld->ResolveSphere(in, pc->radius, out))
-            pos = glm::vec3(out[0], pos.y, out[2]);
+        const float probe[3] = { pos.x, pos.y, pos.z };
+        float n[3];
+        if (m_collisionWorld->GroundProbe(probe, 0.6f, newGroundY, n)) {
+            newNormal = glm::vec3(n[0], n[1], n[2]);
+            const float snap = pc->groundSnapMax;
+            const float below = newGroundY - pos.y;
+            // Snap down small distances (walking down slopes/stairs) and
+            // land when the fall carried us into the surface.
+            if (below >= -snap && below <= snap && p->velocity.y <= 0.0f) {
+                groundedNow = true;
+            } else if (pos.y <= newGroundY) { // tunneled through this frame
+                groundedNow = true;
+            }
+        }
+    }
+    if (groundedNow) {
+        const float impact = -p->velocity.y;
+        pos.y = newGroundY; // stand exactly on the surface
+        if (!p->onGround && impact > p->fallDamageThreshold)
+            Logger::Warning("Jimmy landing: %.1f u/s (fall damage threshold %.1f)",
+                            impact, p->fallDamageThreshold);
+        p->velocity.y = 0.0f;
+        p->onGround = true;
+        p->groundNormalY = newNormal.y;
+        // Downhill continuation while sliding: keep the slide velocity.
+    } else {
+        p->onGround = false;
+        p->groundNormalY = 1.0f;
+    }
+
+    // --- 5. Wall slide --------------------------------------------------------
+    // Resolve the capsule sphere against level AABBs; project the horizontal
+    // velocity onto the wall tangent so momentum is preserved along walls.
+    if (m_collisionWorld) {
+        const float in[3] = { pos.x, pos.y + pc->radius, pos.z };
+        float out[3], wallN[3];
+        if (m_collisionWorld->ResolveSphere(in, pc->radius, out, wallN)) {
+            pos.x = out[0]; pos.z = out[2];
+            // Slide: remove the velocity component into the wall.
+            glm::vec3 n2 = glm::vec3(wallN[0], 0.0f, wallN[2]);
+            const float nlen = glm::length(n2);
+            if (nlen > 1e-4f) {
+                n2 /= nlen;
+                glm::vec3 hv = p->HorizontalVelocity();
+                const float into = glm::dot(hv, n2);
+                if (into < 0.0f) {
+                    hv -= n2 * into; // tangent projection = wall slide
+                    p->velocity.x = hv.x;
+                    p->velocity.z = hv.z;
+                }
+            }
+        }
     }
 
     t->position = pos;
+
+    // Track 17: walk cycle while input moves him (grounded), idle otherwise.
+    // Sprint could drive a faster walk later (clip speed scaling).
+    UpdateEntityAnimation(m_jimmyId, wantsMove && !p->sliding, dt);
 }
+
 
 // Track 15: 3rd-person follow camera. Desired position sits behind and above
 // Jimmy (offset (0, 1.5, -3) rotated into camera-yaw space so the orbit stays
@@ -648,6 +838,590 @@ void Engine::UpdateJimmyCamera(float dt) {
     m_camera.SetLookAt(to);
 }
 
+// Track 16: load character NIFs from World.img for NPC spawning. Any model
+// that is not Jimmy/vehicle/level-geometry and has enough vertices counts.
+// Character NIFs are model-space (feet near origin, standing on +Y), so no
+// world-transform baking is needed and the entity transform drives placement.
+size_t Engine::LoadNpcModels(const char* dir) {
+    DIR* dp = ::opendir(dir);
+    if (!dp) {
+        Logger::Info("NPC model dir not found (skipping): %s", dir);
+        return 0;
+    }
+    std::vector<std::string> names;
+    while (dirent* ent = ::readdir(dp)) {
+        std::string n = ent->d_name;
+        if (n.size() > 4 && n.substr(n.size() - 4) == ".nif")
+            names.push_back(n);
+    }
+    ::closedir(dp);
+    std::sort(names.begin(), names.end());
+
+    // Preferred, known-good humanoid prefixes first; then any CS_/character
+    // looking file, so model variety does not depend on one naming family.
+    // Exclusions: cutscene props, Jimmy, logos.
+    auto isCharacterName = [](const std::string& n) {
+        auto has = [&](const char* s) { return n.find(s) != std::string::npos; };
+        if (has("Jimmy") || has("JIMMY") || has("Jimmy")) return false;
+        if (has("Screen") || has("Pedistal") || has("Bike")) return false;
+        return has("CS_") || has("Girl") || has("BOY") || has("Boy") ||
+               has("Nerd") || has("Jock") || has("Greaser") || has("Prep") ||
+               has("Teacher") || has("TE_") || has("GN_") || has("R_Good") ||
+               has("Kid") || has("Ped") || has("Zoe") || has("Lola") ||
+               has("Mandy") || has("Pinky");
+    };
+
+    size_t loaded = 0, failed = 0;
+    // Cap the collection: the engine cycles models for variety, so ~16
+    // distinct bodies are plenty and keep startup fast (the name filter
+    // below matches 100+ CS_* cutscene models).
+    constexpr size_t kMaxNpcModels = 16;
+    for (const std::string& name : names) {
+        if (loaded >= kMaxNpcModels) break;
+        if (!isCharacterName(name)) continue;
+        const std::string path = std::string(dir) + "/" + name;
+        NifLoadResult nif = LoadNifFile(path);
+        if (!nif.ok || nif.totalVertices < 50) { if (!nif.ok) failed++; continue; }
+        Mesh mesh;
+        if (!MeshFromNif(nif, mesh)) { failed++; continue; }
+
+        // Indexed-vertex height -> normalize the body to 1.8u (same scheme
+        // as Jimmy so every NPC is a plausible humanoid scale).
+        float ylo =  FLT_MAX, yhi = -FLT_MAX;
+        for (uint32_t idx : mesh.indices) {
+            const MeshVertex& v = mesh.vertices[idx];
+            ylo = std::min(ylo, v.y); yhi = std::max(yhi, v.y);
+        }
+        if (yhi <= ylo) { failed++; continue; }
+        const float bodyScale = 1.8f / (yhi - ylo);
+
+        GpuMesh gpu = m_renderer->UploadMeshGpu(mesh);
+        if (!gpu.valid()) { failed++; continue; }
+
+        NpcModel model;
+        model.name = name;
+        model.gpu = gpu;
+        model.bodyScale = bodyScale;
+        model.sourcePath = path; // Track 17: for lazy rig creation
+        for (const MeshSubMesh& sub : mesh.subMeshes) {
+            WorldMesh::SubRange sr;
+            sr.indexOffset = sub.indexOffset;
+            sr.indexCount = sub.indexCount;
+            sr.texture = AcquireTexture(m_texDir.c_str(), sub.textureName);
+            model.subs.push_back(sr);
+        }
+        m_npcModels.push_back(std::move(model));
+        loaded++;
+    }
+    Logger::Info("NPC models: %zu loaded, %zu failed (from %zu scanned)",
+                 loaded, failed, names.size());
+    return loaded;
+}
+
+// Track 16: spawn NPCs scattered around `center`. Model selection cycles
+// through the loaded collection for variety; AI states are mixed so some
+// stand idle and others wander.
+void Engine::SpawnNpcs(const glm::vec3& center) {
+    if (m_npcModels.empty()) {
+        Logger::Warning("SpawnNpcs: no NPC models loaded, skipping spawn");
+        return;
+    }
+    // OPENBULLY_NPC_COUNT=<n> verification hook; default 18 (10-20 spec).
+    uint32_t count = 18;
+    if (const char* env = std::getenv("OPENBULLY_NPC_COUNT")) {
+        const int n = std::atoi(env);
+        if (n >= 0) count = uint32_t(n);
+    }
+
+    // Deterministic PRNG (xorshift) so the scatter is reproducible.
+    uint32_t rng = 0x1234ABCDu;
+    auto next = [&rng]() {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return rng;
+    };
+    auto unit = [&next]() { return float(next() % 10000u) / 10000.0f; }; // [0,1)
+
+    for (uint32_t i = 0; i < count; ++i) {
+        // Scatter on a ring + jitter around the anchor center: spreads the
+        // crowd across the level instead of piling them in one spot.
+        const float ang  = unit() * 6.2831853f;
+        const float dist = 4.0f + unit() * 16.0f;
+        glm::vec3 pos = center + glm::vec3(std::cos(ang) * dist, 0.0f,
+                                           std::sin(ang) * dist);
+
+        // Ground snap: cast down from just above the center's surface level
+        // (cast from very high would pierce through hollow geometry, e.g. a
+        // rooftop, and land NPCs on interior floors below the play space).
+        // A miss keeps the center height (never drop NPCs through the world).
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = pos.x; down.origin[1] = pos.y + 10.0f; down.origin[2] = pos.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+        }
+
+        // Track 17: lazily build the model's skinned rig on first use (all
+        // instances share it; static NpcModel mesh stays as fallback).
+        NpcModel& model = m_npcModels[i % m_npcModels.size()];
+        uint32_t rigIndex = model.rigIndex;
+        if (rigIndex == 0xFFFFFFFF && !m_sharedClips.empty() &&
+            !model.sourcePath.empty()) {
+            const NifLoadResult nif = LoadNifFile(model.sourcePath);
+            if (nif.ok) rigIndex = CreateRig(nif);
+            model.rigIndex = rigIndex; // cached even on failure (no retry)
+            if (rigIndex != 0xFFFFFFFF)
+                Logger::Info("NPC '%s': skinned rig %u (%d bones)",
+                             model.name.c_str(), rigIndex,
+                             m_animRigs[rigIndex].controller.BoneCount());
+        }
+        // Track 17: per-instance controller clone so each NPC animates
+        // independently (GPU mesh + clips are shared with the model's rig).
+        if (rigIndex != 0xFFFFFFFF) rigIndex = CloneRig(rigIndex);
+
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos;
+        t.scale = glm::vec3(model.bodyScale);
+        t.rotation.y = unit() * 6.2831853f;
+        m_entities.AddTransform(e, t);
+
+        MeshComponent mc;
+        mc.isBox = false;
+        mc.isNpc = true;
+        mc.npcModelIndex = i % m_npcModels.size();
+        m_entities.AddMesh(e, mc);
+
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+        cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+        cc.layerMask = 2u; // dynamic layer
+        m_entities.AddCollision(e, cc);
+
+        PhysicsComponent pc;
+        pc.gravity = -9.8f;
+        m_entities.AddPhysics(e, pc);
+
+        AIComponent ai;
+        ai.homePos = pos;
+        ai.facingYaw = t.rotation.y;
+        // Mix: ~1/3 linger idle, 2/3 head out after a short pause (targets
+        // are picked through the normal IDLE path so ground checks apply).
+        ai.state = (i % 3 == 0) ? AIState::Idle : AIState::Wander;
+        ai.timer = 0.2f + unit() * 2.8f;
+        ai.moveSpeed = 1.0f + unit() * 1.0f; // 1.0-2.0 u/s
+        ai.wanderRadius = 3.0f;              // stay close on uneven geometry
+        m_entities.AddAI(e, ai);
+
+        // Track 17: attach the animation state when the model has a rig;
+        // start idle so the crowd poses immediately.
+        if (rigIndex != 0xFFFFFFFF) {
+            AnimationComponent ac;
+            ac.rigIndex = rigIndex;
+            ac.playing = true;
+            ac.wasMoving = false;
+            m_entities.AddAnimation(e, ac);
+            AnimRig& rig = m_animRigs[rigIndex];
+            if (rig.idleClip >= 0) rig.controller.Play(rig.idleClip, true, 0.0f);
+        }
+
+        m_npcCount++;
+    }
+    Logger::Info("NPCs: %u spawned around (%.1f, %.1f, %.1f) from %zu models",
+                 m_npcCount, center.x, center.y, center.z, m_npcModels.size());
+}
+
+// Track 16: NPC AI update. States:
+//   IDLE        stand still; timer expires -> pick a WANDER target.
+//   WANDER      walk toward targetPos (ground raycast + wall resolve like
+//               Jimmy); arrive -> IDLE for a random duration.
+//   FACE_PLAYER player within faceRadius: turn to face them; movement
+//               pauses while they are close.
+void Engine::UpdateNpcs(float dt) {
+    if (dt <= 0.0f) return;
+
+    // Player position for FACE_PLAYER (Jimmy's feet transform).
+    glm::vec3 playerPos(0.0f);
+    bool havePlayer = false;
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+            playerPos = jt->position;
+            havePlayer = true;
+        }
+    }
+
+    auto shortestArc = [](float from, float to) {
+        float d = to - from;
+        while (d >  3.14159265f) d -= 6.28318531f;
+        while (d < -3.14159265f) d += 6.28318531f;
+        return d;
+    };
+
+    m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
+        (void)id;
+        const glm::vec3 pos = t.position;
+        bool moving = false; // Track 17: drive the walk/idle state machine
+
+        // Player proximity overrides wandering: pause and face the player.
+        if (havePlayer) {
+            const glm::vec3 toP = playerPos - pos;
+            const float distP = glm::length(glm::vec3(toP.x, 0.0f, toP.z));
+            if (distP < ai.faceRadius) {
+                const float targetYaw = std::atan2(toP.x, toP.z);
+                ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                                std::min(1.0f, ai.turnSpeed * dt);
+                t.rotation.y = ai.facingYaw;
+                if (ai.state == AIState::Wander) ai.hasTarget = false; // re-decide later
+                ai.state = AIState::FacePlayer;
+                UpdateEntityAnimation(id, false, dt); // Track 17: idle in place
+                return;
+            }
+        }
+
+        switch (ai.state) {
+        case AIState::Idle:
+            ai.timer -= dt;
+            if (ai.timer <= 0.0f) {
+                // Pick a random nearby point around home.
+                const float ang  = float(nextRandom01()) * 6.2831853f;
+                const float dist = 1.5f + float(nextRandom01()) * ai.wanderRadius;
+                ai.targetPos = ai.homePos +
+                    glm::vec3(std::cos(ang) * dist, 0.0f, std::sin(ang) * dist);
+                // Snap the target onto the ground so arrival checks work.
+                // If the ray misses (walked off a rooftop edge), cancel the
+                // trip: re-target around home from the CURRENT position so
+                // NPCs never walk into thin air.
+                bool snapped = false;
+                if (m_collisionWorld) {
+                    Ray down;
+                    down.origin[0] = ai.targetPos.x;
+                    // Cast from just above the NPC's CURRENT plane: a +500
+                    // ray pierces hollow buildings and returns a different
+                    // roof's top face, rejecting every target.
+                    down.origin[1] = pos.y + 10.0f;
+                    down.origin[2] = ai.targetPos.z;
+                    down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+                    RayHit hit;
+                    if (m_collisionWorld->Raycast(down, hit)) {
+                        // Reject targets on a different surface level (>3u
+                        // away): NPCs stay on the surface they spawned on.
+                        if (std::fabs(hit.point[1] - pos.y) < 3.0f) {
+                            ai.targetPos.y = hit.point[1];
+                            snapped = true;
+                        }
+                    } else {
+                        // No geometry below the target: walk it level (the
+                        // wander move-path handles misses the same way and
+                        // the wall sphere keeps the NPC out of solids).
+                        ai.targetPos.y = pos.y;
+                        snapped = true;
+                    }
+                }
+                if (!snapped) {
+                    // DEBUG(Track 16): log why the first target was rejected.
+                    static int dbgLogged = 0;
+                    if (dbgLogged < 3) {
+                        dbgLogged++;
+                        Ray down;
+                        down.origin[0] = ai.targetPos.x;
+                        down.origin[1] = pos.y + 10.0f;
+                        down.origin[2] = ai.targetPos.z;
+                        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+                        RayHit hit;
+                        const bool hitOk = m_collisionWorld && m_collisionWorld->Raycast(down, hit);
+                        Logger::Info("NPC wander-reject: pos.y=%.2f target=(%.1f,%.1f) hit=%s hitY=%.2f",
+                                     pos.y, ai.targetPos.x, ai.targetPos.z,
+                                     hitOk ? "y" : "n", hitOk ? hit.point[1] : 0.0f);
+                    }
+                    ai.hasTarget = false; ai.timer = 1.0f; break;
+                }
+                ai.hasTarget = true;
+                ai.state = AIState::Wander;
+            }
+            break;
+
+        case AIState::Wander: {
+            if (!ai.hasTarget) { ai.state = AIState::Idle; ai.timer = 1.0f; break; }
+            glm::vec3 to = ai.targetPos - pos;
+            to.y = 0.0f;
+            const float dist = glm::length(to);
+            if (dist < 0.25f) {
+                ai.state = AIState::Idle;
+                ai.timer = ai.idleTimeMin + float(nextRandom01()) *
+                           (ai.idleTimeMax - ai.idleTimeMin);
+                break;
+            }
+            glm::vec3 dir = to / dist;
+            glm::vec3 newPos = pos + dir * (ai.moveSpeed * dt);
+
+            // Ground: raycast down from above, clamp feet to the surface.
+            // A missed ray or a big level jump (walk-off edge) aborts the trip.
+            float groundY = pos.y;
+            bool walkable = false;
+            if (m_collisionWorld) {
+                Ray down;
+                down.origin[0] = newPos.x; down.origin[1] = newPos.y + 4.0f; down.origin[2] = newPos.z;
+                down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+                RayHit hit;
+                if (m_collisionWorld->Raycast(down, hit)) {
+                    if (std::fabs(hit.point[1] - pos.y) < 3.0f) {
+                        groundY = hit.point[1];
+                        walkable = true;
+                    }
+                } else {
+                    groundY = pos.y;      // nothing below: keep walking level
+                    walkable = true;
+                }
+                // Wall resolve: 0.5-radius sphere like the player.
+                const float in[3] = { newPos.x, newPos.y + 0.5f, newPos.z };
+                float out[3];
+                if (m_collisionWorld->ResolveSphere(in, 0.5f, out))
+                    newPos = glm::vec3(out[0], newPos.y, out[2]);
+            } else {
+                walkable = true; // no collision world: free movement
+            }
+            if (!walkable) { // walk-off rejected: idle here, pick again later
+                ai.state = AIState::Idle;
+                ai.timer = 1.0f;
+                break;
+            }
+            newPos.y = groundY;
+            t.position = newPos;
+            moving = true; // Track 17: NPC is walking
+
+            // Face the walk direction (smooth shortest-arc turn).
+            const float targetYaw = std::atan2(dir.x, dir.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, targetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
+            break;
+        }
+
+        case AIState::FacePlayer:
+            // Held only while the player is inside faceRadius (checked above
+            // at the top of the loop); falling through here means the player
+            // left the radius -> resume idling.
+            ai.state = AIState::Idle;
+            ai.timer = 0.5f;
+            break;
+        }
+
+        // Track 17: play walk while moving, idle otherwise (crossfaded).
+        UpdateEntityAnimation(id, moving, dt);
+    });
+}
+
+// --- Track 17: skeletal animation ---------------------------------------------
+
+// Loads Anim/C_Player.agr (the player/ped animation group; contains the walk
+// cycles and idles) and builds the shared character rig from a skinned NIF.
+// Walk/idle clip picks: the first decoded cycling animation that travels
+// (walk) and the first that does not (idle), so the choice is data-driven
+// rather than name-matched (group contents verified in docs/agr.md).
+bool Engine::LoadAnimationRig() {
+    if (!m_animRigs.empty()) return true; // already loaded
+
+    // Scan every .agr in the extracted animation directory. C_Player.agr
+    // carries the idles; the F_* groups carry the walk cycles (their ARROW
+    // position tracks travel 1.0-3.5 m per cycle, docs/agr.md).
+    // All ped clips are type-1002 with 36 bones.
+    auto loadDir = [this](const char* dir) -> size_t {
+        DIR* dp = ::opendir(dir);
+        if (!dp) return 0;
+        std::vector<std::string> names;
+        while (dirent* ent = ::readdir(dp)) {
+            std::string n = ent->d_name;
+            if (n.size() > 4 && n.substr(n.size() - 4) == ".agr")
+                names.push_back(n);
+        }
+        ::closedir(dp);
+        std::sort(names.begin(), names.end());
+        size_t total = 0;
+        for (const std::string& n : names) {
+            const std::string path = std::string(dir) + "/" + n;
+            FILE* f = std::fopen(path.c_str(), "rb");
+            if (!f) continue;
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (sz <= 0) { std::fclose(f); continue; }
+            std::vector<uint8_t> buf(static_cast<size_t>(sz));
+            const size_t got = ::fread(buf.data(), 1, buf.size(), f);
+            std::fclose(f);
+            if (got != buf.size()) continue;
+            std::vector<AgrAnim> anims;
+            if (!AgrLoadGroup(buf.data(), buf.size(), anims)) continue;
+            size_t decoded = 0;
+            for (AgrAnim& a : anims) if (a.decoded) decoded++;
+            Logger::Info("AGR: %s -> %zu/%zu animations decoded",
+                         n.c_str(), decoded, anims.size());
+            total += decoded;
+            for (AgrAnim& a : anims)
+                if (a.decoded) m_sharedClips.push_back(std::move(a));
+        }
+        return total;
+    };
+    size_t loaded = loadDir("data/extracted/anim");
+    if (loaded == 0) loaded = loadDir("../data/extracted/anim");
+    if (m_sharedClips.empty()) {
+        Logger::Warning("LoadAnimationRig: no .agr animations decoded; "
+                        "characters will be static");
+        return false;
+    }
+    Logger::Info("AGR: %zu animations total", loaded);
+
+    // Pick walk + idle from the merged clip list. Walk: an ARROW (ground
+    // travel) track of >0.5 m per cycle; prefer the travel closest to a
+    // natural step (1.0-1.6 m). Idle: an in-place clip longer than 1 s.
+    int walkIdx = -1, idleIdx = -1;
+    float walkTravel = 0.0f;
+    for (size_t i = 0; i < m_sharedClips.size(); i++) {
+        const AgrAnim& a = m_sharedClips[i];
+        if (a.duration <= 0.05f) continue;
+        float travel[3];
+        AgrTravel(a, travel);
+        const float tlen = std::sqrt(travel[0]*travel[0] + travel[1]*travel[1] +
+                                     travel[2]*travel[2]);
+        if (tlen > 0.5f) {
+            const float score = std::fabs(tlen - 1.4f); // ~1.4 m per two steps
+            if (walkIdx < 0) { walkIdx = int(i); walkTravel = tlen; m_walkScore = score; }
+            else if (score < m_walkScore) { walkIdx = int(i); walkTravel = tlen; m_walkScore = score; }
+        } else if (a.duration > 1.0f && idleIdx < 0) {
+            idleIdx = int(i); // first long in-place cycle
+        }
+    }
+    if (walkIdx < 0 && idleIdx < 0) {
+        Logger::Warning("LoadAnimationRig: no usable walk/idle clip found");
+        return false;
+    }
+    Logger::Info("AGR clips: walk=#%d (travel %.2fm) idle=#%d",
+                 walkIdx, walkTravel,
+                 idleIdx);
+    m_walkTravelM = walkTravel;
+
+    // Shared clip data for rigs: both controllers reference the same decoded
+    // animations (already moved into m_sharedClips by loadDir above).
+    m_walkClipIndex = walkIdx;
+    m_idleClipIndex = idleIdx;
+    return true;
+}
+
+// Builds one rig from a skinned NIF: skeleton + skinned GPU mesh + clips.
+// Returns the rig pool index, or 0xFFFFFFFF on failure.
+uint32_t Engine::CreateRig(const NifLoadResult& nif) {
+    // Skeleton root: the first valid skin's root.
+    uint32_t skeletonRoot = 0xFFFFFFFF;
+    for (const NifGeometryData& geo : nif.geometries) {
+        if (geo.skinIndex != 0xFFFFFFFF && geo.skinIndex < nif.skins.size() &&
+            nif.skins[geo.skinIndex].skeletonRoot != 0xFFFFFFFF) {
+            skeletonRoot = nif.skins[geo.skinIndex].skeletonRoot;
+            break;
+        }
+    }
+    if (skeletonRoot == 0xFFFFFFFF) return 0xFFFFFFFF;
+
+    AnimRig rig;
+    if (!rig.controller.BuildSkeleton(nif, skeletonRoot)) return 0xFFFFFFFF;
+    if (m_walkClipIndex >= 0) {
+        rig.walkClip = rig.controller.AddClip("walk", m_sharedClips[size_t(m_walkClipIndex)]);
+    }
+    if (m_idleClipIndex >= 0) {
+        rig.idleClip = rig.controller.AddClip("idle", m_sharedClips[size_t(m_idleClipIndex)]);
+    }
+
+    SkinnedMesh skin;
+    std::vector<std::vector<float>> shapeBinds;
+    if (!SkinnedMeshFromNif(nif, skin, &shapeBinds)) return 0xFFFFFFFF;
+    // Register one bind palette per skinned shape (draw order matches
+    // skin.subMeshes' shapeIndex; see Renderer::DrawMesh3DSubSkinned).
+    for (const std::vector<float>& packed : shapeBinds)
+        rig.controller.AddShapeBindPacked(packed.data());
+    rig.gpu = m_renderer->UploadSkinnedMeshGpu(skin);
+    if (!rig.gpu.valid()) return 0xFFFFFFFF;
+    for (const MeshSubMesh& sub : skin.subMeshes) {
+        WorldMesh::SubRange sr;
+        sr.indexOffset = sub.indexOffset;
+        sr.indexCount = sub.indexCount;
+        sr.texture = AcquireTexture(m_texDir.c_str(), sub.textureName);
+        sr.shapeIndex = sub.shapeIndex; // Track 17: per-shape palette pick
+        rig.subs.push_back(sr);
+    }
+
+    // Body scale: normalize to 1.8u like the static path (NIF bind pose is
+    // already standing; indexed Y extent maps to PlayerController::height).
+    float ylo = FLT_MAX, yhi = -FLT_MAX;
+    for (uint32_t idx : skin.indices) {
+        const SkinnedMeshVertex& v = skin.vertices[idx];
+        ylo = std::min(ylo, v.y); yhi = std::max(yhi, v.y);
+    }
+    rig.bodyScale = (yhi > ylo) ? 1.8f / (yhi - ylo) : 1.0f;
+
+    m_animRigs.push_back(std::move(rig));
+    return uint32_t(m_animRigs.size() - 1);
+}
+
+// Track 17: one controller per animated entity. Clones the source rig's
+// controller (skeleton + clips) and SHARES its GPU mesh + sub-ranges, so
+// each entity animates independently without re-uploading geometry.
+uint32_t Engine::CloneRig(uint32_t sourceRigIndex) {
+    if (sourceRigIndex >= m_animRigs.size()) return 0xFFFFFFFF;
+    AnimRig clone;
+    clone.controller = m_animRigs[sourceRigIndex].controller; // deep copy
+    clone.gpu = m_animRigs[sourceRigIndex].gpu;               // shared handle
+    clone.subs = m_animRigs[sourceRigIndex].subs;
+    clone.bodyScale = m_animRigs[sourceRigIndex].bodyScale;
+    clone.walkClip = m_animRigs[sourceRigIndex].walkClip;
+    clone.idleClip = m_animRigs[sourceRigIndex].idleClip;
+    m_animRigs.push_back(std::move(clone));
+    return uint32_t(m_animRigs.size() - 1);
+}
+
+// Per-entity animation state machine: walk when moving, idle when stopped.
+// Called from UpdateJimmy / UpdateNpcs with the entity's movement flag.
+// The walk clip plays at its authored ground speed (travel per cycle over
+// duration); clip playback scales with the entity's actual speed so feet
+// stay near the ground (no skating).
+void Engine::UpdateEntityAnimation(EntityID id, bool moving, float dt) {
+    AnimationComponent* ac = m_entities.GetAnimation(id);
+    if (!ac || ac->rigIndex == 0xFFFFFFFF || ac->rigIndex >= m_animRigs.size())
+        return;
+    AnimRig& rig = m_animRigs[ac->rigIndex];
+    AnimationController& ctrl = rig.controller;
+
+    if (moving != ac->wasMoving) {
+        if (moving && rig.walkClip >= 0) {
+            ctrl.Play(rig.walkClip, true, 0.2f);
+            ac->playing = true;
+        } else if (!moving && rig.idleClip >= 0) {
+            ctrl.Play(rig.idleClip, true, 0.2f);
+            ac->playing = true;
+        }
+        ac->wasMoving = moving;
+    }
+    // Speed-match the walk cycle: playback rate = actual speed / authored
+    // ground speed (m per cycle over the cycle duration).
+    if (moving && rig.walkClip >= 0 && m_walkTravelM > 0.01f) {
+        const PhysicsComponent* p = m_entities.GetPhysics(id);
+        float speed = p ? glm::length(p->HorizontalVelocity()) : 0.0f;
+        const float base = m_walkTravelM /
+            std::max(0.05f, m_sharedClips[size_t(m_walkClipIndex)].duration);
+        if (AnimClip* clip = ctrl.ClipAt(rig.walkClip))
+            clip->speed = std::clamp(speed / base, 0.25f, 4.0f);
+    }
+    if (ac->playing) ctrl.Update(dt);
+}
+
+// Advances every attached controller (entities without a state change this
+// frame still need their loops advanced).
+void Engine::UpdateAnimations(float dt) {
+    m_entities.ForEach([&](EntityID id, Transform&, const EntityManager::EntityRecord&) {
+        AnimationComponent* ac = m_entities.GetAnimation(id);
+        if (!ac || ac->rigIndex == 0xFFFFFFFF || ac->rigIndex >= m_animRigs.size())
+            return;
+        m_animRigs[ac->rigIndex].controller.Update(dt);
+    });
+}
+
 // Track 14: integrate entity physics. Only entities with a PhysicsComponent
 // move; the world floor (y = 0) grounds them, setting onGround and zeroing
 // the vertical velocity.
@@ -657,6 +1431,9 @@ void Engine::UpdateEntities(float dt) {
         // Track 15: Jimmy integrates his own physics (raycast ground + wall
         // resolve); the y=0 world-floor clamp below would fight it.
         if (m_entities.GetPlayer(id)) return;
+        // Track 16: NPCs are moved by the AI walk code (raycast ground snap
+        // + wall resolve); generic gravity would drag them through floors.
+        if (m_entities.GetAI(id)) return;
         if (p.gravity == 0.0f) return;
         p.velocity.y += p.gravity * dt;
         t.position += p.velocity * dt;
@@ -683,11 +1460,32 @@ void Engine::BuildEntityRenderList() {
         if (!mc) return;
         EntityRender er;
         er.model = mc->isBox ? t.Matrix() : glm::mat4(1.0f);
+        // Track 17: skinned entity — draw the rig's GPU mesh with its
+        // controller's bone palette.
+        if (const AnimationComponent* ac = m_entities.GetAnimation(id)) {
+            if (ac->rigIndex != 0xFFFFFFFF && ac->rigIndex < m_animRigs.size()) {
+                const AnimRig& rig = m_animRigs[ac->rigIndex];
+                if (rig.gpu.valid()) {
+                    er.model = t.Matrix();
+                    er.gpu = &rig.gpu;
+                    er.subs = rig.subs;
+                    er.rigIndex = ac->rigIndex;
+                    m_entityRender.push_back(std::move(er));
+                    return;
+                }
+            }
+        }
         if (mc->isJimmy) {
             if (!m_jimmyMeshValid) return;
             er.model = t.Matrix(); // player mesh is model-space: use transform
             er.gpu = &m_jimmyMesh;
             er.subs = m_jimmySubs;
+        } else if (mc->isNpc) {
+            if (mc->npcModelIndex >= m_npcModels.size()) return;
+            const NpcModel& model = m_npcModels[mc->npcModelIndex];
+            er.model = t.Matrix(); // NPC meshes are model-space
+            er.gpu  = &model.gpu;
+            er.subs = model.subs;
         } else if (mc->isBox) {
             if (!m_testBoxValid) return;
             er.gpu = &m_testBox;
@@ -892,6 +1690,14 @@ bool Engine::Init(const Window& window) {
     }
     RegisterLevelEntities();
 
+    // Track 17: decode the ped animation group (C_Player.agr) once, before
+    // any skinned rig is built; SpawnJimmy/SpawnNpcs attach
+    // AnimationComponents referencing it when clips are available.
+    LoadAnimationRig();
+    if (!m_sharedClips.empty())
+        Logger::Info("Animation rig ready: walk=%d idle=%d (%zu clips)",
+                     m_walkClipIndex, m_idleClipIndex, m_sharedClips.size());
+
     // Track 15: Jimmy, the player character. OPENBULLY_NO_JIMMY=1 skips the
     // spawn (Phase 3 free-camera mode preserved for regression).
     const bool noJimmy = std::getenv("OPENBULLY_NO_JIMMY") != nullptr;
@@ -928,6 +1734,25 @@ bool Engine::Init(const Window& window) {
     }
     if (!m_jimmyActive && !noJimmy)
         Logger::Info("Jimmy inactive: free camera stays in control");
+
+    // Track 16: NPC models + crowd spawn. Center on Jimmy's raycast-verified
+    // surface position when available so NPCs share the visible play space
+    // (the anchor bounds center can sit mid-air or inside hollow geometry).
+    {
+        size_t npcLoaded = LoadNpcModels("data/extracted/world");
+        if (npcLoaded == 0)
+            npcLoaded = LoadNpcModels("../data/extracted/world");
+        glm::vec3 npcCenter(0.0f, 0.0f, 0.0f);
+        if (m_jimmySpawn != glm::vec3(0.0f)) npcCenter = m_jimmySpawn;
+        else if (!m_worldMeshes.empty()) {
+            const WorldMesh* anchor = &m_worldMeshes.front();
+            for (const WorldMesh& wm : m_worldMeshes)
+                if (wm.gpu.vertexCount > anchor->gpu.vertexCount) anchor = &wm;
+            npcCenter = 0.5f * (glm::make_vec3(anchor->boundsMin) +
+                                glm::make_vec3(anchor->boundsMax));
+        }
+        SpawnNpcs(npcCenter);
+    }
 
     if (!m_worldMeshes.empty()) {
         const WorldMesh* anchor = &m_worldMeshes.front();
@@ -979,12 +1804,18 @@ void Engine::Update() {
     static const bool s_jimmyDemo = std::getenv("OPENBULLY_JIMMY_DEMO") != nullptr;
     if (s_jimmyDemo && m_jimmyActive) {
         const double t = m_time;
-        // Phase (seconds): 0-0.5 W (short walk), 0.5-1.0 S (walk back),
-        // 1.0-1.5 A (strafe), then idle — short bursts keep Jimmy on the
-        // small demo platforms.
-        m_input.SetButton(Button::Forward, t < 0.5);
-        m_input.SetButton(Button::Back,    t >= 0.5 && t < 1.0);
-        m_input.SetButton(Button::Left,    t >= 1.0 && t < 1.5);
+        // Track 18 movement verification: ~120 s of varied phases so the
+        // controller proves it never gets stuck. Pattern repeats every 15 s:
+        // forward walk, sprint, strafes, a slow camera pan, backpedal, idle.
+        const double phase = std::fmod(t, 15.0);
+        m_input.SetButton(Button::Forward, phase < 4.0);
+        m_input.SetButton(Button::Sprint,  phase >= 1.5 && phase < 4.0);
+        m_input.SetButton(Button::Back,    phase >= 4.0 && phase < 6.0);
+        m_input.SetButton(Button::Left,    phase >= 6.0 && phase < 8.0);
+        m_input.SetButton(Button::Right,   phase >= 8.0 && phase < 10.0);
+        // Slow orbit during the last stretch so the camera never clips a
+        // wall the same way twice.
+        m_input.SetMouseDelta(phase >= 10.0 && phase < 14.0 ? 2 : 0, 0);
     }
 
     m_camera.Update(float(deltaTime), m_input, /*ignoreMove=*/m_jimmyActive);
@@ -994,6 +1825,8 @@ void Engine::Update() {
 
     // Track 15: Jimmy input/physics, then the 3rd-person follow camera.
     UpdateJimmy(float(deltaTime));
+    // Track 16: NPC AI (after physics so ground/wall state is settled).
+    UpdateNpcs(float(deltaTime));
     UpdateJimmyCamera(float(deltaTime));
 
     // Track 13: camera collision (free camera only; the 3rd-person follow
@@ -1051,6 +1884,27 @@ void Engine::LogFrameTiming() {
                          int(m_entities.GetPhysics(m_jimmyId) &&
                              m_entities.GetPhysics(m_jimmyId)->onGround));
     }
+    // Track 16: NPC AI census (idle/wander/face counts + one wander sample).
+    {
+        unsigned idle = 0, wander = 0, face = 0; bool first = true;
+        char sample[128] = {};
+        m_entities.ForEachAI([&](EntityID, const Transform& t, const AIComponent& ai) {
+            switch (ai.state) {
+            case AIState::Idle:        idle++;   break;
+            case AIState::Wander:      wander++; break;
+            case AIState::FacePlayer:  face++;   break;
+            }
+            if (first && ai.state == AIState::Wander) {
+                std::snprintf(sample, sizeof(sample),
+                              "sample: (%.1f, %.1f, %.1f) -> target (%.1f, %.1f)",
+                              t.position.x, t.position.y, t.position.z,
+                              ai.targetPos.x, ai.targetPos.z);
+                first = false;
+            }
+        });
+        Logger::Info("NPC AI: idle=%u wander=%u face=%u %s",
+                     idle, wander, face, sample);
+    }
     m_framesAccum = 0;
     m_frameMsAccum = 0.0;
 }
@@ -1091,6 +1945,27 @@ void Engine::Render() {
         BuildEntityRenderList();
         for (const EntityRender& er : m_entityRender) {
             const glm::mat4 mvpEntity = proj * view * er.model;
+            // Track 17: skinned draw — pack the palette per submesh (each
+            // skinned shape has its own bind list; rigid shapes use the
+            // bind-pose identity palette).
+            if (er.rigIndex != 0xFFFFFFFF && er.rigIndex < m_animRigs.size()) {
+                const AnimRig& rig = m_animRigs[er.rigIndex];
+                const AnimationController& ctrl = rig.controller;
+                std::vector<glm::mat4> palette;
+                for (const WorldMesh::SubRange& sr : er.subs) {
+                    ctrl.ShapePalette(sr.shapeIndex >= 0
+                                          ? size_t(sr.shapeIndex) : SIZE_MAX,
+                                      palette);
+                    m_renderer->BindTexture(sr.texture);
+                    m_renderer->DrawMesh3DSubSkinned(
+                        *er.gpu, sr.indexOffset, sr.indexCount,
+                        glm::value_ptr(mvpEntity),
+                        palette.empty() ? nullptr
+                                        : glm::value_ptr(palette.front()),
+                        uint32_t(palette.size()));
+                }
+                continue;
+            }
             if (er.subs.empty()) {
                 m_renderer->DrawMesh3D(*er.gpu, glm::value_ptr(mvpEntity));
                 continue;
@@ -1166,9 +2041,33 @@ void Engine::Render() {
     m_renderer->Frame(); // present (VSync via BGFX_RESET_VSYNC)
 
     // One-shot verification capture (see OPENBULLY_SHOT in Init).
-    if (!m_screenshotName.empty() && !m_screenshotPending && m_time >= 1.0) {
-        m_screenshotPending = true;
-        m_renderer->RequestScreenshot(m_screenshotName.c_str());
+    // OPENBULLY_SHOT_DELAY=<sec>: delay the capture so later-scene shots
+    // (e.g. NPC wander movement) can be taken after loading settles.
+    // OPENBULLY_SHOT_EVERY=<sec>: recurring captures "<name>_N.tga" (Track 17
+    // animation proof: consecutive frames differ when bones animate).
+    float shotDelay = 1.0f;
+    if (const char* d = std::getenv("OPENBULLY_SHOT_DELAY"))
+        shotDelay = float(std::atof(d));
+    static float s_every = -1.0f;
+    if (s_every < 0.0f) {
+        s_every = 0.0f;
+        if (const char* e = std::getenv("OPENBULLY_SHOT_EVERY"))
+            s_every = float(std::atof(e));
+    }
+    if (!m_screenshotName.empty() && m_time >= double(shotDelay)) {
+        if (s_every > 0.0f) {
+            static double s_lastShot = -1e9;
+            if (m_time - s_lastShot >= double(s_every)) {
+                s_lastShot = m_time;
+                static int s_shotIndex = 0;
+                char seq[512];
+                std::snprintf(seq, sizeof(seq), "%s_%d", m_screenshotName.c_str(), s_shotIndex++);
+                m_renderer->RequestScreenshot(seq);
+            }
+        } else if (!m_screenshotPending) {
+            m_screenshotPending = true;
+            m_renderer->RequestScreenshot(m_screenshotName.c_str());
+        }
     }
     ++m_frameCount;
 }

@@ -2,8 +2,9 @@
 //
 //   nif_test <file.nif> [<file.nif> ...]
 //
-// Loads each file, prints vertex/triangle counts, and verifies all indices
-// are in range. Exit code 0 = all files loaded, 1 = any failure.
+// Loads each file, prints vertex/triangle counts and the first vertices,
+// and verifies all triangle indices are in range. Exit code 0 = every file
+// loaded; 1 = at least one failure (each file is still attempted).
 
 #include "engine/formats/nif_loader.h"
 #include "rendering/mesh.h"
@@ -38,9 +39,16 @@ int main(int argc, char** argv) {
         std::printf("     vertices %zu, triangles %zu\n",
                     nif.totalVertices, nif.totalTriangles);
         if (built) {
-            std::printf("     mesh: %zu verts, %zu indices, label '%s'\n",
+            std::printf("     mesh: %zu verts, %zu indices, %zu sub-meshes, label '%s'\n",
                         mesh.VertexCount(), mesh.indices.size(),
+                        mesh.subMeshes.size(),
                         mesh.name ? mesh.name : "");
+            // First 3 vertices for eyeball verification against NifSkope.
+            for (size_t i = 0; i < mesh.vertices.size() && i < 3; i++) {
+                const MeshVertex& v = mesh.vertices[i];
+                std::printf("       v[%zu] pos(%.4f, %.4f, %.4f) nrm(%.3f, %.3f, %.3f) uv(%.3f, %.3f)\n",
+                            i, v.x, v.y, v.z, v.nx, v.ny, v.nz, v.u, v.v);
+            }
         }
 
         // Index sanity: every index must be < vertex count of its geometry.

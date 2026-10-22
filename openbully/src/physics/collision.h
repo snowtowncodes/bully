@@ -70,6 +70,9 @@ struct Ray {
     bool IntersectsAABB(const AABB& box) const { float t; return IntersectsAABB(box, t); }
     // Slab method. `outT` receives the entry distance (>= 0).
     bool IntersectsAABB(const AABB& box, float& outT) const;
+    // Track 18: same, but also writes the face normal the ray entered through
+    // (unit axis vector, may be null when not needed).
+    bool IntersectsAABB(const AABB& box, float& outT, float outNormal[3]) const;
     bool IntersectsSphere(const Sphere& s) const { float t; return IntersectsSphere(s, t); }
     bool IntersectsSphere(const Sphere& s, float& outT) const;
 };
@@ -79,6 +82,7 @@ struct RayHit {
     uint32_t objectId = 0;
     float    t        = -1.0f;    // distance along the ray; negative = miss
     float    point[3] = { 0.0f, 0.0f, 0.0f };
+    float    normal[3] = { 0.0f, 1.0f, 0.0f }; // surface normal at the hit (Track 18)
 
     bool hit() const { return t >= 0.0f; }
 };
@@ -114,6 +118,20 @@ public:
     // the per-axis push. Returns true when a correction was applied.
     bool ResolveSphere(const float posIn[3], float radius,
                        float posOut[3], int maxIterations = 3) const;
+
+    // Track 18: same resolution, also returning the surface normal of the
+    // largest push-out (the face the sphere was ejected through) so callers
+    // can slide movement along walls. outNormal may be null.
+    bool ResolveSphere(const float posIn[3], float radius,
+                       float posOut[3], float outNormal[3],
+                       int maxIterations = 3) const;
+
+    // Track 18: ground probe. Casts a ray straight down from slightly above
+    // `pos` and returns the surface height + face normal. `probeHeight` is
+    // how far above the feet the ray starts (meshes can be hollow AABBs, so
+    // the ray must start outside any box the feet may touch).
+    bool GroundProbe(const float pos[3], float probeHeight,
+                     float& outGroundY, float outNormal[3]) const;
 
     // Debug/inspection.
     size_t ObjectCount() const { return m_objects.size(); }

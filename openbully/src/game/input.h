@@ -24,7 +24,7 @@ enum class Button : int {
     Up,           // Space (fly up / jump later)
     Down,         // LCtrl (fly down)
     Sprint,       // LShift (speed multiplier / dodge modifier, Track 25)
-    Mute,         // M (Track 21: toggle audio mute)
+    Mute,         // N (Track 21: toggle audio mute; M = minimap toggle, Track 37)
     Attack,       // Track 25: LMB (punch; stamina 10)
     Block,        // Track 25: RMB (hold to block; 50% damage reduction)
     Count
@@ -39,6 +39,9 @@ public:
 
     // True only on the frame Escape transitions to pressed.
     bool QuitRequested() const { return m_quitRequested; }
+    // Track 40: consumed on the frame an open quest journal swallows the ESC
+    // that would otherwise quit, so the latch doesn't carry into the next frame.
+    void ClearQuit() { m_quitRequested = false; }
 
     // Button held down this frame?
     bool IsDown(Button b) const { return m_down[int(b)]; }
@@ -55,6 +58,15 @@ public:
     // (OPENBULLY_CAM_DEMO flythrough; keeps Camera::Update the only consumer).
     void SetButton(Button b, bool down) { m_down[int(b)] = down; }
     void SetMouseDelta(int dx, int dy)  { m_mouseDX = dx; m_mouseDY = dy; }
+
+    // Track 44: raw-scancode injection for the minigame framework. The demo
+    // driver (OPENBULLY_MINIGAME_DEMO) latches letters/digits/SPACE for one
+    // frame after Poll(); WasKeyPressed reports the same up->down edge the
+    // keyboard would, and the next Poll resets the edge state.
+    void SetRawKey(SDL_Scancode sc, bool down) {
+        if (sc > SDL_SCANCODE_UNKNOWN && sc < SDL_NUM_SCANCODES)
+            m_rawDown[sc] = down;
+    }
 
     // Track 20: raw-scancode edge detection for debug keys (H/J/K HUD
     // testing) that are not worth a logical Button each. True only on the

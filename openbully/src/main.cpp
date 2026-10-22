@@ -49,9 +49,13 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             }
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
-                running = false;
-            }
+            // Track 40: the quest journal needs the wheel delta, and SDL
+            // PollEvent drains MOUSEWHEEL before Input::Poll can see it.
+            if (event.type == SDL_MOUSEWHEEL)
+                engine.OnMouseWheel(event.wheel.y);
+            // Track 40: ESC is not handled here - the engine consumes it to
+            // close the quest journal, and only surfaces QuitRequested() when
+            // no menu ate the press. Window close (SDL_QUIT) still exits.
         }
 
         engine.Update();

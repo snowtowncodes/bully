@@ -38,6 +38,9 @@ public:
     float GetYaw() const   { return m_yaw; }
     float GetPitch() const { return m_pitch; }
 
+    // Track 39: yaw-only override (demo aiming); keeps the current pitch.
+    void SetYawOnly(float yaw) { m_yaw = yaw; m_viewDirty = true; }
+
     // Re-aims yaw/pitch so the view direction points along `to` (a full
     // direction vector, e.g. focus - position). Used by the 3rd-person
     // follow camera (Track 15).

@@ -61,6 +61,7 @@ struct Objective {
 struct Mission {
     std::string          id;
     std::string          name;
+    std::string          description; // short blurb shown in the quest journal
     std::vector<Objective> objectives;
     size_t               currentObjective = 0;
     MissionState         state = MissionState::Inactive;
@@ -109,6 +110,10 @@ public:
     bool NotifyNpcDefeated(EntityID npc);
     // Force-completes a specific objective (script hooks).
     bool CompleteObjective(uint32_t missionIndex, size_t objectiveIndex);
+    // Activates an Inactive mission, resetting its objective cursor (script
+    // hooks / the OPENBULLY_JOURNAL_DEMO verification drive). Chained missions
+    // still activate through Update() when their prerequisite completes.
+    bool ActivateMission(uint32_t missionIndex);
 
     // --- accessors --------------------------------------------------------------
 

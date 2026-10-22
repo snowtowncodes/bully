@@ -14,6 +14,7 @@
 #include "game/input.h"
 #include "game/player.h"
 #include "game/weapon.h" // Track 26: WeaponType + WeaponData
+#include "game/classes.h" // Track 41: class system (ClassManager + ClassData)
 #include "../combat/combat.h" // Track 23: melee combat core
 #include "../mission/mission.h"
 #include "../dialogue/dialogue.h" // Track 30: DialogueManager
@@ -22,6 +23,7 @@
 #include "../vehicles/vehicle_physics.h" // Track 32: arcade vehicle physics
 #include "../vehicles/vehicle_feel.h"    // Track 33: handling feel (FeelState)
 #include "../weather/weather.h"            // Track 34: weather system
+#include "../game/tricks.h"               // Track 46: stunt tricks (scoring)
 #include "save_system.h" // Track 36: Save/Load system
 #include <cstdint>
 #include <memory>
@@ -87,6 +89,17 @@ public:
         return { (m_clockMinutes / 60) % 24, m_clockMinutes % 60 };
     }
 
+    // Track 40: forwards a mouse-wheel delta from main.cpp's event pump
+    // (SDL_PollEvent drains MOUSEWHEEL before Input::Poll can see it);
+    // UpdateQuestJournal consumes the accumulated value while the journal
+    // is open.
+    void OnMouseWheel(int y) { m_journalWheelDelta += y; }
+
+    // Track 41: class schedule overlay open (C key); modal like the journal.
+    bool IsScheduleOpen() const { return m_scheduleOpen; }
+    // Track 41: live class session (placeholder minigame) active.
+    bool IsClassSessionActive() const { return m_classSessionActive; }
+
 private:
     void LogFrameTiming();
     void RegisterLevelEntities();
@@ -124,16 +137,51 @@ private:
         glm::vec3 velocity{0.0f};
         float     life    = 3.0f;                    // seconds until despawn
         int       damage  = 0;                       // 0 = inert debris
+        // Track 39: owner (for AI attribution) + knockback impulse applied on
+        // an NPC hit; owner == m_jimmyId for slingshot rocks. bounces caps
+        // the vehicle-bounce lifetime so rocks can't jitter inside a hull.
+        EntityID  owner{};
+        float     knockback = 0.0f;
+        int       bounces   = 0;
     };
     bool LoadWeaponModels();
     void SpawnWeaponPickups(const glm::vec3& center);
     void UpdateWeapons(float dt);                    // pickups (E) + slot keys
     void WeaponTryAttack(PlayerController* pc);      // LMB with weapon equipped
-    void SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg);
+    void SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg,
+                         EntityID owner = EntityID{}, float knockback = 0.0f);
     void SpawnDebris(const glm::vec3& pos);          // break effect
     void UpdateProjectiles(float dt);
     void RenderWeaponInHand(const glm::mat4& view, const glm::mat4& proj);
     const WeaponModel* EquippedWeaponModel(const PlayerController* pc, int* slotOut = nullptr) const;
+
+    // Track 39: ranged combat. RMB with the slingshot equipped enters aim
+    // mode (crosshair, mouse look stays live); LMB fires toward the camera
+    // direction instead of the body facing; ammo is 20-rock boxes; auto +
+    // manual (R) reload; raycast flight with gravity, impact debris, NPC
+    // knockback, headshot bonus and vehicle bounce.
+    static constexpr int   kAmmoPerBox   = 20;    // rocks per ammo box pickup
+    static constexpr int   kAmmoCapacity = 30;    // inventory ammo cap
+    static constexpr int   kMaxProjectiles = 50;  // live projectile pool cap
+    static constexpr float kRockDamage    = 15.0f;
+    static constexpr float kRockKnockback = 3.0f;
+    // Track 39: the 3rd-person follow camera sits behind and above Jimmy,
+    // looking down at him, so a raw camera-aim direction would always fire
+    // into the ground. Clamp the aimed pitch to this band so rocks arc
+    // forward instead (yaw stays live; mouse look still steers left/right).
+    static constexpr float kAimPitchMin = -0.25f;
+    static constexpr float kAimPitchMax =  0.45f;
+    struct ImpactFx {
+        EntityID id{};              // box entity used as the debris particle
+        glm::vec3 velocity{0.0f};
+        float     life = 0.0f;
+    };
+    void SpawnImpactFx(const glm::vec3& pos);        // wall/ground hit puffs
+    void SpawnAmmoBoxes(const glm::vec3& center);    // 3 ammo pickups in world
+    void UpdateAmmoPickups(float dt);                // walk-over collection
+    void UpdateAimMode(float dt);                    // RMB aim toggle
+    bool IsAiming() const { return m_aiming; }
+    bool       m_aiming = false;                     // slingshot aim mode active
 
     // Track 17: skeletal animation. Loads Anim/C_Player.agr once into a
     // shared rig (skeleton + clips); attaches AnimationComponents to Jimmy
@@ -179,14 +227,22 @@ private:
     // result back into VehicleComponent + Transform (replacing the flat
     // speed-integration the mount update started with).
     void     UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
-                                         Transform* vt);
+                                          Transform* vt);
     void     UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
-                               float throttle, float brake, float steer); // Track 33
+                                float throttle, float brake, float steer); // Track 33
+    // Track 46: stunt trick scoring. Fed once per mounted frame from
+    // UpdateVehicleFeel: builds TrickInputs from the feel layer (wheelie/
+    // stoppie poses), the physics body (grounded/airborne), raw input edges
+    // (Space = bunny hop) and the crash path, runs StepTricks, and surfaces
+    // start/land/bank/bail/achievement events as logs, popups and stats.
+    void     UpdateTrickScoring(float dt, const FeelState& feel,
+                                const FeelOut& fo);
     VehiclePhysics m_vehicle;                    // physics body (mounted vehicle)
     bool     m_vehiclePhysSeeded = false;        // body synced from the entity
     float    m_vehicleAccum = 0.0f;              // fixed-step accumulator (60 Hz)
     glm::vec3 m_vehicleDemoCenter{0.0f};         // DEMO=2 orbit center (track 32)
     FeelState m_vehicleFeel;                     // Track 33: handling/wheelie/crash state
+    TrickSystem m_tricks;                        // Track 46: trick scoring/combos
 
     // Track 28: NPC reaction system. Combat and projectile damage funnel
     // through DamageNpc, which queues AIEvents; UpdateNpcs drains the queue
@@ -256,6 +312,59 @@ private:
     bool InitMissions();
     void RenderObjectiveMarker();
     void DriveMissionDemo(); // OPENBULLY_MISSION_DEMO scripted objective walk
+
+    // Track 40: quest journal overlay (J toggles, ESC/J closes, arrows/wheel
+    // scroll, click selects). Reads MissionManager state into a UI snapshot
+    // each frame and appends a rolling log when missions activate/complete.
+    void UpdateQuestJournal();
+    void DrawQuestJournal();
+    void AppendJournalLog(const std::string& line);
+    bool  m_journalOpen    = false;
+    int   m_journalSelected = 0;
+    float m_journalScrollPx = 0.0f;
+    int   m_journalWheelDelta = 0;   // consumed each frame while open
+    bool  m_journalLmbDown = false;  // left-click edge for select
+    std::vector<JournalMissionEntry> m_journalMissions; // UI snapshot (rebuilt)
+    std::vector<std::string> m_journalLog;              // rolling event feed
+    std::vector<uint8_t> m_missionStatePrev;            // per-mission last state
+    std::vector<size_t>  m_missionObjPrev;              // per-mission last obj idx
+
+    // Track 41: class system. Classes load from data/classes/classes.json
+    // (schedule + location + objectives + rewards). Prompt detection runs per
+    // frame against Jimmy's position and the game clock; E attends (deferred
+    // behind dialogue priority); the session plays a placeholder sweep/band
+    // minigame (Phase 12 replaces it); pass marks completion + applies
+    // rewards + journals the result. C opens the schedule overlay.
+    static constexpr float kClassSweepSpeed  = 0.55f;  // meter positions/sec
+    static constexpr float kClassBandWidth   = 0.22f;  // green zone length 0..1
+    static constexpr float kClassSessionFail = 45.0f;  // seconds before auto-fail
+    static constexpr int   kClassMaxCapBonus = 30;     // slingshot cap bonus cap
+    bool InitClasses();
+    void UpdateClasses(float dt);
+    void UpdateClassAttend();        // deferred E -> attend (dialogue priority)
+    void StartClassSession(const ClassData& c);
+    void EndClassSession(bool passed);
+    void ApplyClassRewards(const ClassData& c);
+    void DrawClassOverlays();        // prompt + schedule + session on view 10
+    int  SlingshotCapacity() const { return kAmmoCapacity + m_slingshotCapBonus; }
+    ClassManager m_classes;
+    bool  m_scheduleOpen       = false;
+    bool  m_classSessionActive = false;
+    int   m_classSessionIdx    = -1;   // manager index of the attended class
+    float m_sessionSweep       = 0.0f; // attention meter position 0..1
+    float m_sessionSweepDir    = 1.0f;
+    float m_sessionBandLo      = 0.40f;
+    float m_sessionBandHi      = 0.62f;
+    float m_sessionTime        = 0.0f;
+    int   m_sessionHits        = 0;
+    int   m_sessionMisses      = 0;
+    int   m_sessionResult      = 0;   // 0 in progress, 1 pass, 2 fail
+    float m_sessionResolveTimer = 0.0f; // banner dwell before the room closes
+    bool  m_classAttendPending = false; // E pressed on the prompt this frame
+    int   m_classPromptIdx     = -1;    // prompted class (-1 = none)
+    float m_classPromptDist    = 0.0f;
+    int   m_gameDay            = 0;     // day counter, 0 = Monday
+    int   m_slingshotCapBonus  = 0;     // Track 41: SHOP reward
 
     // Track 30: dialogue system. Loads data/dialogue/demo_dialogue.json
     // (hand-authored Bully-flavored trees; .lur/XACT sources are deferred),
@@ -454,6 +563,10 @@ private:
     // Track 26: weapon models + live projectiles.
     std::vector<WeaponModel> m_weaponModels;
     std::vector<Projectile>  m_projectiles;
+    // Track 39: impact debris particles (short-lived boxes, engine-side like
+    // Projectile) + ammo-box pickup ids.
+    std::vector<ImpactFx>    m_impacts;
+    std::vector<EntityID>    m_ammoBoxIds;
 
     // Track 23: melee combat state.
     std::vector<AgrAnim> m_combatClips;  // decoded C_Player.agr (all 439 anims)

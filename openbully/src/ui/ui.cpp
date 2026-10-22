@@ -407,26 +407,116 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
                      label, color);
     }
 
-    // --- Wanted stars: top-right -------------------------------------------
+    // --- Track 37: minimap (top-right) + relocated stars/clock/money ---------
     const float right = W - pad;
+    const float mapSize = 150.0f * s;
+    const float hudTopY = pad + (hud.minimapVisible ? mapSize + 8.0f * s : 0.0f);
+
+    if (hud.minimapVisible) {
+        const float mx = W - pad - mapSize;
+        const float my = pad;
+
+        // Background: dark gray, alpha 0.7.
+        DrawRect(mx - 2.0f * s, my - 2.0f * s, mapSize + 4.0f * s, mapSize + 4.0f * s,
+                 PackRGBA(25, 25, 28, 200));
+        DrawRect(mx, my, mapSize, mapSize, PackRGBA(40, 40, 45, 178));
+
+        // Border frame.
+        const uint32_t border = PackRGBA(210, 210, 215, 220);
+        const float bw = 2.0f * s;
+        DrawRect(mx - bw, my - bw, mapSize + 2.0f * bw, bw, border);
+        DrawRect(mx - bw, my + mapSize, mapSize + 2.0f * bw, bw, border);
+        DrawRect(mx - bw, my, bw, mapSize, border);
+        DrawRect(mx + mapSize, my, bw, mapSize, border);
+
+        const float cx = mx + mapSize * 0.5f;
+        const float cy = my + mapSize * 0.5f;
+        const float viewRadius = 25.0f;
+        const float scale = (mapSize * 0.5f - 8.0f * s) / viewRadius;
+
+        // Map rotates so player faces up (player-up mode).
+        const float sinY = std::sin(hud.playerYaw);
+        const float cosY = std::cos(hud.playerYaw);
+        const float halfIn = mapSize * 0.5f - 4.0f * s;
+
+        // NPCs: color-coded dots (yellow=neutral, red=hostile/prefect, green=friendly).
+        for (int i = 0; i < hud.npcDotCount; ++i) {
+            const float relX = hud.npcDots[i].x - hud.playerX;
+            const float relZ = hud.npcDots[i].z - hud.playerZ;
+            const float sx = relX * cosY - relZ * sinY;
+            const float sy = relX * sinY + relZ * cosY;
+            const float px = cx + sx * scale;
+            const float py = cy - sy * scale;
+            if (std::fabs(px - cx) > halfIn || std::fabs(py - cy) > halfIn)
+                continue;
+            uint32_t color;
+            switch (hud.npcDots[i].type) {
+                case 1:  color = PackRGBA(255, 80, 80, 255);   break; // red: hostile
+                case 2:  color = PackRGBA(80, 220, 80, 255);   break; // green: friendly
+                default: color = PackRGBA(255, 220, 80, 255);  break; // yellow: neutral
+            }
+            DrawRect(px - 2.0f, py - 2.0f, 4.0f, 4.0f, color);
+        }
+
+        // Vehicles: cyan squares.
+        for (int i = 0; i < hud.vehicleDotCount; ++i) {
+            const float relX = hud.vehicleDots[i].x - hud.playerX;
+            const float relZ = hud.vehicleDots[i].z - hud.playerZ;
+            const float sx = relX * cosY - relZ * sinY;
+            const float sy = relX * sinY + relZ * cosY;
+            const float px = cx + sx * scale;
+            const float py = cy - sy * scale;
+            if (std::fabs(px - cx) > halfIn || std::fabs(py - cy) > halfIn)
+                continue;
+            DrawRect(px - 3.0f, py - 3.0f, 6.0f, 6.0f, PackRGBA(0, 220, 255, 255));
+        }
+
+        // Mission objective: gold diamond star marker.
+        if (hud.objectiveActive) {
+            const float relX = hud.objectiveX - hud.playerX;
+            const float relZ = hud.objectiveZ - hud.playerZ;
+            const float sx = relX * cosY - relZ * sinY;
+            const float sy = relX * sinY + relZ * cosY;
+            const float px = cx + sx * scale;
+            const float py = cy - sy * scale;
+            if (std::fabs(px - cx) <= halfIn && std::fabs(py - cy) <= halfIn) {
+                const float cell = 2.0f * s;
+                static const int kRows[5] = { 1, 3, 5, 3, 1 };
+                const uint32_t gold = PackRGBA(255, 215, 0, 255);
+                for (int r = 0; r < 5; ++r) {
+                    const float w = float(kRows[r]) * cell;
+                    DrawRect(px - w * 0.5f, py - 2.5f * cell + float(r) * cell,
+                             w, cell, gold);
+                }
+            }
+        }
+
+        // Player: white upward-pointing triangle (map rotates, so always faces up).
+        const float ts = 2.0f * s;
+        DrawRect(cx - 0.5f * ts, cy - 1.5f * ts, ts, ts,
+                 PackRGBA(255, 255, 255, 255));
+        DrawRect(cx - ts, cy - 0.5f * ts, ts * 2.0f, ts,
+                 PackRGBA(255, 255, 255, 255));
+        DrawRect(cx - 1.5f * ts, cy + 0.5f * ts, ts * 3.0f, ts,
+                 PackRGBA(255, 255, 255, 255));
+    }
+
+    // --- Wanted stars: top-right, below minimap -----------------------------
     {
         const float cell   = 3.0f * s;
         const float starW  = 5.0f * cell;
         const float gap    = 5.0f * s;
-        const float starY  = pad;
+        const float starY  = hudTopY;
         for (int i = 0; i < 5; ++i) {
-            const float cx = right - (5.0f - float(i)) * (starW + gap)
-                             + starW * 0.5f;
-            const float cy = starY + starW * 0.5f;
-            // 5-row diamond (row widths 1,3,5,3,1 cells) reads as a star
-            // badge at HUD size; filled = wanted level reached.
+            const float scx = right - (5.0f - float(i)) * (starW + gap) + starW * 0.5f;
+            const float scy = starY + starW * 0.5f;
             static const int kRows[5] = { 1, 3, 5, 3, 1 };
             const uint32_t rgba = i < hud.wanted
-                ? PackRGBA(255, 205, 60, 255)    // filled: gold
-                : PackRGBA(90, 90, 95, 170);     // empty: dim outline
+                ? PackRGBA(255, 205, 60, 255)
+                : PackRGBA(90, 90, 95, 170);
             for (int r = 0; r < 5; ++r) {
                 const float w = float(kRows[r]) * cell;
-                DrawRect(cx - w * 0.5f, cy - 2.5f * cell + float(r) * cell,
+                DrawRect(scx - w * 0.5f, scy - 2.5f * cell + float(r) * cell,
                          w, cell, rgba);
             }
         }
@@ -438,57 +528,13 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
         std::snprintf(buf, sizeof(buf), "%02d:%02d",
                       (hud.clockMinutes / 60) % 24, hud.clockMinutes % 60);
         const std::string clock(buf);
-        const float y = pad + 15.0f * s + 8.0f * s;
+        const float y = hudTopY + 15.0f * s + 8.0f * s;
         DrawText(right - MeasureText(clock), y, clock, PackRGBA(255, 255, 255, 235));
 
         std::snprintf(buf, sizeof(buf), "$%d", hud.money);
         const std::string money(buf);
         const float y2 = y + kGlyphHeight * s + 6.0f * s;
         DrawText(right - MeasureText(money), y2, money, PackRGBA(120, 230, 120, 255));
-    }
-
-    // --- Minimap: bottom-right ----------------------------------------------
-    {
-        const float mapSize = 160.0f * s;
-        const float mx = W - pad - mapSize;
-        const float my = H - pad - mapSize;
-        DrawRect(mx - 2.0f * s, my - 2.0f * s, mapSize + 4.0f * s, mapSize + 4.0f * s,
-                 PackRGBA(25, 25, 28, 200));
-        DrawRect(mx, my, mapSize, mapSize, PackRGBA(10, 14, 18, 170));
-        // Border frame (4 rects).
-        const uint32_t border = PackRGBA(210, 210, 215, 220);
-        const float bw = 2.0f * s;
-        DrawRect(mx - bw, my - bw, mapSize + 2.0f * bw, bw, border);
-        DrawRect(mx - bw, my + mapSize, mapSize + 2.0f * bw, bw, border);
-        DrawRect(mx - bw, my, bw, mapSize, border);
-        DrawRect(mx + mapSize, my, bw, mapSize, border);
-
-        const float cx = mx + mapSize * 0.5f;
-        const float cy = my + mapSize * 0.5f;
-        const float viewRadius = 25.0f; // world units shown edge-to-edge
-        const float scale = (mapSize * 0.5f - 8.0f * s) / viewRadius;
-
-        // Screen-up = Jimmy's facing direction (yaw 0 = +Z world).
-        const float sinY = std::sin(hud.playerYaw);
-        const float cosY = std::cos(hud.playerYaw);
-        const float halfIn = mapSize * 0.5f - 4.0f * s;
-
-        for (int i = 0; i < hud.npcDotCount; ++i) {
-            const float relX = hud.npcDots[i].x - hud.playerX;
-            const float relZ = hud.npcDots[i].z - hud.playerZ;
-            const float sx = relX * cosY - relZ * sinY;  // right component
-            const float sy = relX * sinY + relZ * cosY;  // forward component
-            const float px = cx + sx * scale;
-            const float py = cy - sy * scale;
-            if (std::fabs(px - cx) > halfIn || std::fabs(py - cy) > halfIn)
-                continue; // outside the box (no wrap-around yet)
-            DrawRect(px - 2.0f, py - 2.0f, 4.0f, 4.0f,
-                     PackRGBA(110, 200, 255, 255)); // NPC: cyan dot
-        }
-
-        // Player dot at the center (white).
-        DrawRect(cx - 2.5f * s, cy - 2.5f * s, 5.0f * s, 5.0f * s,
-                 PackRGBA(255, 255, 255, 255));
     }
 
     // --- Track 24: grapple status banner (top-center) -----------------------
@@ -515,6 +561,26 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
             const float my2 = ty + (kGlyphHeight + 8.0f) * s + 6.0f * s;
             DrawText(W * 0.5f - MeasureText(mash) * 0.5f, my2, mash,
                      PackRGBA(255, 255, 255, 235));
+        }
+    }
+
+    // --- Track 39: slingshot crosshair (aim mode) + ammo counter ------------
+    if (hud.aiming) {
+        const float cx = W * 0.5f, cy = H * 0.5f;
+        const uint32_t cross = PackRGBA(255, 255, 255, 220);
+        const uint32_t dot   = PackRGBA(255, 80, 80, 255);
+        DrawRect(cx - 11.0f * s, cy - 1.0f * s, 8.0f * s, 2.0f * s, cross);
+        DrawRect(cx + 3.0f * s, cy - 1.0f * s, 8.0f * s, 2.0f * s, cross);
+        DrawRect(cx - 1.0f * s, cy - 11.0f * s, 2.0f * s, 8.0f * s, cross);
+        DrawRect(cx - 1.0f * s, cy + 3.0f * s, 2.0f * s, 8.0f * s, cross);
+        DrawRect(cx - 1.5f * s, cy - 1.5f * s, 3.0f * s, 3.0f * s, dot);
+        if (hud.slingshotAmmo >= 0) {
+            char ambuf[32];
+            std::snprintf(ambuf, sizeof(ambuf), "ROCKS %d/%d",
+                          hud.slingshotAmmo, hud.slingshotCap);
+            const std::string am(ambuf);
+            DrawText(cx - MeasureText(am) * 0.5f, cy + 20.0f * s, am,
+                     PackRGBA(255, 230, 140, 240));
         }
     }
 
@@ -660,6 +726,450 @@ void UIRenderer::DrawDialogueBox(const char* speaker,
                  by + boxH - (kGlyphHeight + 8.0f) * s, "E: NEXT",
                  PackRGBA(255, 220, 120, 220));
     }
+}
+
+// --- Track 40: quest journal overlay -----------------------------------------
+
+namespace {
+
+// Screen-space layout of the journal panel. `blocks` hold each mission block's
+// Y range in viewport-local (pre-scroll) coordinates so the hit-test and the
+// draw always agree.
+struct JournalLayout {
+    float panelX, panelY, panelW, panelH;
+    float contentTop, contentBottom;   // scrolling viewport bounds (px)
+    float padX, lineH, s;
+    struct Block { float top; float bottom; };
+    std::vector<Block> blocks;
+    float totalH;                      // content height before clamping
+};
+
+JournalLayout ComputeJournalLayout(uint32_t W, uint32_t H,
+                                   const std::vector<JournalMissionEntry>& missions) {
+    JournalLayout L;
+    L.s = std::min(1.5f, std::max(0.75f, float(H) / 720.0f));
+    L.panelW = std::min(900.0f * L.s, float(W) - 48.0f * L.s);
+    L.panelH = float(H) * 0.78f;
+    L.panelX = 0.5f * (float(W) - L.panelW);
+    L.panelY = 0.5f * (float(H) - L.panelH);
+    L.padX = 24.0f * L.s;
+    L.lineH = (UIRenderer::kGlyphHeight + 4.0f) * L.s;
+    const float hintH = (UIRenderer::kGlyphHeight + 10.0f) * L.s;
+    // Fixed footer under the viewport: a details pane (label + up to 3
+    // wrapped lines) plus the hint row.
+    const float detailsH = L.lineH * 4.0f + 16.0f * L.s;
+    const float headerDiv = L.panelY + 14.0f * L.s +
+                            (UIRenderer::kGlyphHeight + 10.0f) * L.s;
+    L.contentTop = headerDiv + 10.0f * L.s;
+    L.contentBottom = L.panelY + L.panelH - detailsH - hintH;
+
+    float y = 0.0f;
+    for (const JournalMissionEntry& e : missions) {
+        const float top = y;
+        y += L.lineH + 2.0f * L.s;                 // title row + gap
+        if (!e.description.empty()) y += L.lineH;  // description blurb
+        y += L.lineH * float(e.objectives.size()); // objective rows
+        y += 6.0f * L.s;                           // block bottom padding
+        L.blocks.push_back({top, y});
+        y += 14.0f * L.s;                          // divider + gap to the next block
+    }
+    L.totalH = y;
+    return L;
+}
+
+// Scroll bounds: [0, max(0, contentHeight - viewportHeight)].
+float JournalScrollClamped(const JournalLayout& L, float scrollPx) {
+    const float maxScroll = std::max(0.0f, L.totalH - (L.contentBottom - L.contentTop));
+    return std::max(0.0f, std::min(scrollPx, maxScroll));
+}
+
+} // namespace
+
+int UIRenderer::JournalHitTest(const std::vector<JournalMissionEntry>& missions,
+                               float scrollPx, float mx, float my) const {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return -1;
+    const JournalLayout L = ComputeJournalLayout(m_screenWidth, m_screenHeight, missions);
+    if (mx < L.panelX || mx >= L.panelX + L.panelW) return -1;
+    const float sc = JournalScrollClamped(L, scrollPx);
+    for (int i = 0; i < int(L.blocks.size()); ++i) {
+        const float top = L.contentTop + L.blocks[size_t(i)].top - sc;
+        const float bot = L.contentTop + L.blocks[size_t(i)].bottom - sc;
+        if (my >= top && my < bot) return i;
+    }
+    return -1;
+}
+
+float UIRenderer::ClampJournalScroll(const std::vector<JournalMissionEntry>& missions,
+                                     float scrollPx) const {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0)
+        return std::max(0.0f, scrollPx);
+    const JournalLayout L =
+        ComputeJournalLayout(m_screenWidth, m_screenHeight, missions);
+    const float maxScroll =
+        std::max(0.0f, L.totalH - (L.contentBottom - L.contentTop));
+    return std::max(0.0f, std::min(scrollPx, maxScroll));
+}
+
+void UIRenderer::DrawQuestJournal(const std::vector<JournalMissionEntry>& missions,
+                                  int selectedIndex, float scrollPx) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+
+    const JournalLayout L = ComputeJournalLayout(m_screenWidth, m_screenHeight, missions);
+    scrollPx = JournalScrollClamped(L, scrollPx);
+    const float s = L.s;
+    const float px0 = L.panelX, py0 = L.panelY;
+    const float panelW = L.panelW, panelH = L.panelH;
+    const float padX = L.padX, lineH = L.lineH;
+
+    // Full-screen dim backdrop so the panel reads over any scene.
+    DrawRect(0.0f, 0.0f, float(m_screenWidth), float(m_screenHeight),
+             PackRGBA(0, 0, 0, 150));
+
+    // Centered panel with a parchment-gold border.
+    DrawRect(px0, py0, panelW, panelH, PackRGBA(10, 10, 14, 225));
+    const uint32_t border = PackRGBA(200, 190, 140, 180);
+    const float bw = 2.0f * s;
+    DrawRect(px0, py0, panelW, bw, border);
+    DrawRect(px0, py0 + panelH - bw, panelW, bw, border);
+    DrawRect(px0, py0, bw, panelH, border);
+    DrawRect(px0 + panelW - bw, py0, bw, panelH, border);
+
+    // Header.
+    const float headerY = py0 + 14.0f * s;
+    const std::string title = "QUEST JOURNAL";
+    DrawRect(px0 + padX - 8.0f * s, headerY - 4.0f * s,
+             MeasureText(title) + 16.0f * s, kGlyphHeight + 8.0f * s,
+             PackRGBA(60, 50, 20, 220));
+    DrawText(px0 + padX, headerY, title, PackRGBA(255, 220, 120, 255));
+    DrawText(px0 + panelW - padX - MeasureText("J / ESC: CLOSE"), headerY,
+             "J / ESC: CLOSE", PackRGBA(170, 170, 175, 210));
+    DrawRect(px0 + padX, L.contentTop - 10.0f * s, panelW - 2.0f * padX, 1.5f * s,
+             PackRGBA(120, 110, 70, 200));
+
+    // --- Mission list -------------------------------------------------------
+    if (missions.empty()) {
+        const std::string msg = "No active missions";
+        DrawText(px0 + 0.5f * (panelW - MeasureText(msg)),
+                 0.5f * (py0 + L.contentTop + L.contentBottom - kGlyphHeight * s),
+                 msg, PackRGBA(200, 200, 205, 220));
+    } else {
+        for (int mi = 0; mi < int(missions.size()); ++mi) {
+            const JournalMissionEntry& e = missions[size_t(mi)];
+            const bool selected = (mi == selectedIndex);
+            const float topPx = L.contentTop + L.blocks[size_t(mi)].top - scrollPx;
+            const float botPx = L.contentTop + L.blocks[size_t(mi)].bottom - scrollPx;
+            // Skip blocks scrolled entirely out of the viewport.
+            if (botPx < L.contentTop - lineH || topPx > L.contentBottom + lineH)
+                continue;
+
+            const uint32_t stateColor =
+                e.state == 0 ? PackRGBA(255, 215, 70, 255) :   // active: yellow
+                e.state == 1 ? PackRGBA(90, 220, 90, 255) :    // complete: green
+                               PackRGBA(240, 80, 80, 255);     // failed: red
+
+            // Selection highlight, drawn behind the block's text.
+            if (selected)
+                DrawRect(px0 + 6.0f * s, topPx - 3.0f * s,
+                         panelW - 12.0f * s, (botPx - topPx) + 1.0f * s,
+                         PackRGBA(255, 255, 255, 18));
+
+            float y = topPx;
+            // Title row: colored icon square, title, and the progress counter.
+            DrawRect(px0 + padX, y + 1.0f * s, 8.0f * s, 8.0f * s, stateColor);
+            const std::string label =
+                e.state == 1 ? e.name + " - COMPLETE" :
+                e.state == 2 ? e.name + " - FAILED" : e.name;
+            DrawText(px0 + padX + 14.0f * s, y, label, stateColor);
+            size_t done = 0;
+            for (const JournalMissionEntry::ObjectiveRow& o : e.objectives)
+                if (o.complete) ++done;
+            char prog[16];
+            std::snprintf(prog, sizeof(prog), "%zu/%zu", done, e.objectives.size());
+            DrawText(px0 + panelW - padX - MeasureText(prog), y, prog, stateColor);
+            y += lineH + 2.0f * s;
+
+            // Description blurb.
+            if (!e.description.empty()) {
+                DrawText(px0 + padX + 14.0f * s, y, e.description,
+                         PackRGBA(190, 190, 198, 220));
+                y += lineH;
+            }
+
+            // Objective rows: checkmarks; the current objective highlighted.
+            for (int oi = 0; oi < int(e.objectives.size()); ++oi) {
+                const JournalMissionEntry::ObjectiveRow& o = e.objectives[size_t(oi)];
+                const bool isCurrent = (oi == e.currentObjectiveIndex);
+                const std::string row = std::string(o.complete ? "[x] " : "[ ] ") + o.text;
+                if (isCurrent) {
+                    DrawRect(px0 + padX + 8.0f * s, y - 2.0f * s,
+                             MeasureText(row) + 10.0f * s, lineH,
+                             PackRGBA(70, 60, 20, 200));
+                    DrawText(px0 + padX + 14.0f * s, y, row,
+                             PackRGBA(255, 255, 230, 255));
+                } else {
+                    DrawText(px0 + padX + 14.0f * s, y, row,
+                             o.complete ? PackRGBA(120, 170, 120, 200)
+                                        : PackRGBA(160, 160, 168, 200));
+                }
+                y += lineH;
+            }
+
+            // Divider between missions.
+            if (mi + 1 < int(missions.size()))
+                DrawRect(px0 + padX, botPx + 4.0f * s, panelW - 2.0f * padX, 1.5f * s,
+                         PackRGBA(90, 85, 60, 170));
+        }
+    }
+
+    // --- Details pane: the selected mission's full description -------------
+    {
+        const float dTop = L.contentBottom + 4.0f * s;
+        DrawRect(px0 + padX, dTop, panelW - 2.0f * padX, 1.0f * s,
+                 PackRGBA(90, 85, 60, 150));
+        const float dY = dTop + 6.0f * s;
+        if (selectedIndex >= 0 && selectedIndex < int(missions.size())) {
+            const JournalMissionEntry& e = missions[size_t(selectedIndex)];
+            const uint32_t col =
+                e.state == 1 ? PackRGBA(90, 220, 90, 255) :
+                e.state == 2 ? PackRGBA(240, 80, 80, 255) :
+                               PackRGBA(255, 215, 70, 255);
+            DrawText(px0 + padX, dY, "> " + e.name, col);
+            float ty = dY + lineH;
+            const float maxW = panelW - 2.0f * padX - 14.0f * s;
+            const std::vector<std::string> wrapped =
+                WrapDialogueText(*this, e.description, maxW);
+            for (size_t i = 0; i < wrapped.size() && i < 3; ++i) {
+                DrawText(px0 + padX + 14.0f * s, ty, wrapped[i],
+                         PackRGBA(220, 220, 228, 240));
+                ty += lineH;
+            }
+        } else {
+            DrawText(px0 + padX, dY, "SELECT A MISSION",
+                     PackRGBA(170, 170, 175, 200));
+        }
+    }
+
+    // Footer hint.
+    DrawText(px0 + padX, py0 + panelH - (kGlyphHeight + 10.0f) * s,
+             "ARROWS / WHEEL: SCROLL   CLICK: SELECT   J / ESC: CLOSE",
+             PackRGBA(150, 150, 155, 190));
+}
+
+// --- Track 41: class system UI ---------------------------------------------------
+
+// "Press E to attend [Class]" strip, bottom-center above the dialogue slot.
+void UIRenderer::DrawClassPrompt(const char* classLabel) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0 || !classLabel)
+        return;
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+
+    const std::string text = std::string("Press E to attend ") + classLabel;
+    const float textW = MeasureText(text) + 24.0f * s;
+    const float boxW  = textW + 24.0f * s;
+    const float boxH  = (kGlyphHeight + 10.0f) * s;
+    const float bx    = 0.5f * (W - boxW);
+    const float by    = H * 0.62f;
+
+    DrawRect(bx, by, boxW, boxH, PackRGBA(8, 8, 12, 200));
+    const uint32_t border = PackRGBA(190, 190, 200, 150);
+    const float bw = 1.5f * s;
+    DrawRect(bx, by, boxW, bw, border);
+    DrawRect(bx, by + boxH - bw, boxW, bw, border);
+    DrawRect(bx, by, bw, boxH, border);
+    DrawRect(bx + boxW - bw, by, bw, boxH, border);
+
+    // "Press E" highlighted, the rest plain — mirrors the dialogue advance hint.
+    const std::string key("Press E");
+    DrawText(bx + 12.0f * s, by + 5.0f * s, key, PackRGBA(255, 220, 120, 255));
+    DrawText(bx + 12.0f * s + MeasureText(key) + 6.0f * s, by + 5.0f * s,
+             std::string("to attend ") + classLabel, PackRGBA(240, 240, 245, 255));
+}
+
+// Class schedule overlay (C key): every class, its window, location and
+// completion counter; gold highlight on the class in session right now.
+void UIRenderer::DrawClassSchedule(const std::vector<ClassScheduleEntry>& entries,
+                                   const std::string& headerLine,
+                                   const std::string& nextLine,
+                                   const std::string& infoLine) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+    const float lineH = (kGlyphHeight + 4.0f) * s;
+
+    // Slightly wider than the journal: rows carry days + time + location.
+    const float panelW = std::min(860.0f * s, W - 32.0f * s);
+    const float rowsH  = lineH * float(std::max<size_t>(entries.size(), 1));
+    const float panelH = std::min(H - 60.0f * s,
+                                  (kGlyphHeight + 46.0f) * s +   // header + hints
+                                  rowsH + lineH * 2.0f);
+    const float px0 = 0.5f * (W - panelW);
+    const float py0 = 0.5f * (H - panelH);
+    const float padX = 20.0f * s;
+
+    DrawRect(0.0f, 0.0f, W, H, PackRGBA(0, 0, 0, 150));
+    DrawRect(px0, py0, panelW, panelH, PackRGBA(10, 10, 14, 225));
+    const uint32_t border = PackRGBA(200, 190, 140, 180);
+    const float bw = 2.0f * s;
+    DrawRect(px0, py0, panelW, bw, border);
+    DrawRect(px0, py0 + panelH - bw, panelW, bw, border);
+    DrawRect(px0, py0, bw, panelH, border);
+    DrawRect(px0 + panelW - bw, py0, bw, panelH, border);
+
+    // Header: title strip + day/time line + next-class countdown.
+    const float headerY = py0 + 12.0f * s;
+    DrawRect(px0 + padX - 8.0f * s, headerY - 4.0f * s,
+             MeasureText("CLASS SCHEDULE") + 16.0f * s, kGlyphHeight + 8.0f * s,
+             PackRGBA(60, 50, 20, 220));
+    DrawText(px0 + padX, headerY, "CLASS SCHEDULE", PackRGBA(255, 220, 120, 255));
+    DrawText(px0 + panelW - padX - MeasureText("C / ESC: CLOSE"), headerY,
+             "C / ESC: CLOSE", PackRGBA(170, 170, 175, 210));
+    float y = headerY + (kGlyphHeight + 6.0f) * s;
+    if (!headerLine.empty())
+        DrawText(px0 + padX, y, headerLine, PackRGBA(200, 200, 208, 240));
+    y += lineH;
+    if (!nextLine.empty())
+        DrawText(px0 + padX, y, nextLine, PackRGBA(150, 200, 255, 255));
+    y += lineH;
+    DrawRect(px0 + padX, y, panelW - 2.0f * padX, 1.5f * s,
+             PackRGBA(120, 110, 70, 200));
+    y += 6.0f * s;
+
+    if (entries.empty()) {
+        DrawText(px0 + 0.5f * (panelW - MeasureText("No classes defined")),
+                 y + 0.5f * lineH, "No classes defined",
+                 PackRGBA(200, 200, 205, 220));
+    } else {
+        // Column x positions: NAME | DAYS | TIME | LOCATION | DONE
+        const float xName = px0 + padX;
+        const float xDays = xName + MeasureText("Photography 1") + 16.0f * s;
+        const float xTime = xDays + MeasureText("MON/TUE/WED/THU/FRI") + 16.0f * s;
+        const float xLoc  = xTime + MeasureText("09:00-10:00") + 16.0f * s;
+        for (const ClassScheduleEntry& e : entries) {
+            const uint32_t nameCol =
+                e.fullyComplete ? PackRGBA(90, 220, 90, 255) :
+                e.availableNow  ? PackRGBA(255, 215, 70, 255) :
+                                  PackRGBA(225, 225, 232, 235);
+            if (e.availableNow)
+                DrawRect(px0 + 6.0f * s, y - 2.0f * s, panelW - 12.0f * s, lineH,
+                         PackRGBA(255, 220, 90, 26));
+            DrawText(xName, y, e.name, nameCol);
+            DrawText(xDays, y, e.days, PackRGBA(160, 160, 170, 210));
+            DrawText(xTime, y, e.time, PackRGBA(160, 160, 170, 210));
+            DrawText(xLoc,  y, e.location, PackRGBA(190, 190, 198, 220));
+            char prog[24];
+            std::snprintf(prog, sizeof(prog), "%d/%d%s", e.completions,
+                          e.sessionsRequired, e.fullyComplete ? " OK" : "");
+            const std::string progStr(prog);
+            DrawText(px0 + panelW - padX - MeasureText(progStr), y, progStr, nameCol);
+            y += lineH;
+        }
+    }
+
+    // Footer: respect/progress info line + close hint.
+    const float footY = py0 + panelH - (kGlyphHeight + 10.0f) * s;
+    if (!infoLine.empty())
+        DrawText(px0 + padX, footY, infoLine, PackRGBA(255, 200, 90, 230));
+}
+
+// In-class overlay: attention meter (sweep + band), beat tallies, objective
+// checklist and the pass/fail banner. Drawn over a dimmed world (the player
+// is "inside" the classroom during the session).
+void UIRenderer::DrawClassSession(const ClassSessionView& view) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+    const float lineH = (kGlyphHeight + 4.0f) * s;
+
+    // Full-screen dim (deeper than menus: the room transition).
+    DrawRect(0.0f, 0.0f, W, H, PackRGBA(0, 0, 0, 170));
+
+    const float panelW = std::min(700.0f * s, W - 32.0f * s);
+    const float rowsH  = lineH * float(view.objectives.size() + 2);
+    const float panelH = std::min(H - 60.0f * s,
+                                  (kGlyphHeight + 92.0f) * s + rowsH);
+    const float px0 = 0.5f * (W - panelW);
+    const float py0 = 0.5f * (H - panelH);
+    const float padX = 20.0f * s;
+    const uint32_t border = PackRGBA(200, 190, 140, 180);
+    const float bw = 2.0f * s;
+
+    DrawRect(px0, py0, panelW, panelH, PackRGBA(12, 12, 18, 235));
+    DrawRect(px0, py0, panelW, bw, border);
+    DrawRect(px0, py0 + panelH - bw, panelW, bw, border);
+    DrawRect(px0, py0, bw, panelH, border);
+    DrawRect(px0 + panelW - bw, py0, bw, panelH, border);
+
+    // Header: class name + room.
+    float y = py0 + 14.0f * s;
+    DrawText(px0 + padX, y, view.className, PackRGBA(255, 220, 120, 255));
+    if (!view.location.empty()) {
+        DrawText(px0 + panelW - padX - MeasureText(view.location), y,
+                 view.location, PackRGBA(170, 170, 178, 210));
+    }
+    y += lineH + 4.0f * s;
+
+    // Attention meter: full-width bar, target band highlighted, marker tick.
+    const float meterX = px0 + padX;
+    const float meterW = panelW - 2.0f * padX;
+    const float meterH = 14.0f * s;
+    DrawRect(meterX, y, meterW, meterH, PackRGBA(30, 30, 40, 255));
+    const float bandX = meterX + view.bandLo * meterW;
+    const float bandW = std::max(1.0f, (view.bandHi - view.bandLo) * meterW);
+    DrawRect(bandX, y, bandW, meterH, PackRGBA(70, 160, 70, 220));
+    const float markerX = meterX + view.marker * meterW;
+    DrawRect(markerX - 1.5f * s, y - 3.0f * s, 3.0f * s, meterH + 6.0f * s,
+             PackRGBA(255, 255, 255, 255));
+    y += meterH + 6.0f * s;
+    DrawText(meterX, y, "E when the marker is in the green zone",
+             PackRGBA(180, 180, 188, 220));
+    y += lineH;
+
+    // Tallies: needs X / slipped Y.
+    char tally[64];
+    std::snprintf(tally, sizeof(tally), "Correct: %d/%d    Slips: %d/%d",
+                  view.hits, view.hitGoal, view.misses, view.missGoal);
+    DrawText(meterX, y, tally, PackRGBA(210, 210, 220, 240));
+    y += lineH + 4.0f * s;
+
+    // Objective beats (checked as they complete).
+    for (size_t i = 0; i < view.objectives.size(); ++i) {
+        const bool done = int(i) < view.objectivesDone;
+        const std::string row = std::string(done ? "[x] " : "[ ] ") +
+                                view.objectives[i];
+        DrawText(meterX + 6.0f * s, y, row,
+                 done ? PackRGBA(120, 200, 120, 230)
+                      : PackRGBA(170, 170, 178, 210));
+        y += lineH;
+    }
+
+    // Result banner.
+    if (view.result == 1) {
+        const std::string pass = "CLASS PASSED!";
+        DrawRect(px0 + padX - 6.0f * s, y + 2.0f * s,
+                 MeasureText(pass) + 12.0f * s, lineH, PackRGBA(30, 90, 30, 230));
+        DrawText(px0 + padX, y + 2.0f * s, pass, PackRGBA(140, 255, 140, 255));
+        if (!view.rewardSummary.empty()) {
+            y += lineH + 2.0f * s;
+            DrawText(px0 + padX, y, view.rewardSummary,
+                     PackRGBA(255, 220, 120, 255));
+        }
+    } else if (view.result == 2) {
+        const std::string fail = "CLASS FAILED - retry when scheduled";
+        DrawRect(px0 + padX - 6.0f * s, y + 2.0f * s,
+                 MeasureText(fail) + 12.0f * s, lineH, PackRGBA(90, 30, 30, 230));
+        DrawText(px0 + padX, y + 2.0f * s, fail, PackRGBA(255, 120, 120, 255));
+    }
+
+    // Footer hint.
+    DrawText(px0 + padX, py0 + panelH - (kGlyphHeight + 8.0f) * s,
+             "E: FOCUS   ESC: LEAVE CLASS",
+             PackRGBA(150, 150, 155, 190));
 }
 
 } // namespace OpenBully

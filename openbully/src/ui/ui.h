@@ -22,6 +22,28 @@
 
 namespace OpenBully {
 
+// Track 40: one mission row for the quest journal overlay (plain data; the
+// Engine flattens MissionManager state into this each frame). Not-yet-started
+// missions are filtered out; the list is ordered active, then complete,
+// then failed.
+struct JournalMissionEntry {
+    // 0 = active (yellow), 1 = complete (green), 2 = failed (red).
+    int state = 0;
+    std::string name;                 // mission title
+    std::string description;          // one-line blurb (first objective text)
+    struct ObjectiveRow {
+        std::string text;
+        bool complete = false;
+    };
+    std::vector<ObjectiveRow> objectives;
+    // Index of the highlighted "current" objective, or -1 when the mission is
+    // done/failed (no current objective).
+    int currentObjectiveIndex = -1;
+    // Text of the current objective (Engine writes it alongside the index so
+    // the journal can show the headline line without re-flattening).
+    std::string currentObjective;
+};
+
 // Plain-data HUD snapshot filled by the Engine each frame. Kept free of
 // glm/SDL/entity types so the UI renderer only reads numbers.
 struct HUDState {
@@ -48,10 +70,25 @@ struct HUDState {
     int   grappleState = 0;
     int   grappleMash  = 0;   // mash presses done toward the break-free count
     // Nearby NPC world XZ dots for the minimap.
+    // Track 37: type = 0 neutral (yellow), 1 hostile/prefect (red), 2 friendly (green).
     static constexpr int kMaxMinimapDots = 64;
-    struct MinimapDot { float x = 0.0f; float z = 0.0f; };
+    struct MinimapDot { float x = 0.0f; float z = 0.0f; int type = 0; };
     MinimapDot npcDots[kMaxMinimapDots] = {};
     int npcDotCount = 0;
+
+    // Track 37: vehicle dots on the minimap (cyan squares).
+    static constexpr int kMaxMinimapVehicles = 16;
+    struct VehicleDot { float x = 0.0f; float z = 0.0f; };
+    VehicleDot vehicleDots[kMaxMinimapVehicles] = {};
+    int vehicleDotCount = 0;
+
+    // Track 37: active mission objective marker (gold star on the minimap).
+    float objectiveX = 0.0f;
+    float objectiveZ = 0.0f;
+    bool  objectiveActive = false;
+
+    // Track 37: minimap visibility toggle (M key).
+    bool  minimapVisible = true;
 
     // Track 26: weapon inventory slots (bottom-left, above the health bar).
     static constexpr int kMaxWeaponSlots = 5;
@@ -63,6 +100,43 @@ struct HUDState {
         int  ammo = 0;
     };
     WeaponSlotInfo weaponSlots[kMaxWeaponSlots] = {};
+
+    // Track 39: slingshot aim mode (draws the crosshair) + reserve ammo for
+    // the equipped slingshot slot.
+    bool aiming = false;
+    int  slingshotAmmo   = -1; // -1 = no slingshot equipped
+    int  slingshotCap    = 30;
+};
+
+// Track 41: one class row for the schedule overlay (plain data; the Engine
+// flattens ClassManager state into this each frame while the overlay is open).
+struct ClassScheduleEntry {
+    std::string name;                 // "English 1"
+    std::string location;             // "Main School Building - Room 101"
+    std::string days;                 // "MON/WED/FRI"
+    std::string time;                 // "09:00-10:00"
+    int  completions      = 0;
+    int  sessionsRequired = 5;
+    bool availableNow     = false;    // schedule window covers now (highlight)
+    bool fullyComplete    = false;    // completions >= sessionsRequired
+};
+
+// Track 41: plain-data snapshot of the live class session (the placeholder
+// minigame the Engine drives; Phase 12 replaces the sweep/band game).
+struct ClassSessionView {
+    std::string className;            // "English 1"
+    std::string location;             // building + room
+    float marker  = 0.5f;             // attention meter sweep position 0..1
+    float bandLo  = 0.40f;
+    float bandHi  = 0.60f;
+    int   hits    = 0;                // completed beats (band presses)
+    int   misses  = 0;
+    int   hitGoal   = 3;              // pass condition
+    int   missGoal  = 3;              // fail condition
+    std::vector<std::string> objectives; // one row per beat
+    int   objectivesDone = 0;
+    int   result = 0;                 // 0 in progress, 1 pass, 2 fail
+    std::string rewardSummary;        // reward list shown on pass
 };
 
 class UIRenderer {
@@ -116,6 +190,47 @@ public:
                          bool showAdvanceHint,
                          const std::vector<std::string>& choices,
                          int selectedChoice);
+
+    // Track 40: quest journal overlay (J key). Centered ~70%-width panel,
+    // semi-transparent dark backdrop over the whole screen, mission list
+    // (active yellow / complete green / failed red) with objective checkmarks
+    // and a progress counter, the selected mission highlighted with its full
+    // description, divider lines between missions, and a "No active missions"
+    // message when the list is empty. scrollPx offsets the virtual content
+    // upward (mouse wheel / arrows drive it in the Engine); selected index
+    // -1 = no selection.
+    void DrawQuestJournal(const std::vector<JournalMissionEntry>& missions,
+                          int selectedIndex, float scrollPx);
+
+    // Hit-tests a screen pixel against the mission blocks at the given scroll.
+    // Returns the mission index, or -1 when the pixel is outside the panel.
+    int JournalHitTest(const std::vector<JournalMissionEntry>& missions,
+                       float scrollPx, float mx, float my) const;
+
+    // Clamps a journal scroll offset into the valid range for the current
+    // screen size + snapshot. Shared with the Engine so arrow/wheel scrolling
+    // stops at the same bounds the renderer uses.
+    float ClampJournalScroll(const std::vector<JournalMissionEntry>& missions,
+                             float scrollPx) const;
+
+    // Track 41: "Press E to attend [Class]" prompt. Bottom-center strip above
+    // the dialogue box slot; drawn only while the Engine reports a nearby
+    // scheduled class.
+    void DrawClassPrompt(const char* classLabel);
+
+    // Track 41: class schedule overlay (C key). Lists every class with its
+    // weekly window, location and per-class completion counter; the header
+    // carries the day label + next-available countdown line, the footer the
+    // respect/total line.
+    void DrawClassSchedule(const std::vector<ClassScheduleEntry>& entries,
+                           const std::string& headerLine,
+                           const std::string& nextLine,
+                           const std::string& infoLine);
+
+    // Track 41: in-class overlay (the Phase-12 placeholder minigame): the
+    // attention meter sweep with its target band, beat/objective tallies and
+    // the pass/fail banner once the session resolves.
+    void DrawClassSession(const ClassSessionView& view);
 
     // Glyph metrics (pixels).
     static constexpr float kGlyphWidth   = 5.0f;

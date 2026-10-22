@@ -42,6 +42,10 @@ public:
 
     void CycleWeatherManual();
 
+    // Phase 10 integration: set the weather state directly (save/load restore).
+    // Delegates to TransitionTo so fog/audio timers behave like a normal change.
+    void SetState(WeatherType type) { TransitionTo(type); }
+
     WeatherType GetType() const { return m_current; }
     float GetIntensity() const { return m_intensity; }
     float GetFogDensity() const { return m_fogDensity; }

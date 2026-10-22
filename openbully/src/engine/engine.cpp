@@ -994,7 +994,7 @@ void Engine::UpdateJimmyCombat(float dt) {
         }
     }
 
-    const bool blocking = m_input.IsDown(Button::Block);
+    const bool blocking = m_input.IsDown(Button::Block) && !m_aiming; // Track 39: RMB aims the slingshot when equipped
 
     // --- 2. Attack (LMB) ------------------------------------------------------
     // Can't attack during a dodge roll; otherwise costs 10 stamina. A
@@ -1102,6 +1102,13 @@ void Engine::DamagePlayer(int amount, const char* source) {
         ? m_entities.GetPlayer(m_jimmyId) : nullptr;
     if (!pc || amount <= 0) return;
 
+    // Track 41: the class session is a protected bubble — NPC fights outside
+    // the (conceptual) classroom door cannot interrupt attendance.
+    if (m_classSessionActive) {
+        Logger::Info("Hit on player IGNORED (%s): class in session",
+                     source ? source : "?");
+        return;
+    }
     if (pc->invincibleTimer > 0.0f) {
         Logger::Info("Hit DODGED (%s): 0 damage (i-frames %.2fs left)",
                      source ? source : "?", std::max(0.0f, pc->invincibleTimer));
@@ -2454,7 +2461,8 @@ void Engine::UpdateMeleeCombat(float dt) {
             // also Track 25's block hold: the heavy attack fires on the press
             // edge, the block state applies while held (both specs coexist).
             static const bool s_demo = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
-            if (!s_demo && !m_dialogue.IsActive() && pc->equippedSlot < 0 &&
+            if (!s_demo && !m_dialogue.IsActive() && !m_journalOpen &&
+                pc->equippedSlot < 0 &&
                 pc->state != DefenseState::Dodge &&
                 mc->state == Melee::CombatState::Idle) {
                 if      (m_input.IsPressed(Button::Attack))
@@ -3563,6 +3571,26 @@ bool Engine::Init(const Window& window) {
         }
     }
 
+    // Phase 10 integration: OPENBULLY_WEATHER_START=<CLEAR|RAIN|SNOW|FOG>
+    // overrides the initial weather state (verification hook, mirrors
+    // OPENBULLY_TIME_START). Applied after Init so particles/fog reset the
+    // same way as a manual W cycle.
+    if (const char* ws = std::getenv("OPENBULLY_WEATHER_START")) {
+        WeatherType wt = WeatherType::CLEAR;
+        bool known = true;
+        if      (!std::strcmp(ws, "CLEAR")) wt = WeatherType::CLEAR;
+        else if (!std::strcmp(ws, "RAIN"))  wt = WeatherType::RAIN;
+        else if (!std::strcmp(ws, "SNOW"))  wt = WeatherType::SNOW;
+        else if (!std::strcmp(ws, "FOG"))   wt = WeatherType::FOG;
+        else known = false;
+        if (known) {
+            WeatherManager::Get().SetState(wt);
+            Logger::Info("Weather: start override %s", ws);
+        } else {
+            Logger::Warning("Weather: OPENBULLY_WEATHER_START='%s' is not CLEAR|RAIN|SNOW|FOG, ignored", ws);
+        }
+    }
+
     // Track 13/15: shared unit-cube mesh for debug wireframes.
     if (m_debugCollision || m_debugPhysics)
         m_renderer->InitDebugBox();
@@ -3682,6 +3710,8 @@ bool Engine::Init(const Window& window) {
         Logger::Warning("Weapons: no models loaded (weapon system disabled)");
     }
     SpawnWeaponPickups(m_jimmySpawn);
+    // Track 39: ammo boxes in the world (walk over to reload the slingshot).
+    SpawnAmmoBoxes(m_jimmySpawn);
 
     if (!m_worldMeshes.empty()) {
         const WorldMesh* anchor = &m_worldMeshes.front();
@@ -3700,6 +3730,10 @@ bool Engine::Init(const Window& window) {
 
     // Track 30: dialogue system (same JSON probing convention as missions).
     InitDialogue();
+
+    // Track 41: class system (schedule + location + rewards; JSON probing
+    // convention shared with missions/dialogue).
+    InitClasses();
 
     // Track 31: vehicles — load 4 drivable models + spawn one of each near
     // Jimmy (E mounts within 2.5u).
@@ -3736,6 +3770,41 @@ void Engine::Update() {
     // Input snapshot + camera integration (Track 10). Escape is surfaced by
     // Input; main.cpp also checks it via Engine::QuitRequested().
     m_input.Poll();
+    // Track 40: while the quest journal is open, ESC closes it instead of
+    // quitting. The quit latch is cleared here (before the engine latches it)
+    // so it doesn't carry into the next frame. The cursor belongs to the
+    // journal too: its relative deltas are zeroed so the follow camera holds.
+    if (m_journalOpen && m_input.QuitRequested()) {
+        m_journalOpen = false;
+        m_journalScrollPx = 0.0f;
+        m_journalLmbDown = false;
+        m_input.ClearQuit();
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+        SDL_ShowCursor(SDL_DISABLE);
+        Logger::Info("Journal: closed (ESC)");
+    }
+    // Track 41: the class schedule overlay and the class session swallow ESC
+    // the same way (schedule closes; session aborts without pass/fail).
+    if (!m_journalOpen && m_scheduleOpen && m_input.QuitRequested()) {
+        m_scheduleOpen = false;
+        m_input.ClearQuit();
+        Logger::Info("Schedule: closed (ESC)");
+    }
+    if (!m_journalOpen && !m_scheduleOpen && m_classSessionActive &&
+        m_input.QuitRequested()) {
+        m_input.ClearQuit(); // session input handles the abort in UpdateClasses
+    }
+    if (m_journalOpen || m_scheduleOpen || m_classSessionActive)
+        m_input.SetMouseDelta(0, 0);
+    // Track 40: modal journal — hold the world still for the player. NPC AI
+    // and schedules keep ticking (Bully's journal is a full pause; that
+    // polish lands with a real pause system), but Jimmy drops all inputs so
+    // he does not keep walking into walls while the player reads.
+    // Track 41: schedule overlay + class session freeze Jimmy the same way.
+    if ((m_journalOpen || m_scheduleOpen || m_classSessionActive) && m_jimmyActive) {
+        for (int b = 0; b < int(Button::Count); ++b)
+            m_input.SetButton(Button(b), false);
+    }
     if (m_input.QuitRequested()) m_quitRequested = true;
 
     // OPENBULLY_SAVE_DEMO=1: scripted save/load for headless verification.
@@ -3865,10 +3934,19 @@ void Engine::Update() {
     HandleScheduleKeys();
     UpdateSchedules();
 
+    // Track 41: class system — C toggle, prompt detection, session minigame.
+    // Runs before UpdateDialogue so the deferred E->attend keeps dialogue
+    // priority within the same frame (UpdateClassAttend, below).
+    UpdateClasses(float(deltaTime));
+
     // Track 30: dialogue input + typewriter. Runs before the combat/weapon
     // updates so their input handlers see the conversation-active gate the
     // same frame (E starts/advances the talk instead of attacking/pickup).
     UpdateDialogue(float(deltaTime));
+
+    // Track 41: deferred attend — E was pressed on a class prompt; start the
+    // session unless the dialogue started instead (same-frame E arbitration).
+    UpdateClassAttend();
 
     // Track 24: combat input + grapple state machine (after the NPC update
     // so hold positions settle this frame). The demo script runs ahead of
@@ -3885,6 +3963,10 @@ void Engine::Update() {
 
     // Track 26: weapon pickups/equip/attacks, then projectile integration.
     UpdateWeapons(float(deltaTime));
+    // Track 39: slingshot aim mode (RMB) + manual reload (R) must run before
+    // the combat input consumes LMB so the same frame's aim state is used.
+    UpdateAimMode(float(deltaTime));
+    UpdateAmmoPickups(float(deltaTime));
     UpdateProjectiles(float(deltaTime));
 
     // Track 31: vehicles — E toggle, mounted driving, then the camera (the
@@ -3914,6 +3996,9 @@ void Engine::Update() {
         if (const Transform* jt = m_entities.GetTransform(m_jimmyId))
             m_missions.Update(jt->position);
     }
+
+    // Track 40: quest journal — input + snapshot rebuild + transition log.
+    UpdateQuestJournal();
 
     // Track 21: audio listener follows the camera; M toggles mute. IsPressed
     // fires on the down-transition frame only, so holding M doesn't flap.
@@ -4283,9 +4368,12 @@ EntityID Engine::FindNearestVehicle(const glm::vec3& pos, float maxDist) const {
 // E-press toggle. Mount guards: not while a dialogue is active/starting,
 // mid-grapple, mid-melee, or dodging. Dismount always allowed.
 void Engine::TryToggleVehicleMount() {
+    if (m_journalOpen) return;   // Track 40: the journal is modal
+    if (m_scheduleOpen || m_classSessionActive) return; // Track 41: class UI
     if (m_mountedVehicle.IsValid()) { DismountVehicle(); return; }
     if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
     if (m_dialogue.IsActive() || m_dialogueNpc.IsValid()) return; // talk takes E
+    if (m_classPromptIdx >= 0) return; // Track 41: attend-class takes E
     if (m_grappleTarget.IsValid()) return;
     if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId))
         if (mc->state != Melee::CombatState::Idle) return;
@@ -4579,7 +4667,8 @@ void Engine::UpdateVehicles(float dt) {
         }
     }
 
-    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive())
+    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive() &&
+        !m_journalOpen) // Track 40: journal is modal
         TryToggleVehicleMount();
 
     // Idle bob/spin is NOT applied to vehicles (they stay parked).
@@ -4626,6 +4715,15 @@ void Engine::UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
     const float steer    = (m_input.IsDown(Button::Right) ? 1.0f : 0.0f) -
                            (m_input.IsDown(Button::Left)  ? 1.0f : 0.0f);
 
+    // Track 46: W + S on the bike = wheelie trigger (rear-brake clutch-up).
+    // Raw brake fed into the body while throttling would fight the drive
+    // (22 u/s^2 brake vs 9 u/s^2 accel -> stall + reverse), so while the
+    // bike rolls with both pedals down the brake FORCE is suppressed for the
+    // body; the feel layer still sees the raw inputs and lifts the front.
+    const bool wsWheelie = vc->type == VehicleType::Bike && throttle > 0.5f &&
+                           brake > 0.5f && m_vehicle.speedAlongFacing > 1.0f;
+    const float bodyBrake = wsWheelie ? 0.0f : brake;
+
     // (Re)bind the collision world and seed the body from the entity state
     // on the first physics frame after a mount (or after a world swap).
     if (m_vehicle.world != m_collisionWorld.get()) {
@@ -4653,9 +4751,20 @@ void Engine::UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
     m_vehicleAccum += std::min(dt, 0.1f);
     int steps = 0;
     while (m_vehicleAccum >= kFixedDt && steps < 4) {
-        m_vehicle.Update(kFixedDt, steer, throttle, brake);
+        m_vehicle.Update(kFixedDt, steer, throttle, bodyBrake);
         m_vehicleAccum -= kFixedDt;
         ++steps;
+    }
+
+    // Track 46: bunny hop — Space edge while rolling and grounded hops the
+    // body upward; the suspension then launches it and the trick scores on
+    // the airtime until the wheels re-contact (StepTricks via UpdateTrickSc).
+    if (m_vehicle.wheelContacts > 0 &&
+        std::fabs(m_vehicle.speedAlongFacing) > 1.5f &&
+        m_input.IsPressed(Button::Up)) {
+        m_vehicle.velocity.y += kBunnyHopImpulse;
+        Logger::Info("TRICK: bunny hop impulse (vy=%.1f)",
+                     m_vehicle.velocity.y);
     }
 
     // Drive-gate debugging: dump the first 6 THROTTLED frames to stdout
@@ -4716,9 +4825,10 @@ void Engine::UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
 }
 
 // Track 33: handling feel — feeds the per-frame input snapshot through the
-// feel layer (per-type drive character, wheelie, crash/eject) and applies the
-// results on top of the Track 32 body: yaw agility delta, wheelie pitch,
-// crash tilt, and the eject/dismount path.
+// feel layer (per-type drive character, wheelie, stoppie, crash/eject) and
+// applies the results on top of the Track 32 body: yaw agility delta, pitch,
+// crash tilt, and the eject/dismount path. Track 46: this is also where the
+// trick scoring machine is driven (poses in, events out).
 void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
                                float throttle, float brake, float steer) {
     FeelState& feel = m_vehicleFeel;
@@ -4727,7 +4837,12 @@ void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
     feel.inBrake    = brake > 0.5f;
     feel.inLeanL    = steer < -0.5f;
     feel.inLeanR    = steer > 0.5f;
-    feel.inWheelie  = m_input.IsDown(Button::Sprint); // Shift = wheelie on bike
+    // Track 46: the wheelie trigger is now W+S (brake-clutch-up) OR the
+    // original Shift modifier (kept for backward compatibility with the
+    // Track 33 script/demos). Both feed the same feel pose channel.
+    const bool wsTrigger = feel.inThrottle && feel.inBrake;
+    feel.inWheelie  = m_input.IsDown(Button::Sprint) || wsTrigger;
+    feel.inGrounded = m_vehicle.wheelContacts > 0;
 
     const float preSpeed = m_vehicle.speedAlongFacing;
     FeelOut fo = StepFeel(feel, m_vehicle.position, m_vehicle.yaw, preSpeed, dt);
@@ -4737,11 +4852,19 @@ void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
     m_vehicle.yaw += fo.yawDelta;
     vc->yaw = m_vehicle.yaw;
 
-    // Wheelie pitch overlays the terrain pitch (cosmetic channel only).
-    if (feel.wheelieAngle > 0.0f)
-        m_vehicle.cosmeticPitch = fo.pitch;
+    // Wheelie/stoppie pitch overlays the terrain pitch (cosmetic channel).
+    // SIGN NOTE: positive rotation.x tips the nose DOWN (glm Rx(+X) on a
+    // +Z-forward body — matches Track 32's weight-transfer convention), and
+    // the feel layer reports +deg as "front lifted", so the cosmetic value is
+    // NEGATED here: a wheelie must render nose-up, a stoppie nose-down.
+    if (feel.wheelieActive || feel.stoppieActive)
+        m_vehicle.cosmeticPitch = -fo.pitch;
     else if (m_vehicle.cosmeticPitch != 0.0f && !feel.crashed)
         m_vehicle.cosmeticPitch = 0.0f;
+
+    // Track 46: trick scoring — pose + body + raw-input snapshot in, events
+    // (logs, popups, stats, achievements) out.
+    UpdateTrickScoring(dt, feel, fo);
 
     // Crash: lay the body on its side; auto-right clears it after 3 s.
     if (feel.crashed)
@@ -4775,6 +4898,60 @@ void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
     if (fo.stuntLogged)
         Logger::Info("VEHICLE: %s wheelie stunt accepted",
                      VehicleTypeName(vc->type));
+}
+
+// Track 46: stunt trick scoring. Runs once per mounted frame, right after
+// StepFeel. Inputs are read from the feel state (wheelie/stoppie poses), the
+// physics body (grounded/airborne), raw keyboard edges (Space = bunny hop)
+// and the crash path (fo.crashBegan / over-rotation ejects); StepTricks owns
+// the whole state machine (active/duration/combo/pending/bank/stats).
+void Engine::UpdateTrickScoring(float dt, const FeelState& feel,
+                                const FeelOut& fo) {
+    TrickInputs ti;
+    ti.mounted  = true;
+    ti.wheelie  = feel.type == VehicleType::Bike && feel.wheelieActive;
+    ti.stoppie  = feel.type == VehicleType::Bike && feel.stoppieActive;
+    ti.grounded = feel.inGrounded;
+    ti.airborne = m_vehicle.Airborne();
+    // Space edge, gated on rolling forward + grounded (the impulse itself is
+    // applied in UpdateMountedVehiclePhysics with the same gate).
+    ti.hopStart = ti.grounded &&
+                  std::fabs(m_vehicle.speedAlongFacing) > 1.5f &&
+                  m_input.IsPressed(Button::Up);
+    // Crash edges: wall impact eject, wheelie over-rotation, stoppie loop.
+    ti.crash    = fo.crashBegan || fo.ejectRider || fo.stoppieFail;
+
+    TrickEvents te;
+    StepTricks(m_tricks, ti, dt, te);
+
+    if (te.started)
+        Logger::Info("TRICK: %s started", TrickName(te.startedType));
+    if (te.landed) {
+        Logger::Info("TRICK: %s landed %.1fs -> +%d (combo x%d, pending %d)",
+                     TrickName(te.landedType), te.landedTime, te.landedPoints,
+                     te.landedMult, m_tricks.pending);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s +%d", TrickName(te.landedType),
+                      te.landedPoints);
+        std::snprintf(m_tricks.popupText, sizeof(m_tricks.popupText), "%s",
+                      buf);
+        m_tricks.popupTimer = 2.0f;
+    }
+    if (te.banked)
+        Logger::Info("TRICK: combo banked +%d (total %d)", te.bankedPoints,
+                     m_tricks.totalScore);
+    if (te.comboLost)
+        Logger::Info("TRICK: COMBO LOST (-%d pending, multiplier reset)",
+                     te.lostPoints);
+    if (te.achievement >= 0) {
+        const TrickAchievement& a = GetTrickAchievements()[te.achievement];
+        Logger::Info("ACHIEVEMENT: %s - %s", a.name, a.desc);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "ACHIEVEMENT: %s", a.name);
+        std::snprintf(m_tricks.popupText, sizeof(m_tricks.popupText), "%s",
+                      buf);
+        m_tricks.popupTimer = 3.0f;
+    }
 }
 
 // Vehicle camera: behind and above the vehicle along its yaw, slight FOV
@@ -4875,6 +5052,11 @@ void Engine::UpdateDialogue(float dt) {
         }
     }
 
+    // Track 40: the quest journal is a modal overlay. Keep the typewriter
+    // ticking so a conversation isn't left mid-line, but ignore E / arrow /
+    // choice input until the journal closes.
+    if (m_journalOpen) { m_dialogue.Update(dt); return; }
+
     if (m_dialogue.IsActive()) {
         const std::vector<DialogueChoice>* choices = m_dialogue.ActiveChoices();
         if (choices && !choices->empty()) {
@@ -4903,8 +5085,12 @@ void Engine::UpdateDialogue(float dt) {
             m_dialogue.Advance();
         }
         m_dialogue.Update(dt); // typewriter reveal (0.03 s per character)
-    } else if (m_input.WasKeyPressed(SDL_SCANCODE_E)) {
-        // Start: E near an NPC when not in combat.
+    } else if (!m_journalOpen && !m_classSessionActive && !m_scheduleOpen &&
+               m_classPromptIdx < 0 &&
+               m_input.WasKeyPressed(SDL_SCANCODE_E)) {
+        // Start: E near an NPC when not in combat and no class UI is up.
+        // Track 41: a visible class prompt takes E first (UpdateClassAttend
+        // starts the session right after this frame's dialogue check).
         TryStartDialogue();
     }
 }
@@ -5225,14 +5411,187 @@ void Engine::HandleHudDebugKeys() {
         Logger::Info("HUD debug: damage 10 -> health %d/%d",
                      pc->health.current, pc->health.max);
     }
-    if (m_input.WasKeyPressed(SDL_SCANCODE_J)) {
-        pc->wanted = std::min(5, pc->wanted + 1);
-        Logger::Info("HUD debug: wanted -> %d", pc->wanted);
-    }
+    // Track 40: J now toggles the quest journal (see UpdateQuestJournal).
     if (m_input.WasKeyPressed(SDL_SCANCODE_K)) {
         pc->wanted = std::max(0, pc->wanted - 1);
         Logger::Info("HUD debug: wanted -> %d", pc->wanted);
     }
+}
+
+// --- Track 40: quest journal ---------------------------------------------------
+
+void Engine::AppendJournalLog(const std::string& line) {
+    m_journalLog.push_back(line);
+    while (m_journalLog.size() > 6)
+        m_journalLog.erase(m_journalLog.begin());
+}
+
+// Per-frame quest journal: input (J toggle, arrow/wheel scroll, click select),
+// rebuild of the UI snapshot from MissionManager, and the rolling event log
+// for activation / objective-completion transitions. Drawing happens in Render
+// via DrawQuestJournal, which reads the snapshot rebuilt here.
+void Engine::UpdateQuestJournal() {
+    // OPENBULLY_JOURNAL_DEMO=1: headless verification. Opens the journal at
+    // t=0.5s, then activates the demo missions and completes one objective
+    // every 1.5s, so a single run exercises activation, objective completion,
+    // mission completion, and chaining without OS-level key injection (same
+    // *_DEMO philosophy as the other verification hooks).
+    static const bool s_journalDemo = std::getenv("OPENBULLY_JOURNAL_DEMO") != nullptr;
+    if (s_journalDemo) {
+        if (!m_journalOpen && m_time >= 0.5) {
+            m_journalOpen = true;
+            m_journalScrollPx = 0.0f;
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_ShowCursor(SDL_ENABLE);
+            Logger::Info("Journal demo: opened");
+        }
+        if (m_journalOpen && m_jimmyActive) {
+            static double s_lastStep = -1e9;
+            if (m_time >= 1.0 && m_time - s_lastStep >= 1.5) {
+                s_lastStep = m_time;
+                // Activate the first inactive mission, else complete the first
+                // active mission's current objective. Chaining does the rest.
+                bool activated = false;
+                for (size_t i = 0; i < m_missions.MissionCount(); ++i)
+                    if (m_missions.ActivateMission(uint32_t(i))) { activated = true; break; }
+                if (!activated) {
+                    for (size_t i = 0; i < m_missions.MissionCount(); ++i) {
+                        const Mission* m = m_missions.GetMission(uint32_t(i));
+                        if (!m || m->state != MissionState::Active) continue;
+                        if (m->currentObjective >= m->objectives.size()) continue;
+                        m_missions.CompleteObjective(uint32_t(i), m->currentObjective);
+                        break;
+                    }
+                }
+            }
+            // Cycle the selection so the highlight is visibly moving across
+            // the recurring screenshots.
+            static double s_lastCycle = 0.0;
+            if (!m_journalMissions.empty() && m_time - s_lastCycle >= 2.0) {
+                s_lastCycle = m_time;
+                m_journalSelected = (m_journalSelected + 1) %
+                                    int(m_journalMissions.size());
+            }
+        }
+    }
+
+    // --- input ----------------------------------------------------------------
+    // Track 41: the schedule overlay and class session are modal — no journal
+    // toggling while class UI is up.
+    if (m_input.WasKeyPressed(SDL_SCANCODE_J) &&
+        !m_scheduleOpen && !m_classSessionActive) {
+        m_journalOpen = !m_journalOpen;
+        m_journalScrollPx = 0.0f;
+        // The journal takes the cursor: absolute mode lets a click be
+        // hit-tested against the mission blocks. Restored on close.
+        SDL_SetRelativeMouseMode(m_journalOpen ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor(m_journalOpen ? SDL_ENABLE : SDL_DISABLE);
+        m_journalLmbDown = false;
+        Logger::Info("Journal: %s", m_journalOpen ? "opened" : "closed");
+    }
+    if (m_journalOpen) {
+        const int count = int(m_journalMissions.size());
+        if (count > 0) {
+            if (m_input.WasKeyPressed(SDL_SCANCODE_DOWN) ||
+                m_input.WasKeyPressed(SDL_SCANCODE_S))
+                m_journalSelected = (m_journalSelected + 1) % count;
+            if (m_input.WasKeyPressed(SDL_SCANCODE_UP) ||
+                m_input.WasKeyPressed(SDL_SCANCODE_W))
+                m_journalSelected = (m_journalSelected + count - 1) % count;
+        }
+        // Mouse-wheel scroll: main.cpp forwards the delta (SDL_PollEvent
+        // drains the events before Input::Poll can see them).
+        if (m_journalWheelDelta != 0) {
+            m_journalScrollPx -= float(m_journalWheelDelta) * 24.0f;
+            m_journalWheelDelta = 0;
+        }
+        // Click-to-select: in absolute mode SDL_GetMouseState gives real
+        // window coordinates for the hit-test.
+        int mx = 0, my = 0;
+        const Uint32 mb = SDL_GetMouseState(&mx, &my);
+        const bool lmb = (mb & SDL_BUTTON_LMASK) != 0;
+        if (lmb && !m_journalLmbDown) {
+            const int hit = m_ui.JournalHitTest(m_journalMissions,
+                                                m_journalScrollPx,
+                                                float(mx), float(my));
+            if (hit >= 0) m_journalSelected = hit;
+        }
+        m_journalLmbDown = lmb;
+    }
+    m_journalScrollPx = m_ui.ClampJournalScroll(m_journalMissions, m_journalScrollPx);
+
+    // --- snapshot: MissionManager -> UI rows (active, complete, failed) --------
+    m_journalMissions.clear();
+    const size_t missionCount = m_missions.MissionCount();
+    m_journalMissions.reserve(missionCount);
+    // Three passes: active first, then complete, then failed. Not-yet-started
+    // (Inactive) missions are hidden until they activate.
+    for (int pass = 0; pass < 3; ++pass) {
+        for (size_t i = 0; i < missionCount; ++i) {
+            const Mission* m = m_missions.GetMission(uint32_t(i));
+            if (!m) continue;
+            const int st = m->state == MissionState::Active   ? 0 :
+                           m->state == MissionState::Complete ? 1 :
+                           m->state == MissionState::Failed   ? 2 : -1;
+            if (st != pass) continue;
+            JournalMissionEntry e;
+            e.name = m->name;
+            e.description = m->description.empty()
+                               ? m->objectives.front().description
+                               : m->description;
+            e.state = st;
+            e.currentObjectiveIndex =
+                (st == 0 && m->currentObjective < m->objectives.size())
+                    ? int(m->currentObjective) : -1;
+            for (const Objective& o : m->objectives)
+                e.objectives.push_back({o.description, o.complete});
+            m_journalMissions.push_back(std::move(e));
+        }
+    }
+    if (m_journalSelected >= int(m_journalMissions.size()))
+        m_journalSelected = int(m_journalMissions.size()) - 1;
+    if (m_journalSelected < 0) m_journalSelected = 0;
+
+    // --- transition log: activation / objective completion -------------------
+    // Diff the previous frame's (state, currentObjective) per mission and log
+    // every transition. The feed renders in the journal's details pane.
+    if (m_missionStatePrev.size() != missionCount) {
+        m_missionStatePrev.assign(missionCount, 0xFF);
+        m_missionObjPrev.assign(missionCount, 0);
+    }
+    for (size_t i = 0; i < missionCount; ++i) {
+        const Mission* m = m_missions.GetMission(uint32_t(i));
+        if (!m) continue;
+        const uint8_t  st = uint8_t(m->state);
+        const size_t   ob = m->currentObjective;
+        if (m_missionStatePrev[i] == 0xFF) {  // first observation: no log
+            m_missionStatePrev[i] = st;
+            m_missionObjPrev[i]  = ob;
+            continue;
+        }
+        if (st != m_missionStatePrev[i]) {
+            if (st == uint8_t(MissionState::Active))
+                AppendJournalLog("NEW MISSION: " + m->name);
+            else if (st == uint8_t(MissionState::Complete))
+                AppendJournalLog("MISSION COMPLETE: " + m->name);
+            else if (st == uint8_t(MissionState::Failed))
+                AppendJournalLog("MISSION FAILED: " + m->name);
+            m_missionStatePrev[i] = st;
+        } else if (ob != m_missionObjPrev[i] &&
+                   st == uint8_t(MissionState::Active) &&
+                   m_missionObjPrev[i] < m->objectives.size()) {
+            AppendJournalLog("OBJECTIVE DONE: " +
+                             m->objectives[m_missionObjPrev[i]].description);
+            m_missionObjPrev[i] = ob;
+        }
+    }
+}
+
+// Track 40: draw the journal overlay on view 10, above every other UI element.
+void Engine::DrawQuestJournal() {
+    if (!m_journalOpen || !m_ui.IsInitialized()) return;
+    m_ui.DrawQuestJournal(m_journalMissions, m_journalSelected,
+                          m_journalScrollPx);
 }
 
 // Track 20 (UI): refresh the plain-data HUD snapshot from live game state.
@@ -5269,6 +5628,14 @@ void Engine::UpdateHUD(float dt) {
             m_hudState.stamina = int(pc->stamina.current);
             m_hudState.maxStamina = int(pc->stamina.max);
             m_hudState.combatState = int(pc->state);
+            // Track 39: aim mode + slingshot ammo for the crosshair readout.
+            m_hudState.aiming = m_aiming;
+            m_hudState.slingshotAmmo = -1;
+            if (pc->equippedSlot >= 0 &&
+                pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile) {
+                m_hudState.slingshotAmmo = pc->slots[pc->equippedSlot].ammo;
+                m_hudState.slingshotCap = SlingshotCapacity();
+            }
         }
 
         // Track 24: grapple HUD status + mash progress.
@@ -5353,8 +5720,13 @@ void Engine::UpdateGameTime(float dt) {
 }
 
 // Derives the integer HUD clock from the fractional game-time accumulator.
+// Track 41: wrapping past midnight bumps the day counter (0 = Monday) that
+// class schedules read.
 void Engine::SyncGameClock() {
-    while (m_gameTimeMinutes >= 24.0 * 60.0) m_gameTimeMinutes -= 24.0 * 60.0;
+    while (m_gameTimeMinutes >= 24.0 * 60.0) {
+        m_gameTimeMinutes -= 24.0 * 60.0;
+        ++m_gameDay;
+    }
     if (m_gameTimeMinutes < 0.0) m_gameTimeMinutes = 0.0;
     m_clockMinutes = int(m_gameTimeMinutes) % (24 * 60);
     m_hudState.clockMinutes = m_clockMinutes;
@@ -5940,6 +6312,15 @@ void Engine::Render() {
                                  choiceTexts,
                                  m_dialogueChoiceSel);
         }
+
+        // Track 40: quest journal overlay — drawn last, above every other
+        // UI element (modal full-screen panel).
+        DrawQuestJournal();
+
+        // Track 41: class prompt, schedule overlay and session screen. Above
+        // the journal so an open schedule is never double-dimmed by a stale
+        // journal frame.
+        DrawClassOverlays();
     }
 
     m_renderer->FlushScreenshot(); // flush pending screenshot before present
@@ -6023,7 +6404,7 @@ void Engine::Shutdown() {
 bool Engine::LoadWeaponModels() {
     static const char* kDirs[] = { "data/extracted/world", "../data/extracted/world" };
     size_t loaded = 0;
-    for (int wi = 1; wi <= 4; ++wi) { // table order: Bat..Slingshot (skip Unarmed)
+    for (int wi = 1; wi <= 5; ++wi) { // table order: Bat..Plank (skip Unarmed)
         const WeaponData& data = GetWeaponData(WeaponType(wi));
         if (!data.modelNif) continue;
         bool ok = false;
@@ -6095,11 +6476,12 @@ void Engine::SpawnWeaponPickups(const glm::vec3& center) {
     static const glm::vec3 kOffsets[] = {
         { 2.0f, 0.0f,  1.0f }, { -2.5f, 0.0f, 0.5f },
         { 1.5f, 0.0f, -2.0f }, {  0.5f, 0.0f, 2.5f },
+        { 3.0f, 0.0f, -0.5f },
     };
     for (size_t i = 0; i < m_weaponModels.size(); ++i) {
         const WeaponModel& wmodel = m_weaponModels[i];
         const WeaponData& data = GetWeaponDataById(wmodel.id);
-        glm::vec3 pos = center + kOffsets[i % 4];
+        glm::vec3 pos = center + kOffsets[i % 5];
         if (m_collisionWorld) {
             Ray down;
             down.origin[0] = pos.x; down.origin[1] = pos.y + 6.0f; down.origin[2] = pos.z;
@@ -6185,16 +6567,96 @@ void Engine::UpdateWeapons(float dt) {
                 }
             }
         }
-        if (m_time >= 2.5 && pc->equippedSlot >= 0 && pc->attackCooldown <= 0.0f) {
-            WeaponTryAttack(pc); // slingshot if picked, else melee swing
+        // Track 39: ranged demo. Aim for the first seconds (crosshair proof),
+        // then walk to the NPC crowd and fire body-facing shots at the nearest
+        // target (damage + reaction proof). The spawn sits on a roof shell
+        // with no collision beneath, so aimed arcs there never hit anything.
+        if (m_time >= 2.0 && pc->equippedSlot >= 0 &&
+            pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile) {
+            m_aiming = (m_time < 4.0);
+            if (!m_aiming) {
+                EntityID tgt{};
+                float bd = 60.0f;
+                m_entities.ForEachAI([&](EntityID id, const Transform& nt,
+                                          const AIComponent& ai) {
+                    if (ai.state == AIState::Ko) return;
+                    const float d = glm::length(nt.position - jt->position);
+                    if (d < bd) { bd = d; tgt = id; }
+                });
+                // No NPC nearby (schedules rotate the crowd out): spawn a
+                // guaranteed static target 8u in front of Jimmy, once.
+                static bool s_targetSpawned = false;
+                if (!tgt.IsValid() && !s_targetSpawned && m_testBoxValid) {
+                    EntityID e = m_entities.Create();
+                    Transform t;
+                    t.position = jt->position + glm::vec3(0.0f, -1.0f, 10.0f); // roof plane
+                    m_entities.AddTransform(e, t);
+                    MeshComponent mc;
+                    mc.isBox = true;
+                    m_entities.AddMesh(e, mc);
+                    AIComponent ai;
+                    ai.state = AIState::Idle;
+                    ai.lockIdle = true;
+                    ai.health.current = 60;
+                    m_entities.AddAI(e, ai);
+                    Melee::CombatComponent mmc;
+                    m_entities.AddMeleeCombat(e, mmc);
+                    s_targetSpawned = true;
+                    Logger::Info("Ranged demo: target box NPC spawned at (%.1f, %.1f, %.1f)",
+                                 t.position.x, t.position.y, t.position.z);
+                    tgt = e;
+                }
+                if (tgt.IsValid()) {
+                    if (const Transform* ntt = m_entities.GetTransform(tgt)) {
+                        if (Transform* pt = m_entities.GetTransform(m_jimmyId)) {
+                            const glm::vec3 to = ntt->position - jt->position;
+                            const float d = glm::length(to);
+                            if (d > 6.0f)
+                                pt->position += (to / d) * (4.0f * float(dt));
+                            // Hold the spawn-roof problem away: keep Jimmy on
+                            // the target's plane (the shell under the spawn has
+                            // no collision, so he free-falls without this).
+                            pt->position.y = ntt->position.y;
+                            if (PhysicsComponent* pp = m_entities.GetPhysics(m_jimmyId))
+                                pp->velocity.y = 0.0f;
+                            pc->facingYaw   = std::atan2(to.x, to.z);
+                            pc->facingValid = true;
+                        }
+                    } else {
+                        Logger::Info("Ranged demo: tgt transform NULL");
+                    }
+                } else {
+                    static double s_noTgtLog = 0.0;
+                    if (m_time - s_noTgtLog > 2.0) {
+                        s_noTgtLog = m_time;
+                        Logger::Info("Ranged demo: no NPC target in 60u yet");
+                    }
+                }
+            }
+        }
+        if (m_time >= 2.5 && pc->equippedSlot >= 0 &&
+            pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile) {
+            // Demo drives its own cadence (the cooldown gate stalls once the
+            // rock is stuck in a vehicle); clearing it lets the shot fire.
+            static double s_lastShot = -10.0;
+            if (m_time - s_lastShot > 0.9) {
+                s_lastShot = m_time;
+                pc->attackCooldown = 0.0f;
+                WeaponTryAttack(pc);
+            }
         }
     }
 
-    // --- Pickup: E near a dropped weapon -------------------------------------
+    // --- Pickup: E near a dropped weapon, or walk-over (Track 38) -----------
     // Track 30: E is the dialogue key; a conversation takes precedence.
-    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive()) {
-        EntityID best{};
-        float bestDist = 2.2f; // pickup radius
+    // Track 40: the quest journal is modal — no E pickup while it is open.
+    // Track 41: class UI (prompt/schedule/session) takes E first.
+    // Track 38: walking over a pickup also collects it (1.2u radius).
+    EntityID best{};
+    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive() &&
+        !m_journalOpen && !m_scheduleOpen && !m_classSessionActive &&
+        m_classPromptIdx < 0) {
+        float bestDist = 2.2f; // E-key pickup radius
         m_entities.ForEach([&](EntityID id, Transform& t,
                                const EntityManager::EntityRecord&) {
             if (id == m_jimmyId) return;
@@ -6202,34 +6664,44 @@ void Engine::UpdateWeapons(float dt) {
             const float d = glm::length(t.position - jt->position);
             if (d < bestDist) { bestDist = d; best = id; }
         });
-        if (best.IsValid() && m_entities.IsAlive(best)) {
-            const WeaponComponent* wc = m_entities.GetWeapon(best);
-            int freeSlot = -1;
-            for (int i = 0; i < 5; ++i)
-                if (pc->slots[i].type == WeaponType::Unarmed) { freeSlot = i; break; }
-            if (freeSlot < 0) {
-                Logger::Info("Pickup failed: inventory full");
-            } else if (wc) {
-                const WeaponData& data = GetWeaponDataById(wc->weaponId);
-                pc->slots[freeSlot].type = wc->type;
-                pc->slots[freeSlot].weaponId = wc->weaponId;
-                pc->slots[freeSlot].durability = wc->durability > 0
-                    ? wc->durability : data.durability;
-                pc->slots[freeSlot].ammo = wc->ammo;
-                if (pc->equippedSlot < 0) pc->equippedSlot = freeSlot;
-                Logger::Info("Picked up %s -> slot %d (durability %d, ammo %d)",
-                             data.name, freeSlot, pc->slots[freeSlot].durability,
-                             pc->slots[freeSlot].ammo);
-                m_entities.Destroy(best);
-            }
+    } else {
+        float bestDist = 1.2f; // walk-over radius
+        m_entities.ForEach([&](EntityID id, Transform& t,
+                               const EntityManager::EntityRecord&) {
+            if (id == m_jimmyId) return;
+            if (!m_entities.GetWeapon(id)) return;
+            const float d = glm::length(t.position - jt->position);
+            if (d < bestDist) { bestDist = d; best = id; }
+        });
+    }
+    if (best.IsValid() && m_entities.IsAlive(best)) {
+        const WeaponComponent* wc = m_entities.GetWeapon(best);
+        int freeSlot = -1;
+        for (int i = 0; i < 5; ++i)
+            if (pc->slots[i].type == WeaponType::Unarmed) { freeSlot = i; break; }
+        if (freeSlot < 0) {
+            Logger::Info("Pickup failed: inventory full");
+        } else if (wc) {
+            const WeaponData& data = GetWeaponDataById(wc->weaponId);
+            pc->slots[freeSlot].type = wc->type;
+            pc->slots[freeSlot].weaponId = wc->weaponId;
+            pc->slots[freeSlot].durability = wc->durability > 0
+                ? wc->durability : data.durability;
+            pc->slots[freeSlot].ammo = wc->ammo;
+            if (pc->equippedSlot < 0) pc->equippedSlot = freeSlot;
+            Logger::Info("Picked up %s -> slot %d (durability %d, ammo %d)",
+                         data.name, freeSlot, pc->slots[freeSlot].durability,
+                         pc->slots[freeSlot].ammo);
+            m_entities.Destroy(best);
         }
     }
 
-    // --- Slot selection: 1-5 (deferred during dialogue: 1-4 pick choices) ---
+    // Slot selection: 1-5 (deferred during dialogue: 1-4 pick choices;
+    // deferred while the quest journal is open — Track 40 modality).
     static const SDL_Scancode kSlotKeys[5] = {
         SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4, SDL_SCANCODE_5,
     };
-    for (int i = 0; i < 5 && !m_dialogue.IsActive(); ++i) {
+    for (int i = 0; i < 5 && !m_dialogue.IsActive() && !m_journalOpen; ++i) {
         if (m_input.WasKeyPressed(kSlotKeys[i])) {
             if (pc->slots[i].type == WeaponType::Unarmed) {
                 Logger::Info("Slot %d empty", i + 1);
@@ -6240,6 +6712,14 @@ void Engine::UpdateWeapons(float dt) {
                              pc->equippedSlot == i ? data.name : "(unarmed)");
             }
         }
+    }
+
+    // --- Unequip: 0 goes back to fists (Track 38) ---------------------------
+    if (!m_dialogue.IsActive() && !m_journalOpen &&
+        m_input.WasKeyPressed(SDL_SCANCODE_0) &&
+        pc->equippedSlot >= 0) {
+        pc->equippedSlot = -1;
+        Logger::Info("Unequipped (fists)");
     }
 
     // --- Pickup bob + spin (visual only) --------------------------------------
@@ -6265,8 +6745,8 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
 
     const glm::vec3 fwd(std::sin(pc->facingYaw), 0.0f, std::cos(pc->facingYaw));
     int damage = data.damage;
-    if (pc->counterArmed) {
-        damage = int(float(damage) * 4.0f); // Track 25 counter bonus
+    if (pc->counterArmed && data.type != WeaponType::RangedProjectile) {
+        damage = int(float(damage) * 4.0f); // Track 25 counter bonus (melee only)
         pc->counterArmed = false;
         pc->state = DefenseState::Normal;
         Logger::Info("COUNTER ATTACK with %s!", data.name);
@@ -6276,17 +6756,30 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
     bool hitSomething = false;
     if (data.type == WeaponType::RangedProjectile) {
         // --- Slingshot: ammo gate + projectile spawn --------------------------
+        // Track 39: reload (auto on empty, or manual R) before giving up; fire
+        // toward the camera aim direction when aiming, body facing otherwise.
         if (slot.ammo <= 0) {
-            Logger::Info("%s: out of ammo", data.name);
-            return;
+            const int reloaded = std::min(SlingshotCapacity(), kAmmoPerBox);
+            slot.ammo = reloaded;
+            Logger::Info("%s: auto-reloaded to %d rocks", data.name, slot.ammo);
         }
         slot.ammo--;
-        const glm::vec3 origin = jt->position + glm::vec3(0.0f, 1.3f, 0.0f) +
-                                 fwd * 0.5f;
-        const glm::vec3 vel = fwd * 18.0f + glm::vec3(0.0f, 1.2f, 0.0f);
-        SpawnProjectile(origin, vel, damage);
-        Logger::Info("%s fired (ammo left %d, damage %d)",
-                     data.name, slot.ammo, damage);
+        glm::vec3 dir = fwd;
+        if (m_aiming) {
+            // Camera aim: yaw is live, pitch is clamped (see kAimPitchMin/Max
+            // above) so the follow camera's downward view doesn't fire the
+            // rock into the ground.
+            const float cy = std::cos(m_camera.GetYaw()), sy = std::sin(m_camera.GetYaw());
+            const float pitch = glm::clamp(m_camera.GetPitch(), kAimPitchMin, kAimPitchMax);
+            const float cp = std::cos(pitch), sp = std::sin(pitch);
+            dir = glm::vec3(sy * cp, sp, cy * cp);
+        }
+        const glm::vec3 origin = jt->position + glm::vec3(0.0f, 1.3f, 0.0f) + dir * 0.5f;
+        const glm::vec3 vel = dir * 22.0f;
+        const float kb = m_aiming ? kRockKnockback : kRockKnockback * 0.5f;
+        SpawnProjectile(origin, vel, damage, m_jimmyId, kb);
+        Logger::Info("%s fired (ammo left %d, damage %d%s)",
+                     data.name, slot.ammo, damage, m_aiming ? ", aimed" : "");
         hitSomething = true; // durability still wears on each shot
     } else {
         // --- Melee: sweep every NPC inside the extended hit arc ---------------
@@ -6305,6 +6798,16 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
                 return;
             // Track 28: funnel through DamageNpc (flinch + reactions + KO).
             DamageNpc(id, m_jimmyId, damage, t.position, 0.4f);
+            // Track 38: weapon knockback impulse (attacker-relative), same
+            // decay path as the punch knockback in UpdateCombat.
+            if (Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(id)) {
+                glm::vec3 kdir = t.position - jt->position;
+                kdir.y = 0.0f;
+                const float klen = glm::length(kdir);
+                if (klen > 1e-4f)
+                    tmc->knockbackVel = (kdir / klen) * data.knockback +
+                                        glm::vec3(0.0f, 0.6f, 0.0f);
+            }
             hitSomething = true;
             if (const AIComponent* ai2 = m_entities.GetAI(id))
                 Logger::Info("%s hit NPC idx=%u for %d (health %d/%d)",
@@ -6330,8 +6833,18 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
 }
 
 // Projectile entity: Transform + Mesh(isBox); velocity/life live engine-side.
-void Engine::SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg) {
+// Track 39: pool-capped at kMaxProjectiles (oldest rock is recycled first —
+// the newest shot wins); each carries an owner + knockback for NPC hits.
+void Engine::SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg,
+                             EntityID owner, float knockback) {
     if (!m_testBoxValid) return;
+    // Pool cap: recycle the oldest live projectile (front of m_projectiles).
+    if (m_projectiles.size() >= size_t(kMaxProjectiles)) {
+        const Projectile& old = m_projectiles.front();
+        if (old.id.IsValid() && m_entities.IsAlive(old.id)) m_entities.Destroy(old.id);
+        m_projectiles.erase(m_projectiles.begin());
+        Logger::Info("Projectile pool full: recycled oldest (cap %d)", kMaxProjectiles);
+    }
     EntityID e = m_entities.Create();
     Transform t;
     t.position = pos;
@@ -6350,6 +6863,8 @@ void Engine::SpawnProjectile(const glm::vec3& pos, const glm::vec3& vel, int dmg
     p.velocity = vel;
     p.life = 3.0f;
     p.damage = dmg;
+    p.owner = owner;
+    p.knockback = knockback;
     m_projectiles.push_back(p);
 }
 
@@ -6381,11 +6896,160 @@ void Engine::SpawnDebris(const glm::vec3& pos) {
     }
 }
 
-// Integrates projectiles: straight-line flight, world raycast per step,
-// sphere hit vs NPC torsos (damage), life expiry. Debris (damage 0) gets
-// gravity and damages nobody.
+// Track 39: short-lived impact debris puff at a projectile hit point.
+void Engine::SpawnImpactFx(const glm::vec3& pos) {
+    if (!m_testBoxValid) return;
+    for (int i = 0; i < 4; ++i) {
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos;
+        t.scale = glm::vec3(0.05f + 0.02f * float(i % 2));
+        m_entities.AddTransform(e, t);
+        MeshComponent mc;
+        mc.isBox = true;
+        m_entities.AddMesh(e, mc);
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+        cc.layerMask = 4u;
+        m_entities.AddCollision(e, cc);
+        const float a = float(i) * 1.5708f + 0.4f;
+        ImpactFx fx;
+        fx.id = e;
+        fx.velocity = glm::vec3(std::cos(a) * 1.5f, 2.0f + 0.5f * float(i % 3),
+                                std::sin(a) * 1.5f);
+        fx.life = 0.35f;
+        m_impacts.push_back(fx);
+    }
+}
+
+// Track 39: spawn kAmmoBoxCount ammo boxes around `center` (ground-snapped).
+// Walk-over adds kAmmoPerBox rocks to the equipped/first slingshot slot.
+void Engine::SpawnAmmoBoxes(const glm::vec3& center) {
+    static const glm::vec3 kOffsets[] = {
+        { -4.0f, 0.0f,  3.0f }, {  5.0f, 0.0f,  2.0f }, {  1.0f, 0.0f, -5.0f },
+    };
+    for (const glm::vec3& off : kOffsets) {
+        glm::vec3 pos = center + off;
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = pos.x; down.origin[1] = pos.y + 6.0f; down.origin[2] = pos.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+        }
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos + glm::vec3(0.0f, 0.3f, 0.0f);
+        t.scale = glm::vec3(0.35f);
+        m_entities.AddTransform(e, t);
+        MeshComponent mc;
+        mc.isBox = true;
+        m_entities.AddMesh(e, mc);
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+        cc.layerMask = 2u;
+        m_entities.AddCollision(e, cc);
+        // No WeaponComponent: an ammo box is ammo, not a weapon, so the
+        // E-pickup path in UpdateWeapons must not hand it out as a
+        // 0-durability slingshot (walk-over collection handles it instead).
+        m_ammoBoxIds.push_back(e);
+        Logger::Info("Ammo box spawned at (%.1f, %.1f, %.1f) [%d rocks]",
+                     pos.x, pos.y, pos.z, kAmmoPerBox);
+    }
+}
+
+// Track 39: walk-over collection + pickup bob for ammo boxes.
+void Engine::UpdateAmmoPickups(float dt) {
+    if (m_ammoBoxIds.empty()) return;
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!pc || !jt) return;
+    for (size_t i = 0; i < m_ammoBoxIds.size();) {
+        EntityID id = m_ammoBoxIds[i];
+        Transform* t = m_entities.GetTransform(id);
+        if (!t) { m_ammoBoxIds.erase(m_ammoBoxIds.begin() + long(i)); continue; }
+        t->rotation.y += dt * 1.5f;
+        t->position.y += std::sin(float(m_time) * 2.0f + float(id.index)) * dt * 0.08f;
+        if (glm::length(t->position - jt->position) < 1.2f) {
+            // Add rocks to the equipped slingshot, else the first owned one.
+            int slotIdx = -1;
+            if (pc->equippedSlot >= 0 &&
+                pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile)
+                slotIdx = pc->equippedSlot;
+            else for (int s = 0; s < 5; ++s)
+                if (pc->slots[s].type == WeaponType::RangedProjectile) { slotIdx = s; break; }
+            if (slotIdx >= 0) {
+                InventorySlot& slot = pc->slots[slotIdx];
+                const int before = slot.ammo;
+                slot.ammo = std::min(SlingshotCapacity(), slot.ammo + kAmmoPerBox);
+                Logger::Info("Ammo box collected: +%d rocks (slot %d, %d -> %d)",
+                             slot.ammo - before, slotIdx, before, slot.ammo);
+            } else {
+                // No slingshot owned yet: leave the box for the E-pickup
+                // path in UpdateWeapons (it gives the slingshot itself).
+                continue;
+            }
+            m_entities.Destroy(id);
+            m_ammoBoxIds.erase(m_ammoBoxIds.begin() + long(i));
+            continue;
+        }
+        ++i;
+    }
+}
+
+// Track 39: RMB with the slingshot equipped toggles aim mode (crosshair;
+// movement stays free, camera stays player-controlled). R reloads manually.
+void Engine::UpdateAimMode(float dt) {
+    (void)dt;
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) { m_aiming = false; return; }
+    const bool slingshotOut = pc->equippedSlot >= 0 &&
+        pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile;
+    if (!slingshotOut) {
+        if (m_aiming) Logger::Info("Aim mode off (slingshot unequipped)");
+        m_aiming = false;
+        return;
+    }
+    // Track 40: the quest journal is modal — aim toggling and manual reload
+    // are player combat inputs, so hold them while it is open (buttons are
+    // already masked by the modal clear; raw keys like R need an explicit
+    // gate). Aim state itself is preserved so re-closing resumes mid-aim.
+    if (m_journalOpen) return;
+    // RMB toggles aim. Block still works when unarmed, so the slingshot
+    // claims RMB while equipped.
+    if (m_input.IsPressed(Button::Block)) {
+        m_aiming = !m_aiming;
+        Logger::Info("Aim mode %s", m_aiming ? "ON (crosshair, camera aim)" : "OFF");
+    }
+    // Manual reload: R.
+    InventorySlot& slot = pc->slots[pc->equippedSlot];
+    if (m_input.WasKeyPressed(SDL_SCANCODE_R) && slot.ammo < SlingshotCapacity()) {
+        slot.ammo = std::min(SlingshotCapacity(), slot.ammo + kAmmoPerBox);
+        Logger::Info("Reload: %d rocks", slot.ammo);
+    }
+}
+
+// Integrates projectiles: gravity arc flight, world raycast per step,
+// sphere hit vs NPC torsos (damage + knockback + headshot bonus), vehicle
+// bounce, life expiry. Debris (damage 0) gets full gravity and hurts nobody.
 void Engine::UpdateProjectiles(float dt) {
-    if (m_projectiles.empty()) return;
+    if (m_projectiles.empty() && m_impacts.empty()) return;
+    // --- Impact debris first (short-lived, gravity, no interaction) --------
+    for (size_t i = 0; i < m_impacts.size();) {
+        ImpactFx& fx = m_impacts[i];
+        Transform* t = m_entities.GetTransform(fx.id);
+        fx.life -= dt;
+        if (!t || fx.life <= 0.0f) {
+            if (t) m_entities.Destroy(fx.id);
+            m_impacts.erase(m_impacts.begin() + long(i));
+            continue;
+        }
+        fx.velocity.y -= 9.8f * dt;
+        t->position += fx.velocity * dt;
+        ++i;
+    }
     for (size_t i = 0; i < m_projectiles.size();) {
         Projectile& p = m_projectiles[i];
         Transform* t = m_entities.GetTransform(p.id);
@@ -6394,8 +7058,8 @@ void Engine::UpdateProjectiles(float dt) {
             continue;
         }
         p.life -= dt;
-        if (p.damage > 0) { // flying rock: light drop
-            p.velocity.y -= 2.5f * dt;
+        if (p.damage > 0) { // flying rock: arc (gravity)
+            p.velocity.y -= 9.8f * dt;
         } else { // debris: full gravity
             p.velocity.y -= 9.8f * dt;
         }
@@ -6403,6 +7067,10 @@ void Engine::UpdateProjectiles(float dt) {
         const glm::vec3 step = p.velocity * dt;
 
         bool kill = p.life <= 0.0f;
+        bool bounced = false;  // hit something this frame; skip integration
+        glm::vec3 fxPos(0.0f); // deferred impact FX spawn (AFTER the loops:
+        bool fxKill = false;   //  creating entities mid-iteration reallocates
+                               //  the component arrays and dangles references)
         // World hit: segment raycast from old to new position.
         if (!kill && m_collisionWorld && glm::length(step) > 1e-6f) {
             Ray r;
@@ -6413,27 +7081,93 @@ void Engine::UpdateProjectiles(float dt) {
             RayHit hit;
             if (m_collisionWorld->Raycast(r, hit) &&
                 glm::length(glm::make_vec3(hit.point) - oldPos) <= len) {
+                fxPos = glm::make_vec3(hit.point); fxKill = true; // rock shatters
                 Logger::Info("Projectile hit world at (%.1f, %.1f, %.1f)",
-                             hit.point[0], hit.point[1], hit.point[2]);
+                             fxPos.x, fxPos.y, fxPos.z);
                 kill = true;
             }
         }
-        // NPC hit: sphere vs torso (damage projectiles only).
+        // NPC hit: sphere vs torso/head (damage projectiles only).
+        glm::vec3 hitDir(0.0f);
         if (!kill && p.damage > 0) {
             const glm::vec3 newPos = oldPos + step;
-            m_entities.ForEachAI([&](EntityID id, Transform& nt, AIComponent& ai) {
+            // Track 38: an equipped garbage lid blocks projectiles — if Jimmy
+            // stands in the rock's path, the shot shatters without damage.
+            if (m_jimmyId.IsValid()) {
+                if (const PlayerController* jpc = m_entities.GetPlayer(m_jimmyId)) {
+                    if (jpc->equippedSlot >= 0 && jpc->equippedSlot < 5 &&
+                        WeaponBlocksProjectiles(jpc->slots[jpc->equippedSlot].weaponId)) {
+                        if (const Transform* jp = m_entities.GetTransform(m_jimmyId)) {
+                            if (glm::length(newPos - (jp->position + glm::vec3(0.0f, 1.0f, 0.0f))) < 1.0f) {
+                                fxPos = newPos; fxKill = true;
+                                Logger::Info("Garbage lid blocked a projectile!");
+                                kill = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!kill) m_entities.ForEachAI([&](EntityID id, const Transform& nt, AIComponent& ai) {
                 if (kill || id == m_jimmyId) return;
                 if (ai.state == AIState::Ko) return; // downed: no re-trigger
                 const glm::vec3 torso = nt.position + glm::vec3(0.0f, 1.0f, 0.0f);
-                if (glm::length(newPos - torso) < 0.8f) {
-                    // Track 28: funnel through DamageNpc (flinch + reactions).
-                    DamageNpc(id, m_jimmyId, p.damage, nt.position, 0.4f);
-                    Logger::Info("Projectile hit NPC idx=%u for %d",
-                                 id.index, p.damage);
+                const glm::vec3 head  = nt.position + glm::vec3(0.0f, 1.55f, 0.0f);
+                const bool headshot = glm::length(newPos - head) < 0.35f;
+                const float hitR = headshot ? 0.35f : 0.8f;
+                if (headshot || glm::length(newPos - torso) < hitR) {
+                    // Track 39: headshot x2; knockback impulse along the
+                    // projectile velocity (XZ) via the melee knockback field.
+                    const int dmg = headshot ? p.damage * 2 : p.damage;
+                    // No entity create/destroy in here: DamageNpc only queues
+                    // events; FX spawn is deferred to after this loop.
+                    DamageNpc(id, p.owner.IsValid() ? p.owner : m_jimmyId,
+                              dmg, nt.position, 0.4f);
+                    if (Melee::CombatComponent* tmc = m_entities.GetMeleeCombat(id)) {
+                        glm::vec3 dir(p.velocity.x, 0.0f, p.velocity.z);
+                        const float len = glm::length(dir);
+                        if (len > 1e-4f)
+                            tmc->knockbackVel = (dir / len) * p.knockback +
+                                                glm::vec3(0.0f, 0.4f, 0.0f);
+                    }
+                    fxPos = newPos; fxKill = true;
+                    hitDir = nt.position; // for the log below
+                    Logger::Info("Projectile hit NPC idx=%u for %d%s",
+                                 id.index, dmg, headshot ? " HEADSHOT" : "");
                     kill = true;
                 }
             });
         }
+        // Track 39: vehicle hit — bounce off (simple elastic kick up).
+        if (!kill && p.damage > 0) {
+            const glm::vec3 newPos = oldPos + step;
+            for (EntityID vid : m_vehicleIds) {
+                glm::vec3 bmin, bmax;
+                if (!m_entities.GetWorldAABB(vid, bmin, bmax)) continue;
+                if (glm::any(glm::lessThan(newPos, bmin)) ||
+                    glm::any(glm::greaterThan(newPos, bmax))) continue;
+                glm::vec3 n = newPos - 0.5f * (bmin + bmax);
+                if (glm::length(n) < 1e-3f) n = glm::vec3(0.0f, 1.0f, 0.0f);
+                n = glm::normalize(n);
+                n.y = std::max(n.y, 0.5f);
+                p.velocity = glm::reflect(p.velocity, n) * 0.5f;
+                // Push the rock out of the hull along the normal, otherwise
+                // the end-of-loop integration puts it back inside and the
+                // bounce repeats every frame forever.
+                const float push = 0.5f * glm::length(bmax - bmin) + 0.15f;
+                t->position = 0.5f * (bmin + bmax) + n * push;
+                fxPos = newPos; fxKill = false; // bounce keeps the rock alive
+                p.bounces++;
+                if (p.bounces >= 3) kill = true; // spent: don't jitter forever
+                Logger::Info("Projectile bounced off vehicle idx=%u%s",
+                             vid.index, kill ? " (spent)" : "");
+                bounced = !kill;
+                break;
+            }
+        }
+        if (fxKill) SpawnImpactFx(fxPos);   // deferred: safe to create now
+        else if (bounced) SpawnImpactFx(fxPos);
+        (void)hitDir;
+        if (bounced) { ++i; continue; } // skip integration this frame
 
         if (kill) {
             m_entities.Destroy(p.id);
@@ -6474,12 +7208,21 @@ void Engine::RenderWeaponInHand(const glm::mat4& view, const glm::mat4& proj) {
     const float cy = std::cos(pc->facingYaw), sy = std::sin(pc->facingYaw);
     const glm::vec3 fwd(sy, 0.0f, cy);
     const glm::vec3 right(cy, 0.0f, -sy);
-    const glm::vec3 handPos = jt->position + fwd * 0.30f + right * 0.30f +
-                              glm::vec3(0.0f, 1.20f, 0.0f);
+    // Track 38: swing arc while the attack cooldown is fresh — the prop
+    // sweeps down/forward over ~0.25s, then returns to the carry pose.
+    float swing = 0.0f;
+    if (pc->attackCooldown > 0.0f) {
+        const WeaponData& wd = GetWeaponDataById(pc->slots[pc->equippedSlot].weaponId);
+        const float t01 = 1.0f - pc->attackCooldown / wd.attackCooldown;
+        swing = std::sin(glm::clamp(t01, 0.0f, 1.0f) * 3.14159f); // 0->1->0
+    }
+    const glm::vec3 handPos = jt->position + fwd * (0.30f + 0.25f * swing) +
+                              right * (0.30f - 0.15f * swing) +
+                              glm::vec3(0.0f, 1.20f - 0.25f * swing, 0.0f);
     const glm::mat4 modelM =
         glm::translate(glm::mat4(1.0f), handPos) *
         glm::rotate(glm::mat4(1.0f), pc->facingYaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
-        glm::rotate(glm::mat4(1.0f), -0.5f, glm::vec3(1.0f, 0.0f, 0.0f)) *
+        glm::rotate(glm::mat4(1.0f), -0.5f + 1.8f * swing, glm::vec3(1.0f, 0.0f, 0.0f)) *
         glm::scale(glm::mat4(1.0f), glm::vec3(model->drawScale));
     const glm::mat4 mvp = proj * view * modelM;
     for (const WorldMesh::SubRange& sr : model->subs) {
@@ -6542,9 +7285,18 @@ SaveData Engine::CaptureSaveState() {
     data.missions  = m_missions.SnapshotMissions();
     data.triggers  = m_missions.SnapshotTriggers();
 
+    // --- Class (Track 41) ---
+    data.classes            = m_classes.Snapshot();
+    data.classRespect       = m_classes.Respect();
+    data.slingshotCapBonus  = m_slingshotCapBonus;
+
     // --- World ---
     data.gameTimeMinutes = m_gameTimeMinutes;
-    data.weather         = 0; // placeholder (Track 34 not yet implemented)
+    data.gameDay         = m_gameDay;
+    // Phase 10 integration: persist the weather state (Track 34 + 36).
+    // Previously a placeholder 0; the W-cycled / auto-cycled state now
+    // round-trips through the save file.
+    data.weather = static_cast<int>(WeatherManager::Get().GetType());
 
     return data;
 }
@@ -6591,16 +7343,48 @@ void Engine::ApplySaveState(const SaveData& data) {
 
     // --- Restore game time ---
     m_gameTimeMinutes = data.gameTimeMinutes;
+    m_gameDay = std::max(0, data.gameDay);
     SyncGameClock();
+
+    // Phase 10 integration: restore the weather state (Track 34 + 36).
+    // Bounds-checked against the enum range; unknown values fall back to CLEAR
+    // via TransitionTo (which no-ops when already CLEAR).
+    {
+        const int w = data.weather;
+        if (w >= 0 && w < static_cast<int>(WeatherType::Count))
+            WeatherManager::Get().SetState(static_cast<WeatherType>(w));
+        else
+            WeatherManager::Get().SetState(WeatherType::CLEAR);
+    }
 
     // --- Restore mission state ---
     m_missions.RestoreMissions(data.missions);
     m_missions.RestoreTriggers(data.triggers);
 
+    // --- Restore class progression (Track 41) + abort any live session ---
+    if (m_classSessionActive) {
+        m_classSessionActive = false;
+        m_classSessionIdx    = -1;
+        Logger::Info("Classes: session aborted by load");
+    }
+    m_scheduleOpen = false;
+    m_classPromptIdx = -1;
+    m_classes.Restore(data.classes);
+    m_classes.AddRespect(data.classRespect - m_classes.Respect()); // absolute set
+    m_slingshotCapBonus = std::clamp(data.slingshotCapBonus, 0, kClassMaxCapBonus);
+
     // --- Clear combat/grapple state ---
     m_grappleTarget = EntityID{};
     m_mountedVehicle = EntityID{};
     m_projectiles.clear();
+    // Track 39: clear impact debris + ammo boxes (respawned below) + aim mode.
+    for (const ImpactFx& fx : m_impacts)
+        if (fx.id.IsValid() && m_entities.IsAlive(fx.id)) m_entities.Destroy(fx.id);
+    m_impacts.clear();
+    for (EntityID id : m_ammoBoxIds)
+        if (id.IsValid() && m_entities.IsAlive(id)) m_entities.Destroy(id);
+    m_ammoBoxIds.clear();
+    m_aiming = false;
     m_meleePopup[0] = '\0';
     m_meleePopupTimer = 0.0f;
 
@@ -6662,6 +7446,15 @@ void Engine::DestroyDynamicEntities() {
     }
     m_projectiles.clear();
 
+    // Track 39: destroy impact debris + ammo boxes.
+    for (const ImpactFx& fx : m_impacts)
+        if (fx.id.IsValid() && m_entities.IsAlive(fx.id)) m_entities.Destroy(fx.id);
+    m_impacts.clear();
+    for (EntityID id : m_ammoBoxIds)
+        if (id.IsValid() && m_entities.IsAlive(id)) m_entities.Destroy(id);
+    m_ammoBoxIds.clear();
+    m_aiming = false;
+
     // Destroy weapon pickups.
     // Collect IDs first to avoid modifying the entity list during iteration.
     std::vector<EntityID> toDestroy;
@@ -6689,6 +7482,8 @@ void Engine::RespawnDynamicEntities() {
 
     // Respawn weapon pickups.
     SpawnWeaponPickups(center);
+    // Track 39: respawn ammo boxes.
+    SpawnAmmoBoxes(center);
 
     // Respawn vehicles.
     SpawnVehicles(center);

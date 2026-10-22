@@ -1,5 +1,6 @@
 # Build output
 build/
+build2/
 out/
 
 # Vendored dependencies (downloaded by bootstrap; see docs/building.md)

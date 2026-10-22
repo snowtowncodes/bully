@@ -308,6 +308,7 @@ bool MissionManager::LoadFromJson(
             Mission m;
             if (const JValue* s = jm.Find("id"); s) m.id = s->str;
             if (const JValue* s = jm.Find("name"); s) m.name = s->str;
+            if (const JValue* s = jm.Find("description"); s) m.description = s->str;
             if (const JValue* s = jm.Find("start_after"); s) m.startAfter = s->str;
             if (const JValue* objs = jm.Find("objectives"); objs &&
                                                           objs->type == JValue::Type::Array) {
@@ -527,6 +528,18 @@ bool MissionManager::CompleteObjective(uint32_t missionIndex, size_t objectiveIn
                          m.objectives.size(), next.description.c_str());
         }
     }
+    return true;
+}
+
+bool MissionManager::ActivateMission(uint32_t missionIndex) {
+    if (missionIndex >= m_missions.size()) return false;
+    Mission& m = m_missions[missionIndex];
+    if (m.state != MissionState::Inactive || m.objectives.empty()) return false;
+    m.state = MissionState::Active;
+    m.currentObjective = 0;
+    Logger::Info("MISSION ACTIVATED: '%s' (%s) — objective 1/%zu: %s",
+                 m.name.c_str(), m.id.c_str(), m.objectives.size(),
+                 m.objectives.front().description.c_str());
     return true;
 }
 

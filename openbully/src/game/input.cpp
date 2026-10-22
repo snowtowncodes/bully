@@ -17,7 +17,7 @@ const SDL_Scancode kButtonScancodes[int(Button::Count)] = {
     SDL_SCANCODE_SPACE, // Up
     SDL_SCANCODE_LCTRL, // Down
     SDL_SCANCODE_LSHIFT, // Sprint
-    SDL_SCANCODE_M,     // Mute
+    SDL_SCANCODE_N,     // Mute (Track 37: M reassigned to minimap toggle)
     SDL_SCANCODE_UNKNOWN, // Attack  (mouse)
     SDL_SCANCODE_UNKNOWN // Block   (mouse)
 };
@@ -59,7 +59,11 @@ void Input::Poll() {
     // main.cpp owns the event loop, but events may not have been pumped yet
     // this frame; drain quit/escape here defensively. Poll() must be called
     // after the main loop's SDL_PollEvent batch.
-    m_quitRequested = keys[SDL_SCANCODE_ESCAPE] != 0;
+    // Escape -> quit. Edge-detected (fires once per press) so an in-game menu
+    // can consume the press and call Input::ClearQuit() instead of quitting;
+    // holding ESC does not re-latch the request on later frames.
+    if (m_rawDown[SDL_SCANCODE_ESCAPE] && !m_lastRawDown[SDL_SCANCODE_ESCAPE])
+        m_quitRequested = true;
     SDL_Event ev;
     while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT,
                           SDL_QUIT, SDL_QUIT) > 0) {

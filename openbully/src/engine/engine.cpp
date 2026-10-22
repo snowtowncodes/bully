@@ -4,6 +4,8 @@
 #include "formats/nft_loader.h"
 #include "formats/agr_loader.h"
 #include "../entities/entity.h"
+#include "../vehicles/vehicle.h"
+#include "../vehicles/vehicle_feel.h" // Track 33: handling feel, wheelie, crash
 #include "../platform/logger.h"
 #include "../platform/window.h"
 #include "../rendering/mesh.h"
@@ -715,12 +717,32 @@ constexpr float kCounterAttackBonus  = 4.0f;   // next attack multiplier
 
 void Engine::UpdateJimmy(float dt) {
     if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
+    // Track 31: mounted — the vehicle update owns position; player input and
+    // gravity park until dismount.
+    if (m_mountedVehicle.IsValid()) return;
     Transform* t = m_entities.GetTransform(m_jimmyId);
     PhysicsComponent* p = m_entities.GetPhysics(m_jimmyId);
     PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
     if (!t || !p || !pc) return;
 
     glm::vec3 pos = t->position;
+
+    // Phase 9 integration: kill-plane respawn. The demo anchor geometry has
+    // open roof edges and hollow rooms; a walk off an edge (auto-walk/demo
+    // scripts) or a drop through a gap used to fall forever (silent exit at
+    // y ~ -700 around 30-120 s). Recover to the spawn point instead: the
+    // spawn was raycast-verified as standable surface in Init.
+    {
+        constexpr float kKillPlaneDrop = 200.0f; // below spawn = unrecoverable
+        if (pos.y < m_jimmySpawn.y - kKillPlaneDrop || pos.y < -500.0f) {
+            pos         = m_jimmySpawn;
+            p->velocity = glm::vec3(0.0f);
+            p->onGround = true;
+            t->position = pos;
+            Logger::Warning("Jimmy: kill-plane respawn at spawn point "
+                            "(%.1f, %.1f, %.1f)", pos.x, pos.y, pos.z);
+        }
+    }
 
     // --- 1. Gravity ----------------------------------------------------------
     if (!p->onGround || p->velocity.y > 0.0f)
@@ -948,6 +970,9 @@ void Engine::UpdateJimmyCombat(float dt) {
     PlayerController* pc = m_jimmyId.IsValid()
         ? m_entities.GetPlayer(m_jimmyId) : nullptr;
     if (!pc || dt <= 0.0f) return;
+    // Track 31: mounted — no attack/dodge/block input while driving; timers
+    // above already ticked, movement-state machines stay parked.
+    if (m_mountedVehicle.IsValid()) return;
 
     // --- 1. Tick timers ------------------------------------------------------
     if (pc->invincibleTimer > 0.0f) pc->invincibleTimer -= dt;
@@ -3212,6 +3237,17 @@ void Engine::BuildEntityRenderList() {
             m_entityRender.push_back(std::move(er));
             return;
         }
+        if (mc->isVehicle) {
+            // Track 31: vehicle model, transform-driven (parked or driving).
+            if (mc->vehicleModelIndex >= m_vehicleModels.size()) return;
+            const VehicleModel& vmodel = m_vehicleModels[mc->vehicleModelIndex];
+            if (!vmodel.gpu.valid()) return;
+            er.model = t.Matrix();
+            er.gpu   = &vmodel.gpu;
+            er.subs  = vmodel.subs;
+            m_entityRender.push_back(std::move(er));
+            return;
+        }
         if (mc->isJimmy) {
             if (!m_jimmyMeshValid) return;
             er.model = t.Matrix(); // player mesh is model-space: use transform
@@ -3660,6 +3696,11 @@ bool Engine::Init(const Window& window) {
     // Track 30: dialogue system (same JSON probing convention as missions).
     InitDialogue();
 
+    // Track 31: vehicles — load 4 drivable models + spawn one of each near
+    // Jimmy (E mounts within 2.5u).
+    if (LoadVehicleModels())
+        SpawnVehicles(m_jimmyActive ? m_jimmySpawn : m_camera.GetPosition());
+
     // Track 20 (UI): HUD renderer. Runs on bgfx view 10 with the same
     // shaderRoot convention as Renderer::Init. Non-fatal on failure: the
     // world keeps rendering, the HUD stays off.
@@ -3809,7 +3850,12 @@ void Engine::Update() {
     // Track 26: weapon pickups/equip/attacks, then projectile integration.
     UpdateWeapons(float(deltaTime));
     UpdateProjectiles(float(deltaTime));
-    UpdateJimmyCamera(float(deltaTime));
+
+    // Track 31: vehicles — E toggle, mounted driving, then the camera (the
+    // vehicle follow replaces UpdateJimmyCamera while mounted).
+    UpdateVehicles(float(deltaTime));
+    if (m_mountedVehicle.IsValid()) UpdateVehicleCamera(float(deltaTime));
+    else UpdateJimmyCamera(float(deltaTime));
 
     // Track 20 (UI): H/J/K debug keys mutate vitals, then refresh the HUD
     // snapshot the renderer draws from (called again in Render so pauses
@@ -3971,6 +4017,721 @@ void Engine::OnDialogueEnded() {
             break;
         }
     }
+}
+
+// Per-frame dialogue logic: input (start/advance/choose) + typewriter tick.
+// Ordering note: this runs right after UpdateNpcs and BEFORE the melee and
+
+// --- Track 31: vehicles -------------------------------------------------------
+
+// Loads the 4 drivable vehicle NIFs from the extracted World.img set. Every
+// model bakes its node-hierarchy transforms (same as level geometry), gets a
+// size-normalizing scale (longest horizontal extent -> per-type length), and
+// resolves sub-mesh textures through the shared NFT dictionary.
+bool Engine::LoadVehicleModels() {
+    struct Spec { const char* nif; VehicleType type; float length; };
+    static const Spec kSpecs[] = {
+        { "bike.nif",      VehicleType::Bike,  2.0f },
+        { "Policecar.nif", VehicleType::Car,   4.6f },
+        { "Moped.nif",     VehicleType::Moped, 1.9f },
+        { "GoCart.nif",    VehicleType::Kart,  2.2f },
+    };
+    const char* dirs[] = { "data/extracted/world", "../data/extracted/world" };
+
+    size_t loaded = 0;
+    for (const Spec& spec : kSpecs) {
+        bool done = false;
+        for (const char* dir : dirs) {
+            const std::string path = std::string(dir) + "/" + spec.nif;
+            NifLoadResult nif = LoadNifFile(path);
+            if (!nif.ok || nif.totalVertices < 10) continue;
+            Mesh mesh;
+            if (!MeshFromNif(nif, mesh)) continue;
+
+            // Bake node-hierarchy transforms into the vertices (positions
+            // through the full chain, normals through rotation only).
+            size_t vertBase = 0;
+            for (const NifGeometryData& geo : nif.geometries) {
+                float wm[16];
+                if (NifWorldTransform(nif, geo.nodeIndex, wm)) {
+                    for (size_t v = 0; v < geo.vertices.size(); v++) {
+                        MeshVertex& mv = mesh.vertices[vertBase + v];
+                        const NifVector3& p = geo.vertices[v];
+                        const float x = wm[0]*p.x + wm[4]*p.y + wm[8]*p.z + wm[12];
+                        const float y = wm[1]*p.x + wm[5]*p.y + wm[9]*p.z + wm[13];
+                        const float z = wm[2]*p.x + wm[6]*p.y + wm[10]*p.z + wm[14];
+                        mv.x = x; mv.y = y; mv.z = z;
+                        const NifVector3& nrm = geo.normals[v];
+                        if (v < geo.normals.size()) {
+                            const float nx = wm[0]*nrm.x + wm[4]*nrm.y + wm[8]*nrm.z;
+                            const float ny = wm[1]*nrm.x + wm[5]*nrm.y + wm[9]*nrm.z;
+                            const float nz = wm[2]*nrm.x + wm[6]*nrm.y + wm[10]*nrm.z;
+                            mv.nx = nx; mv.ny = ny; mv.nz = nz;
+                        }
+                    }
+                }
+                vertBase += geo.vertices.size();
+            }
+
+            GpuMesh gpu = m_renderer->UploadMeshGpu(mesh);
+            if (!gpu.valid()) continue;
+
+            VehicleModel vm;
+            vm.name = spec.nif;
+            vm.type = spec.type;
+            vm.gpu  = gpu;
+            for (const MeshSubMesh& sub : mesh.subMeshes) {
+                WorldMesh::SubRange sr;
+                sr.indexOffset = sub.indexOffset;
+                sr.indexCount  = sub.indexCount;
+                sr.texture     = AcquireTexture(m_texDir.c_str(), sub.textureName);
+                vm.subs.push_back(sr);
+            }
+
+            // Indexed bounds (orphans excluded, same as level geometry).
+            glm::vec3 lo( FLT_MAX), hi(-FLT_MAX);
+            for (uint32_t idx : mesh.indices) {
+                const MeshVertex& v = mesh.vertices[idx];
+                lo = glm::min(lo, glm::vec3(v.x, v.y, v.z));
+                hi = glm::max(hi, glm::vec3(v.x, v.y, v.z));
+            }
+            const glm::vec3 ext = glm::max(hi - lo, glm::vec3(0.001f));
+            const float horiz = std::max(ext.x, ext.z);
+            vm.drawScale = spec.length / horiz;
+            vm.length    = spec.length;
+            vm.height    = ext.y * vm.drawScale;
+            // Forward convention: longest horizontal axis is the vehicle's
+            // forward; its sign is remembered so mounted driving aligns the
+            // model with motion (models vary; verified per-type at spawn).
+            vm.length    = ext.z > ext.x ? spec.length : spec.length;
+
+            Logger::Info("Vehicle model '%s' (%s): %zu verts, extent (%.1f, %.1f, %.1f), scale %.3f",
+                         spec.nif, VehicleTypeName(spec.type), mesh.vertices.size(),
+                         ext.x, ext.y, ext.z, vm.drawScale);
+            m_vehicleModels.push_back(std::move(vm));
+            loaded++;
+            done = true;
+            break;
+        }
+        if (!done)
+            Logger::Warning("Vehicles: '%s' not found or failed to load", spec.nif);
+    }
+    Logger::Info("Vehicles: %zu/4 models loaded", loaded);
+    return loaded > 0;
+}
+
+// Spawns one entity per loaded vehicle model in a ring around `center`, each
+// raycast-dropped onto the ground. Vehicles render as static models (their
+// own Transform drives the model matrix) until mounted.
+void Engine::SpawnVehicles(const glm::vec3& center) {
+    if (m_vehicleModels.empty()) return;
+    for (size_t i = 0; i < m_vehicleModels.size(); ++i) {
+        const VehicleModel& vm = m_vehicleModels[i];
+        const float ang = float(i) * (6.2831853f / float(m_vehicleModels.size())) + 0.4f;
+        // Phase 9 integration: ground-verified ring placement. The fixed 6u
+        // ring could sit past a rooftop edge, where the down-ray finds no
+        // surface — the vehicle then floats at center.y + 2 and mounting it
+        // seeds the physics body mid-air (0 wheel contacts -> both rider and
+        // vehicle free-fall). Pull the ring point toward `center` until the
+        // down-ray hits, so every vehicle spawns on standable ground.
+        glm::vec3 pos = center + glm::vec3(std::cos(ang) * 6.0f, 2.0f, std::sin(ang) * 6.0f);
+        bool grounded = false;
+        if (m_collisionWorld) {
+            for (float radius = 6.0f; radius >= 0.0f; radius -= 1.0f) {
+                const glm::vec3 p = center + glm::vec3(std::cos(ang) * radius, 0.0f,
+                                                        std::sin(ang) * radius);
+                Ray down;
+                down.origin[0] = p.x; down.origin[1] = p.y + 50.0f; down.origin[2] = p.z;
+                down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+                RayHit hit;
+                if (m_collisionWorld->Raycast(down, hit)) {
+                    pos = glm::vec3(p.x, hit.point[1] + 0.05f, p.z);
+                    grounded = true;
+                    if (radius < 6.0f)
+                        Logger::Info("Vehicle spawn: pulled ring in to r=%.0f "
+                                     "(no ground at r=6)", radius);
+                    break;
+                }
+            }
+        }
+        if (!grounded)
+            pos.y = center.y; // last resort: level with the verified center
+
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos;
+        t.scale    = glm::vec3(vm.drawScale);
+        m_entities.AddTransform(e, t);
+
+        MeshComponent mc;
+        mc.isBox = false;
+        mc.isVehicle = true;
+        mc.vehicleModelIndex = uint32_t(i);
+        m_entities.AddMesh(e, mc); // vehicle draw path keys off the component
+
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-vm.length * 0.5f, 0.0f, -vm.length * 0.5f);
+        cc.boundsMax = glm::vec3( vm.length * 0.5f, vm.height,  vm.length * 0.5f);
+        cc.layerMask = 2u;
+        m_entities.AddCollision(e, cc);
+
+        VehicleComponent vc;
+        vc.type = vm.type;
+        vc.yaw  = ang + 3.14159265f; // face inward
+        vc.wheelCount = (vm.type == VehicleType::Car || vm.type == VehicleType::Kart) ? 4 : 2;
+        // Wheel anchors in local model space (pre-scale): corners for 4-wheel;
+        // bikes mirror the single axle pair into all 4 slots.
+        const float wx = vm.length * 0.32f, wz = vm.length * 0.18f;
+        vc.wheelPositions[0] = glm::vec3( wx, 0.0f,  wz);
+        vc.wheelPositions[1] = glm::vec3( wx, 0.0f, -wz);
+        vc.wheelPositions[2] = glm::vec3(-wx, 0.0f,  wz);
+        vc.wheelPositions[3] = glm::vec3(-wx, 0.0f, -wz);
+        m_entities.AddVehicle(e, vc);
+
+        m_vehicleIds.push_back(e);
+        Logger::Info("Vehicle spawned: %s (%s) at (%.1f, %.1f, %.1f)",
+                     vm.name.c_str(), VehicleTypeName(vm.type), pos.x, pos.y, pos.z);
+    }
+}
+
+// Nearest vehicle entity within maxDist of pos (invalid when none).
+EntityID Engine::FindNearestVehicle(const glm::vec3& pos, float maxDist) const {
+    EntityID best{};
+    float bestDist = maxDist;
+    for (const EntityID& id : m_vehicleIds) {
+        if (!id.IsValid() || !m_entities.IsAlive(id)) continue;
+        const Transform* t = m_entities.GetTransform(id);
+        if (!t) continue;
+        const float d = glm::length(t->position - pos);
+        if (d < bestDist) { bestDist = d; best = id; }
+    }
+    return best;
+}
+
+// E-press toggle. Mount guards: not while a dialogue is active/starting,
+// mid-grapple, mid-melee, or dodging. Dismount always allowed.
+void Engine::TryToggleVehicleMount() {
+    if (m_mountedVehicle.IsValid()) { DismountVehicle(); return; }
+    if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
+    if (m_dialogue.IsActive() || m_dialogueNpc.IsValid()) return; // talk takes E
+    if (m_grappleTarget.IsValid()) return;
+    if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId))
+        if (mc->state != Melee::CombatState::Idle) return;
+    if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId))
+        if (pc->state == DefenseState::Dodge) return;
+
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    const EntityID veh = FindNearestVehicle(jt->position, 2.5f);
+    if (!veh.IsValid()) return;
+    MountVehicle(veh);
+}
+
+void Engine::MountVehicle(EntityID vehicle) {
+    if (!vehicle.IsValid() || !m_entities.IsAlive(vehicle)) return;
+    VehicleComponent* vc = m_entities.GetVehicle(vehicle);
+    Transform* vt = m_entities.GetTransform(vehicle);
+    if (!vc || !vt || vc->mounted) return;
+    Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+
+    vc->mounted = true;
+    vc->rider   = m_jimmyId;
+    vc->speed   = 0.0f;
+    vc->steerAngle = 0.0f;
+    m_mountedVehicle = vehicle;
+
+    // Hide the player mesh (rider sits inside the model); keep physics/anim
+    // state alive so dismount restores exactly.
+    m_entities.RemoveMesh(m_jimmyId);
+    // Snap Jimmy onto the vehicle so camera focus + dismount offset start sane.
+    jt->position = vt->position;
+
+    m_preMountCamPos = m_camera.GetPosition();
+    m_preMountPitch  = m_camera.GetPitch();
+    // Void-guard reference (see UpdateMountedVehiclePhysics).
+    m_vehicleMountSeedPos = vt->position + glm::vec3(0.0f, 0.8f, 0.0f);
+    m_vehicleVoidFloorY   = vt->position.y - 100.0f;
+    // Track 32: DEMO=2 closed-loop driver orbits the midpoint of all
+    // spawned vehicles (the courtyard deck center — the bike's own spawn
+    // sits near the roof rim, where an orbit rolls off the edge). The bike
+    // is also repositioned to the deck center so the orbit has room; its
+    // old spot by the rim would send every circle off the drop.
+    m_vehicleDemoCenter = glm::vec3(0.0f);
+    int nVeh = 0;
+    for (EntityID id : m_vehicleIds) {
+        if (const Transform* t2 = m_entities.GetTransform(id)) {
+            m_vehicleDemoCenter += t2->position; ++nVeh;
+        }
+    }
+    if (nVeh > 0) m_vehicleDemoCenter /= float(nVeh);
+    else m_vehicleDemoCenter = vt->position;
+    if (m_vehicleIds.size() > 1) {
+        // Reposition the mounted vehicle to a clear spot next to the deck
+        // center (the exact midpoint overlaps the parked car), at ground
+        // level found by a downward raycast.
+        glm::vec3 spot = m_vehicleDemoCenter + glm::vec3(2.0f, 0.0f, 2.0f);
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = spot.x; down.origin[1] = spot.y + 30.0f; down.origin[2] = spot.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit)) spot.y = hit.point[1];
+        }
+        if (Transform* tSelf = m_entities.GetTransform(vehicle))
+            tSelf->position = spot;
+        m_vehicleDemoCenter = spot;
+        m_vehicleMountSeedPos = spot + glm::vec3(0.0f, 0.8f, 0.0f);
+    }
+
+    if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+        pc->facingYaw   = vc->yaw;
+        pc->facingValid = true;
+    }
+    jt->rotation.y = vc->yaw;
+
+    // Track 33: bind the audio manager once, then engine-start sfx + hum.
+    if (m_audio)
+        SetVehicleAudio(m_audio.get());
+    VehicleSfxEngineStart(vc->type, vt->position);
+
+    Logger::Info("Vehicle: mounted %s (entity %u)",
+                 VehicleTypeName(vc->type), vehicle.index);
+}
+
+void Engine::DismountVehicle() {
+    if (!m_mountedVehicle.IsValid()) return;
+    VehicleComponent* vc = m_entities.GetVehicle(m_mountedVehicle);
+    Transform* vt = m_entities.GetTransform(m_mountedVehicle);
+    m_mountedVehicle = {};
+    if (!vc || !vt) return;
+
+    vc->mounted = false;
+    vc->rider   = EntityID{};
+    vc->speed   = 0.0f;
+
+    Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+
+    // Place the player beside the vehicle (left side), on the ground.
+    const glm::vec3 fwd(std::sin(vc->yaw), 0.0f, std::cos(vc->yaw));
+    const glm::vec3 right(fwd.z, 0.0f, -fwd.x);
+    glm::vec3 pos = vt->position - right * (vt->scale.x * 1.2f + 0.6f);
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = pos.x; down.origin[1] = pos.y + 3.0f; down.origin[2] = pos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+    }
+    jt->position = pos;
+    if (PhysicsComponent* p = m_entities.GetPhysics(m_jimmyId)) {
+        p->velocity    = glm::vec3(0.0f);
+        p->onGround    = true;
+    }
+
+    // Restore the player mesh.
+    MeshComponent mc;
+    mc.isBox   = false;
+    mc.isJimmy = true;
+    m_entities.AddMesh(m_jimmyId, mc);
+
+    Logger::Info("Vehicle: dismounted %s at (%.1f, %.1f, %.1f)",
+                 VehicleTypeName(vc->type), pos.x, pos.y, pos.z);
+}
+
+// Per-frame vehicle logic: E toggle, mounted driving (throttle/steer, world
+// collision, ground follow), wheel anchor update, and rider sync.
+void Engine::UpdateVehicles(float dt) {
+    // Track 31 verification hook: OPENBULLY_VEHICLE_DEMO=1 scripts mount ->
+    // drive -> dismount for headless screenshots (same philosophy as the
+    // other *_DEMO hooks). t=2s mount, 2-6s drive forward, t=6s dismount.
+    static const bool s_vehicleDemo = std::getenv("OPENBULLY_VEHICLE_DEMO") != nullptr;
+    if (s_vehicleDemo && m_jimmyActive) {
+        static double s_demoTrace = 0.0;
+        if (m_time < 8.0 && m_time - s_demoTrace >= 1.0) {
+            s_demoTrace = m_time;
+            if (Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+                const EntityID nearestVeh = FindNearestVehicle(jt->position, 60.0f);
+                const Transform* nt = m_entities.GetTransform(nearestVeh);
+                Logger::Info("VehicleDemo: t=%.0f mounted=%s jimmy=(%.1f,%.1f,%.1f) nearest=%s dist=%.1f",
+                             m_time, m_mountedVehicle.IsValid() ? "yes" : "no",
+                             jt->position.x, jt->position.y, jt->position.z,
+                             nt ? "veh" : "none",
+                             nt ? glm::length(nt->position - jt->position) : -1.0f);
+            }
+        }
+        if (m_time >= 2.0 && !m_mountedVehicle.IsValid() && m_time < 5.9) {
+            // Teleport Jimmy to the nearest vehicle (position-direct, like
+            // DIALOGUE_DEMO): the spawn ring can sit across a courtyard the
+            // walk can't cross. Y snaps to the vehicle's ground. DEMO=3
+            // targets the bike specifically — the wheelie script needs one,
+            // and the nearest ring vehicle may be the car (wheelies are
+            // bike-only in the feel layer).
+            if (Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+                static const int s_demoModeSel =
+                    std::atoi(std::getenv("OPENBULLY_VEHICLE_DEMO"));
+                EntityID veh{};
+                if (s_demoModeSel == 3) {
+                    for (const EntityID& id : m_vehicleIds) {
+                        if (!id.IsValid() || !m_entities.IsAlive(id)) continue;
+                        const VehicleComponent* c = m_entities.GetVehicle(id);
+                        if (c && c->type == VehicleType::Bike) { veh = id; break; }
+                    }
+                }
+                if (!veh.IsValid()) veh = FindNearestVehicle(jt->position, 60.0f);
+                if (const Transform* vt2 = m_entities.GetTransform(veh)) {
+                    glm::vec3 to = vt2->position - jt->position;
+                    to.y = 0.0f;
+                    const float d = glm::length(to);
+                    jt->position.y = vt2->position.y; // same ground
+                    if (PhysicsComponent* pp = m_entities.GetPhysics(m_jimmyId))
+                        pp->velocity = glm::vec3(0.0f);
+                    if (d > 1.6f) jt->position += to / d * (3.0f * dt);
+                    else TryToggleVehicleMount();
+                }
+            }
+        }
+        if (m_mountedVehicle.IsValid()) {
+            static const int s_demoMode =
+                std::atoi(std::getenv("OPENBULLY_VEHICLE_DEMO"));
+            if (s_demoMode == 1) {
+                // Track 31 short script: drive forward with a slight curve
+                // between 3-5.9 s, dismount after 6 s.
+                m_input.SetButton(Button::Forward, m_time >= 3.0 && m_time < 5.9);
+                m_input.SetButton(Button::Right,   m_time >= 4.0 && m_time < 4.8);
+                if (m_time >= 6.0) TryToggleVehicleMount(); // dismount
+            } else if (s_demoMode == 3) {
+                // Track 33 wheelie script: kick-start straight ahead to build
+                // speed (steering authority is speed-proportional), then hold
+                // Shift from t=4.5 s -> wheelie lifts; stunt log ~3 s later;
+                // the progressive instability then over-rotates -> eject ->
+                // CRASH log. Void guard recovers any edge excursion.
+                const double t = m_time;
+                if (t < 4.5) {
+                    m_input.SetButton(Button::Forward, true);
+                    m_input.SetButton(Button::Back,    false);
+                    m_input.SetButton(Button::Left,    false);
+                    m_input.SetButton(Button::Right,   false);
+                    m_input.SetButton(Button::Sprint,  false);
+                } else {
+                    const glm::vec3 center = m_vehicleDemoCenter;
+                    if (const Transform* jt2 = m_entities.GetTransform(m_mountedVehicle)) {
+                        glm::vec3 toVeh = jt2->position - center;
+                        toVeh.y = 0.0f;
+                        const float dist = glm::length(toVeh);
+                        glm::vec3 goal;
+                        if (dist > 4.0f) goal = center;
+                        else {
+                            const glm::vec3 rad = dist > 0.1f ? toVeh / dist : glm::vec3(1, 0, 0);
+                            goal = center + glm::vec3(-rad.z, 0.0f, rad.x) * 4.0f;
+                        }
+                        glm::vec3 toGoal = goal - jt2->position;
+                        toGoal.y = 0.0f;
+                        const float targetYaw = std::atan2(toGoal.x, toGoal.z);
+                        float dyaw = targetYaw - m_vehicle.yaw;
+                        while (dyaw >  3.14159265f) dyaw -= 6.28318531f;
+                        while (dyaw < -3.14159265f) dyaw += 6.28318531f;
+                        const float steer = glm::clamp(dyaw * 2.0f, -1.0f, 1.0f);
+                        m_input.SetButton(Button::Left,  steer < -0.15f);
+                        m_input.SetButton(Button::Right, steer >  0.15f);
+                        m_input.SetButton(Button::Forward, true); // keep driving
+                        m_input.SetButton(Button::Back,    false);
+                        // Track 33: hold Shift -> wheelie while moving.
+                        m_input.SetButton(Button::Sprint, true);
+                    }
+                }
+            } else if (s_demoMode == 2) {
+                // Track 32 extended physics drive: closed-loop orbit around
+                // the mount point (robust to spawn orientation/edges —
+                // open-loop WASD scripts drove straight off the courtyard).
+                // Exercises throttle, brake, both steer directions and the
+                // reverse window; the 1 Hz log is the stability evidence.
+                const glm::vec3 center = m_vehicleDemoCenter;
+                if (const Transform* jt2 = m_entities.GetTransform(m_mountedVehicle)) {
+                    glm::vec3 toVeh = jt2->position - center;
+                    toVeh.y = 0.0f;
+                    const float dist = glm::length(toVeh);
+                    // Tangent point: circle the center at radius 3 (turn
+                    // radius at the 4.5 u/s cruise cap is ~4.5u, so the
+                    // circle stays drivable inside the courtyard).
+                    glm::vec3 goal;
+                    if (dist > 3.0f) goal = center;
+                    else {
+                        const glm::vec3 rad = dist > 0.1f ? toVeh / dist : glm::vec3(1, 0, 0);
+                        goal = center + glm::vec3(-rad.z, 0.0f, rad.x) * 3.0f;
+                    }
+                    glm::vec3 toGoal = goal - jt2->position;
+                    toGoal.y = 0.0f;
+                    const float targetYaw = std::atan2(toGoal.x, toGoal.z);
+                    float dyaw = targetYaw - m_vehicle.yaw;
+                    while (dyaw >  3.14159265f) dyaw -= 6.28318531f;
+                    while (dyaw < -3.14159265f) dyaw += 6.28318531f;
+                    // Edge probe: no ground 3 u ahead -> treat straight-ahead
+                    // as forbidden and steer along the courtyard instead
+                    // (the rooftop is ringed by drops; this keeps the orbit
+                    // on the deck without relying on the void guard).
+                    bool edgeAhead = false;
+                    if (m_collisionWorld) {
+                        const glm::vec3 probePos = jt2->position +
+                            glm::vec3(std::sin(m_vehicle.yaw), 0.0f,
+                                      std::cos(m_vehicle.yaw)) * 3.0f;
+                        Ray down;
+                        down.origin[0] = probePos.x;
+                        down.origin[1] = probePos.y + 2.0f;
+                        down.origin[2] = probePos.z;
+                        down.direction[0] = 0.0f;
+                        down.direction[1] = -1.0f;
+                        down.direction[2] = 0.0f;
+                        RayHit hit;
+                        edgeAhead = !m_collisionWorld->Raycast(down, hit);
+                    }
+                    float steer = glm::clamp(dyaw * 2.0f, -1.0f, 1.0f);
+                    if (edgeAhead) {
+                        steer = 1.0f; // hard right until ground is ahead again
+                    }
+                    m_input.SetButton(Button::Left,  steer < -0.15f);
+                    m_input.SetButton(Button::Right, steer >  0.15f);
+                    // Always drive forward and steer toward the goal: the
+                    // steering authority is speed-proportional, so waiting
+                    // for alignment deadlocks at rest, and reverse/brake
+                    // windows flip-flop around the facing-away boundary.
+                    // Brake over the 4.5 u/s cruise cap, or near an edge
+                    // (crawl instead of launching off the drop).
+                    const bool fast = m_vehicle.speedAlongFacing >
+                                      (edgeAhead ? 1.5f : 4.5f);
+                    m_input.SetButton(Button::Forward, !fast);
+                    m_input.SetButton(Button::Back,    fast);
+                }
+            }
+        }
+    }
+
+    if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive())
+        TryToggleVehicleMount();
+
+    // Idle bob/spin is NOT applied to vehicles (they stay parked).
+    if (!m_mountedVehicle.IsValid()) return;
+    VehicleComponent* vc = m_entities.GetVehicle(m_mountedVehicle);
+    Transform* vt = m_entities.GetTransform(m_mountedVehicle);
+    if (!vc || !vt || !m_entities.IsAlive(m_mountedVehicle)) {
+        m_mountedVehicle = {}; // vehicle destroyed underneath us
+        return;
+    }
+
+    // --- Driving (Track 32 physics) -----------------------------------------
+    // Throttle/brake from the same buttons as before; VehiclePhysics owns
+    // the wheel raycasts, spring-damper suspension, drive/brake/steer,
+    // drag and wall bounce. Result synced back into vc + the transform.
+    UpdateMountedVehiclePhysics(dt, vc, vt);
+
+    vt->rotation.x = m_vehicle.pitch + m_vehicle.cosmeticPitch;
+    vt->rotation.y = vc->yaw;
+    vt->rotation.z = m_vehicle.roll;
+
+    // Rider follows the vehicle (hidden mesh, physics parked).
+    if (Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+        jt->position  = vt->position + glm::vec3(0.0f, 0.5f, 0.0f);
+        jt->rotation.y = vc->yaw;
+    }
+    if (PhysicsComponent* p = m_entities.GetPhysics(m_jimmyId)) {
+        p->velocity = glm::vec3(0.0f);
+        p->onGround = true;
+    }
+}
+
+// Track 32: arcade vehicle physics for the mounted vehicle. One spring-
+// damper wheel model drives everything: 4 downward raycasts (FL/FR/RL/RR),
+// per-wheel suspension force along the ground normal, rear-wheel drive,
+// brake/reverse, front-wheel steering with yaw rate ~ speed * steer, drag,
+// gravity when airborne, and a sphere-vs-wall bounce (restitution 0.3).
+// Body pitch/roll follow the wheel suspension deltas (terrain adaptation);
+// a cosmetic pitch offset gives the weight-transfer feel.
+void Engine::UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
+                                         Transform* vt) {
+    const float throttle = m_input.IsDown(Button::Forward) ? 1.0f : 0.0f;
+    const float brake    = m_input.IsDown(Button::Back)    ? 1.0f : 0.0f;
+    const float steer    = (m_input.IsDown(Button::Right) ? 1.0f : 0.0f) -
+                           (m_input.IsDown(Button::Left)  ? 1.0f : 0.0f);
+
+    // (Re)bind the collision world and seed the body from the entity state
+    // on the first physics frame after a mount (or after a world swap).
+    if (m_vehicle.world != m_collisionWorld.get()) {
+        m_vehicle.world = m_collisionWorld.get();
+        m_vehiclePhysSeeded = false;
+    }
+    if (!m_vehiclePhysSeeded) {
+        // Seed slightly compressed (chassis 0.8u above ground < restLength +
+        // wheelRadius = 0.85) so the springs make contact on the first frame;
+        // seeding at exactly the rest height left contacts=0 and the body
+        // free-fell (suspension only pushes, never pulls).
+        m_vehicle.position = vt->position + glm::vec3(0.0f, 0.8f, 0.0f);
+        m_vehicle.velocity = glm::vec3(0.0f);
+        m_vehicle.yaw      = vc->yaw;
+        m_vehicle.yawRate  = 0.0f;
+        m_vehiclePhysSeeded = true;
+        m_vehicleAccum = 0.0f;
+    }
+
+    // Fixed-timestep stepping: the engine frame rate is uncapped (~250 fps
+    // observed), and the drive/suspension constants are tuned per-step at
+    // 60 Hz. Accumulate real time and run deterministic 1/60 s steps so the
+    // behavior matches the headless probe exactly (stability guarantee).
+    constexpr float kFixedDt = 1.0f / 60.0f;
+    m_vehicleAccum += std::min(dt, 0.1f);
+    int steps = 0;
+    while (m_vehicleAccum >= kFixedDt && steps < 4) {
+        m_vehicle.Update(kFixedDt, steer, throttle, brake);
+        m_vehicleAccum -= kFixedDt;
+        ++steps;
+    }
+
+    // Drive-gate debugging: dump the first 6 THROTTLED frames to stdout
+    // (drive starts at t=3 in the demo, so mount-time frames are skipped).
+    static int s_trace = 0;
+    if (s_trace < 6 && throttle > 0.0f) { ++s_trace; m_vehicle.traceFrames = 1; }
+
+    // Void guard (demo level has open edges): falling far below the mount
+    // point means the vehicle drove off geometry — reset onto the mount spot
+    // instead of falling forever.
+    if (m_vehicle.position.y < m_vehicleVoidFloorY) {
+        m_vehicle.position = m_vehicleMountSeedPos;
+        m_vehicle.velocity = glm::vec3(0.0f);
+        m_vehiclePhysSeeded = true;
+        Logger::Info("Vehicle: void guard reset to mount point");
+    }
+
+    // Sync back: component yaw/speed/steer for Track 31's systems (camera,
+    // FOV, feel layer), transform for rendering (pitch/roll from terrain).
+    vc->yaw        = m_vehicle.yaw;
+    vc->speed      = m_vehicle.speedAlongFacing;
+    vc->steerAngle = m_vehicle.steerAngle;
+    vt->position   = m_vehicle.position;
+
+    // --- Track 33: handling feel (wheelie, crash/eject, per-type character) --
+    UpdateVehicleFeel(dt, vc, vt, throttle, brake, steer);
+
+    // Wheel anchors (component local space) for whoever needs them.
+    const glm::vec3 fwd = m_vehicle.Forward(), rgt = m_vehicle.Right();
+    for (int i = 0; i < 4; ++i)
+        vc->wheelPositions[i] = rgt * m_vehicle.wheels[i].localOffset.x +
+                                fwd * m_vehicle.wheels[i].localOffset.z;
+
+    // Stability trace: once per second, log the driving state. In DEMO=2 the
+    // first 3 samples also dump raw input/ground state (drive-gate evidence).
+    static double s_lastLog = -1e9;
+    if (m_time - s_lastLog >= 1.0) {
+        s_lastLog = m_time;
+        static double s_diagT = -10.0;
+        if (m_time - s_diagT >= 1.0 && s_diagT < 0.0) s_diagT = m_time;
+        if (m_time - s_diagT < 3.0) {
+            Logger::Info("VehicleDiag: fwd=%d back=%d left=%d right=%d "
+                         "thr=%.0f brk=%.0f contacts=%d yaw=%.2f",
+                         m_input.IsDown(Button::Forward) ? 1 : 0,
+                         m_input.IsDown(Button::Back) ? 1 : 0,
+                         m_input.IsDown(Button::Left) ? 1 : 0,
+                         m_input.IsDown(Button::Right) ? 1 : 0,
+                         throttle, brake, m_vehicle.wheelContacts,
+                         m_vehicle.yaw);
+        }
+        Logger::Info("Vehicle: t=%.0f pos=(%.1f,%.1f,%.1f) speed=%.2f "
+                     "contacts=%d airborne=%s",
+                     m_time, m_vehicle.position.x, m_vehicle.position.y,
+                     m_vehicle.position.z, m_vehicle.speedAlongFacing,
+                     m_vehicle.wheelContacts,
+                     m_vehicle.Airborne() ? "yes" : "no");
+    }
+}
+
+// Track 33: handling feel — feeds the per-frame input snapshot through the
+// feel layer (per-type drive character, wheelie, crash/eject) and applies the
+// results on top of the Track 32 body: yaw agility delta, wheelie pitch,
+// crash tilt, and the eject/dismount path.
+void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
+                               float throttle, float brake, float steer) {
+    FeelState& feel = m_vehicleFeel;
+    feel.type       = vc->type;
+    feel.inThrottle = throttle > 0.5f;
+    feel.inBrake    = brake > 0.5f;
+    feel.inLeanL    = steer < -0.5f;
+    feel.inLeanR    = steer > 0.5f;
+    feel.inWheelie  = m_input.IsDown(Button::Sprint); // Shift = wheelie on bike
+
+    const float preSpeed = m_vehicle.speedAlongFacing;
+    FeelOut fo = StepFeel(feel, m_vehicle.position, m_vehicle.yaw, preSpeed, dt);
+
+    // Feel yaw delta: per-type low-speed agility on top of the Track 32
+    // steering (small damped rate, so it composes rather than fights it).
+    m_vehicle.yaw += fo.yawDelta;
+    vc->yaw = m_vehicle.yaw;
+
+    // Wheelie pitch overlays the terrain pitch (cosmetic channel only).
+    if (feel.wheelieAngle > 0.0f)
+        m_vehicle.cosmeticPitch = fo.pitch;
+    else if (m_vehicle.cosmeticPitch != 0.0f && !feel.crashed)
+        m_vehicle.cosmeticPitch = 0.0f;
+
+    // Crash: lay the body on its side; auto-right clears it after 3 s.
+    if (feel.crashed)
+        m_vehicle.roll = 80.0f * 3.14159265f / 180.0f;
+
+    // Wall impact: the body lost its forward motion against geometry this
+    // frame (contacts lost + velocity killed by the bounce) -> run the
+    // crash/eject check against the pre-bounce forward speed.
+    if (!feel.crashed && m_vehicle.wheelContacts == 0 &&
+        glm::length(m_vehicle.velocity) < 0.5f &&
+        std::fabs(preSpeed) > kEjectImpactSpeed) {
+        FeelOut io;
+        if (FeelImpact(feel, m_vehicle.position, m_vehicle.yaw,
+                       std::fabs(preSpeed), io)) {
+            fo = io; // promote the eject result
+            m_vehicle.velocity = glm::vec3(0.0f);
+            m_vehicle.speedAlongFacing = 0.0f;
+            vc->speed = 0.0f;
+            VehicleSfxCrash(io.impactSpeed, m_vehicle.position);
+            Logger::Info("CRASH: %s rider ejected at %.1f u/s",
+                         VehicleTypeName(vc->type), io.impactSpeed);
+        }
+    }
+
+    // Events -> player placement / dismount.
+    if (fo.ejectRider) {
+        DismountVehicle();
+        if (Transform* jt = m_entities.GetTransform(m_jimmyId))
+            jt->position = fo.ejectPos;
+    }
+    if (fo.stuntLogged)
+        Logger::Info("VEHICLE: %s wheelie stunt accepted",
+                     VehicleTypeName(vc->type));
+}
+
+// Vehicle camera: behind and above the vehicle along its yaw, slight FOV
+// widening handled by UpdateVehicleFov in Render. Runs instead of the normal
+// Jimmy follow when mounted.
+void Engine::UpdateVehicleCamera(float dt) {
+    if (!m_mountedVehicle.IsValid()) return;
+    const VehicleComponent* vc = m_entities.GetVehicle(m_mountedVehicle);
+    const Transform* vt = m_entities.GetTransform(m_mountedVehicle);
+    if (!vc || !vt) return;
+
+    const glm::vec3 fwd(std::sin(vc->yaw), 0.0f, std::cos(vc->yaw));
+    const glm::vec3 focus = vt->position + glm::vec3(0.0f, 1.2f, 0.0f);
+    glm::vec3 desired = focus - fwd * 5.5f + glm::vec3(0.0f, 2.0f, 0.0f);
+
+    // Smooth follow, frame-rate independent.
+    const float a = 1.0f - std::pow(1.0f - 0.15f, dt * 60.0f);
+    glm::vec3 pos = glm::mix(m_camera.GetPosition(), desired, a);
+
+    // Keep the camera out of walls.
+    if (m_collisionWorld) {
+        const float in[3] = { pos.x, pos.y, pos.z };
+        float out[3];
+        if (m_collisionWorld->ResolveSphere(in, 0.35f, out))
+            pos = glm::vec3(out[0], out[1], out[2]);
+    }
+
+    m_camera.SetPosition(pos);
+    m_camera.SetLookAt(focus - pos);
 }
 
 // Per-frame dialogue logic: input (start/advance/choose) + typewriter tick.
@@ -4853,6 +5614,20 @@ void Engine::Render() {
         }
         // Free camera (Track 10): view matrix from camera. Projection stays
         // in the renderer; we fetch it once and build MVP per mesh here.
+        // Track 31: mounted vehicles widen the FOV (per-type); walking
+        // restores the 60-deg default. Rebuilt only on a change.
+        {
+            float fovDeg = 60.0f;
+            if (m_mountedVehicle.IsValid()) {
+                if (const MeshComponent* vmc = m_entities.GetMesh(m_mountedVehicle))
+                    if (vmc->isVehicle && vmc->vehicleModelIndex < m_vehicleModels.size())
+                        fovDeg = m_vehicleModels[vmc->vehicleModelIndex].fovDeg;
+            }
+            if (fovDeg != m_lastFovDeg) {
+                m_renderer->SetProjectionFov(fovDeg);
+                m_lastFovDeg = fovDeg;
+            }
+        }
         const glm::mat4 view = m_camera.GetViewMatrix();
         m_renderer->SetCameraView(view);
         const glm::mat4 proj = m_renderer->GetProjection();

@@ -132,6 +132,20 @@ public:
     // owned here). Callers multiply: mvp = proj * view * model.
     const glm::mat4& GetProjection() const { return m_projection; }
 
+    // Track 31: rebuild the 3D projection with a different vertical FOV
+    // (vehicle camera widens it; pass 60 to restore the default).
+    void SetProjectionFov(float fovYDegrees) {
+        if (m_windowWidth <= 0 || m_windowHeight <= 0) return;
+        const float aspect = float(m_windowWidth) / float(m_windowHeight);
+        const bgfx::Caps* caps = bgfx::getCaps();
+        if (caps->homogeneousDepth)
+            m_projection = glm::perspectiveLH_NO(
+                glm::radians(fovYDegrees), aspect, 0.1f, 20000.0f);
+        else
+            m_projection = glm::perspectiveLH_ZO(
+                glm::radians(fovYDegrees), aspect, 0.1f, 20000.0f);
+    }
+
     // Debug/verification: force the 3D view's projection to identity (used
     // with OPENBULLY_DEBUG_CAM=1 to take the camera out of the pipeline).
     void DebugIdentityProjection() { m_projection = glm::mat4(1.0f); }

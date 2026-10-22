@@ -34,6 +34,9 @@ EntityID EntityManager::Create() {
             rec.ai        = 0xFFFFFFFF;
             rec.animation = 0xFFFFFFFF;
             rec.weapon    = 0xFFFFFFFF;
+            rec.combat    = 0xFFFFFFFF;
+            rec.melee     = 0xFFFFFFFF;
+            rec.vehicle   = 0xFFFFFFFF;
             m_transforms.emplace_back();
             ++m_aliveCount;
             return EntityID{uint32_t(i), rec.generation};
@@ -49,6 +52,9 @@ EntityID EntityManager::Create() {
     rec.ai        = 0xFFFFFFFF;
     rec.animation = 0xFFFFFFFF;
     rec.weapon    = 0xFFFFFFFF;
+    rec.combat    = 0xFFFFFFFF;
+    rec.melee     = 0xFFFFFFFF;
+    rec.vehicle   = 0xFFFFFFFF;
     m_transforms.emplace_back();
     m_entities.push_back(rec);
     ++m_aliveCount;
@@ -277,6 +283,25 @@ WeaponComponent* EntityManager::GetWeapon(EntityID id) {
     EntityRecord* rec = nullptr;
     if (!FindRecord(id, &rec) || rec->weapon == 0xFFFFFFFF) return nullptr;
     return &m_weapons[rec->weapon];
+}
+
+// -- VehicleComponent (Track 31) ----------------------------------------------
+
+VehicleComponent* EntityManager::AddVehicle(EntityID id, const VehicleComponent& v) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec)) return nullptr;
+    if (rec->vehicle == 0xFFFFFFFF) {
+        rec->vehicle = uint32_t(m_vehicles.size());
+        m_vehicles.emplace_back();
+    }
+    m_vehicles[rec->vehicle] = v;
+    return &m_vehicles[rec->vehicle];
+}
+
+VehicleComponent* EntityManager::GetVehicle(EntityID id) {
+    EntityRecord* rec = nullptr;
+    if (!FindRecord(id, &rec) || rec->vehicle == 0xFFFFFFFF) return nullptr;
+    return &m_vehicles[rec->vehicle];
 }
 
 // -- Spatial queries ----------------------------------------------------------

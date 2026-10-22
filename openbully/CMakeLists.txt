@@ -64,6 +64,7 @@ add_executable(openbully
     src/main.cpp
     src/engine/engine.cpp
     src/combat/combat.cpp
+    src/vehicles/vehicle.cpp
     src/engine/resource_manager.cpp
     src/mission/mission.cpp
     src/game/schedule.cpp
@@ -74,9 +75,13 @@ add_executable(openbully
     src/animation/animation_controller.cpp
     src/audio/audio.cpp
     src/entities/entity.cpp
+    src/vehicles/vehicle.cpp
+    src/vehicles/vehicle_physics.cpp
+    src/vehicles/vehicle_feel.cpp
     src/game/input.cpp
     src/game/camera.cpp
     src/physics/collision.cpp
+    src/vehicles/vehicle_physics.cpp
     src/platform/window.cpp
     src/platform/logger.cpp
     src/rendering/mesh.cpp
@@ -118,6 +123,41 @@ add_executable(collision_test
 target_include_directories(collision_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# Track 32 vehicle physics probe (headless; no GPU/SDL).
+add_executable(vp_probe
+    src/tools/vp_probe.cpp
+    src/vehicles/vehicle_physics.cpp
+    src/physics/collision.cpp
+)
+target_include_directories(vp_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(vp_probe PRIVATE glm_headers)
+
+# Track 33 vehicle handling self-test (headless; no GPU, no audio device).
+add_executable(vehicle_test
+    src/tools/vehicle_test.cpp
+    src/vehicles/vehicle.cpp
+    src/vehicles/vehicle_feel.cpp
+    src/audio/audio.cpp
+    src/platform/logger.cpp
+)
+target_include_directories(vehicle_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENBULLY_GLM_DIR}
+)
+if(WIN32 AND EXISTS "${OPENBULLY_SDL2_DIR}/cmake/sdl2-config.cmake")
+    find_package(SDL2 CONFIG QUIET
+        PATHS "${OPENBULLY_SDL2_DIR}/cmake" NO_DEFAULT_PATH)
+endif()
+if(TARGET SDL2::SDL2)
+    target_link_libraries(vehicle_test PRIVATE SDL2::SDL2)
+    target_compile_definitions(vehicle_test PRIVATE SDL_MAIN_HANDLED)
+    if(WIN32 AND SDL2_DIR MATCHES "${CMAKE_CURRENT_SOURCE_DIR}/external")
+        target_include_directories(vehicle_test PRIVATE "${CMAKE_BINARY_DIR}/sdl2-shim")
+    endif()
+endif()
 
 # Track 21 audio self-test (no GPU; needs SDL audio + glm for the 3D API).
 add_executable(audio_test

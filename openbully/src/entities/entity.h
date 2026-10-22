@@ -18,6 +18,7 @@
 #include "../game/combat.h"
 #include "../game/weapon.h" // Track 26: WeaponType for WeaponComponent
 #include "../combat/combat.h" // Track 23: melee CombatComponent (Melee ns)
+#include "../vehicles/vehicle.h" // Track 31: VehicleComponent
 #include "../animation/animation_controller.h"
 #include "npc.h"
 
@@ -49,8 +50,10 @@ struct MeshComponent {
     bool           isJimmy   = false;    // true = draw the dedicated player mesh (Track 15)
     bool           isNpc     = false;    // true = draw an NPC model (Track 16)
     bool           isWeaponPickup = false; // Track 26: draw a weapon model (pickup on ground)
+    bool           isVehicle = false;    // Track 31: draw a vehicle model
     uint32_t       npcModelIndex = 0xFFFFFFFF; // index into Engine::m_npcModels
     uint32_t       weaponModelIndex = 0xFFFFFFFF; // Track 26: index into Engine::m_weaponModels
+    uint32_t       vehicleModelIndex = 0xFFFFFFFF; // Track 31: index into Engine::m_vehicleModels
     uint32_t       worldMeshIndex = 0xFFFFFFFF; // index into Engine::m_worldMeshes
     GpuTexture     texture;              // invalid = renderer placeholder
 };
@@ -101,6 +104,9 @@ struct WeaponComponent {
     int        ammo       = 0;
 };
 
+// Track 31: drivable vehicle state (vehicle.h defines the struct).
+// worldModelIndex points into Engine::m_vehicleModels for rendering.
+
 // --- Entity manager -----------------------------------------------------------
 
 class EntityManager {
@@ -147,6 +153,10 @@ public:
     WeaponComponent*    AddWeapon(EntityID id, const WeaponComponent& w = {});
     WeaponComponent*    GetWeapon(EntityID id);
 
+    // Track 31: vehicle component (drivable vehicles).
+    VehicleComponent*   AddVehicle(EntityID id, const VehicleComponent& v = {});
+    VehicleComponent*   GetVehicle(EntityID id);
+
     // Track 24: combat / grapple component.
     CombatComponent*    AddCombat(EntityID id, const CombatComponent& c = {});
     CombatComponent*    GetCombat(EntityID id);
@@ -174,6 +184,7 @@ public:
         uint32_t weapon      = 0xFFFFFFFF; // Track 26
         uint32_t combat      = 0xFFFFFFFF;
         uint32_t melee       = 0xFFFFFFFF; // Track 23
+        uint32_t vehicle     = 0xFFFFFFFF; // Track 31
 
         bool HasMesh() const      { return mesh      != 0xFFFFFFFF; }
         bool HasCollision() const { return collision != 0xFFFFFFFF; }
@@ -253,6 +264,7 @@ private:
     std::vector<WeaponComponent>    m_weapons; // Track 26
     std::vector<CombatComponent>    m_combats;
     std::vector<Melee::CombatComponent> m_melees; // Track 23
+    std::vector<VehicleComponent>   m_vehicles; // Track 31
 };
 
 } // namespace OpenBully

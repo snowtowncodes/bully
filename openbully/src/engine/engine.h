@@ -16,7 +16,10 @@
 #include "../combat/combat.h" // Track 23: melee combat core
 #include "../mission/mission.h"
 #include "../dialogue/dialogue.h" // Track 30: DialogueManager
+#include "../vehicles/vehicle.h" // Track 31: VehicleType + VehicleComponent
 #include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
+#include "../vehicles/vehicle_physics.h" // Track 32: arcade vehicle physics
+#include "../vehicles/vehicle_feel.h"    // Track 33: handling feel (FeelState)
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -160,6 +163,21 @@ private:
     void   SpawnNpcs(const glm::vec3& center);
     void   UpdateNpcs(float dt);
 
+    // Track 32: arcade vehicle physics. VehiclePhysics owns the wheel
+    // raycasts, spring-damper suspension, drive/brake/steer forces, drag and
+    // wall bounce; Engine drives it for the mounted vehicle and syncs the
+    // result back into VehicleComponent + Transform (replacing the flat
+    // speed-integration the mount update started with).
+    void     UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
+                                         Transform* vt);
+    void     UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
+                               float throttle, float brake, float steer); // Track 33
+    VehiclePhysics m_vehicle;                    // physics body (mounted vehicle)
+    bool     m_vehiclePhysSeeded = false;        // body synced from the entity
+    float    m_vehicleAccum = 0.0f;              // fixed-step accumulator (60 Hz)
+    glm::vec3 m_vehicleDemoCenter{0.0f};         // DEMO=2 orbit center (track 32)
+    FeelState m_vehicleFeel;                     // Track 33: handling/wheelie/crash state
+
     // Track 28: NPC reaction system. Combat and projectile damage funnel
     // through DamageNpc, which queues AIEvents; UpdateNpcs drains the queue
     // and runs the reaction state machine (fight back / flee / help call /
@@ -231,6 +249,39 @@ private:
     DialogueManager m_dialogue;
     EntityID        m_dialogueNpc{};    // NPC currently in conversation
     int             m_dialogueChoiceSel = 0; // arrow-key selection highlight
+
+    // Track 31: vehicles. Loads 4 drivable models from the extracted World.img
+    // set (bike / car / moped / go-kart), spawns one of each around Jimmy,
+    // and drives mount/dismount (E near a vehicle, guarded against combat /
+    // grapple / dialogue) + the mounted driving update (throttle/steer, world
+    // collision, camera follow with wider FOV).
+    struct VehicleModel {
+        std::string name;                            // NIF file name
+        VehicleType type = VehicleType::Bike;
+        GpuMesh     gpu;
+        std::vector<WorldMesh::SubRange> subs;
+        float       drawScale = 1.0f;                // normalizes to ~2.2u length
+        float       length    = 2.2f;                // fitted model length (u)
+        float       height    = 1.0f;                // fitted model height (u)
+        float       cameraDist = 6.0f;                // mounted follow distance
+        float       fovDeg    = 68.0f;                // mounted FOV (wider than 60)
+    };
+    bool LoadVehicleModels();
+    void SpawnVehicles(const glm::vec3& center);
+    void UpdateVehicles(float dt);                   // mount/dismount + drive
+    void TryToggleVehicleMount();                    // E-press path
+    void UpdateVehicleCamera(float dt);              // mounted follow camera
+    void MountVehicle(EntityID vehicle);
+    void DismountVehicle();
+    EntityID FindNearestVehicle(const glm::vec3& pos, float maxDist) const;
+    std::vector<VehicleModel> m_vehicleModels;
+    std::vector<EntityID>     m_vehicleIds;
+    EntityID  m_mountedVehicle{};                    // invalid = on foot
+    glm::vec3 m_preMountCamPos{0.0f};                // camera restore point
+    float     m_preMountPitch = 0.0f;
+    float     m_lastFovDeg = 60.0f;                    // projection rebuild guard
+    glm::vec3 m_vehicleMountSeedPos{0.0f};             // Track 32: void-guard reset point
+    float     m_vehicleVoidFloorY = -1e9f;             // falling below = off-geometry
 
     // Loads up to maxMeshes NIFs from `dir` into GPU meshes. Returns the
     // number loaded. Skips files that fail to parse, logs a summary.

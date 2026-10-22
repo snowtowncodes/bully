@@ -38,6 +38,7 @@ enum class SoundId : int {
     UiClick,     // sine blip (procedural)
     AmbientWind, // loopable low-passed noise bed (procedural)
     RainLoop,    // loopable band-passed noise bed (procedural, Track 34)
+    Whistle,     // two-tone referee whirp - the "you got spotted" wanted cue
     Count
 };
 
@@ -114,6 +115,7 @@ private:
     Sound GenerateClick() const;
     Sound GenerateWind() const;      // seamless loop (crossfaded head)
     Sound GenerateRain() const;       // seamless loop (crossfaded head, Track 34)
+    Sound GenerateWhistle() const;    // two-tone whirp, Track 43
     bool LoadWavInto(SoundId id, const char* path); // SDL_LoadWAV + convert
 
     SDL_AudioDeviceID m_device = 0;

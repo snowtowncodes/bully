@@ -77,6 +77,7 @@ const char* SoundFileName(SoundId id) {
         case SoundId::UiClick:     return "click.wav";
         case SoundId::AmbientWind: return "wind.wav";
         case SoundId::RainLoop:    return "rain_loop.wav";
+        case SoundId::Whistle:     return "whistle.wav";
         default:                   return "";
     }
 }
@@ -87,6 +88,7 @@ const char* SoundName(SoundId id) {
         case SoundId::UiClick:     return "ui-click";
         case SoundId::AmbientWind: return "ambient-wind";
         case SoundId::RainLoop:    return "rain-loop";
+        case SoundId::Whistle:     return "whistle";
         default:                   return "?";
     }
 }
@@ -175,15 +177,17 @@ bool AudioManager::GenerateProceduralSounds() {
     m_sounds[size_t(SoundId::UiClick)]     = GenerateClick();
     m_sounds[size_t(SoundId::AmbientWind)] = GenerateWind();
     m_sounds[size_t(SoundId::RainLoop)]    = GenerateRain();
+    m_sounds[size_t(SoundId::Whistle)]     = GenerateWhistle();
     for (const Sound& s : m_sounds)
         if (!s.valid())
             return false;
-    Logger::Info("Audio: procedural SFX ready (footstep %u frames, click %u, wind %u, rain %u @ %d Hz)",
-                 m_sounds[size_t(SoundId::Footstep)].FrameCount(m_deviceChannels),
-                 m_sounds[size_t(SoundId::UiClick)].FrameCount(m_deviceChannels),
-                 m_sounds[size_t(SoundId::AmbientWind)].FrameCount(m_deviceChannels),
-                 m_sounds[size_t(SoundId::RainLoop)].FrameCount(m_deviceChannels),
-                 m_deviceRate);
+    Logger::Info("Audio: procedural SFX ready (footstep %u frames, click %u, wind %u, rain %u, whistle %u @ %d Hz)",
+                  m_sounds[size_t(SoundId::Footstep)].FrameCount(m_deviceChannels),
+                  m_sounds[size_t(SoundId::UiClick)].FrameCount(m_deviceChannels),
+                  m_sounds[size_t(SoundId::AmbientWind)].FrameCount(m_deviceChannels),
+                  m_sounds[size_t(SoundId::RainLoop)].FrameCount(m_deviceChannels),
+                  m_sounds[size_t(SoundId::Whistle)].FrameCount(m_deviceChannels),
+                  m_deviceRate);
     return true;
 }
 
@@ -326,6 +330,36 @@ Sound AudioManager::GenerateRain() const {
         }
         const int16_t q = int16_t(std::lround(std::max(-1.0f, std::min(1.0f, v)) *
                                               32767.0f * 0.4f));
+        for (int c = 0; c < m_deviceChannels; ++c)
+            s.samples[size_t(f) * m_deviceChannels + c] = q;
+    }
+    return s;
+}
+
+// Track 43: referee whistle - the "you got spotted" cue. A two-tone whirp
+// (C7 warbling toward E7 at ~14 Hz) reads instantly as an authority call-out
+// at placeholder quality and is short enough to play several times a minute
+// while the wanted level climbs. The real Bully XACT whistles are not decoded.
+Sound AudioManager::GenerateWhistle() const {
+    const float rate = float(m_deviceRate);
+    const float dur = 0.55f;
+    const int frames = int(rate * dur);
+    Sound s;
+    s.samples.assign(size_t(frames) * m_deviceChannels, 0);
+
+    const float f0 = 2093.0f;  // C7
+    const float f1 = 2637.0f;  // E7 (major third up: the warble)
+    for (int f = 0; f < frames; ++f) {
+        const float t = float(f) / rate;
+        // Warble: 14 cycles over the phrase, 0.5 +/- 0.5*sin -> full range.
+        const float w = 0.5f + 0.5f * std::sin(2.0f * kPi * 14.0f * t);
+        const float freq = f0 + (f1 - f0) * w;
+        // Attack 15 ms, sustain, release over the last 100 ms.
+        const float env = std::min(1.0f, t / 0.015f) * std::min(1.0f, (dur - t) / 0.10f);
+        const float v = (std::sin(2.0f * kPi * freq * t) +
+                         0.35f * std::sin(2.0f * kPi * 2.0f * freq * t)) * 0.5f * env;
+        const int16_t q = int16_t(std::lround(std::max(-1.0f, std::min(1.0f, v)) *
+                                              32767.0f * 0.45f));
         for (int c = 0; c < m_deviceChannels; ++c)
             s.samples[size_t(f) * m_deviceChannels + c] = q;
     }

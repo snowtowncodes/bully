@@ -36,6 +36,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -52,6 +53,25 @@ static float nextRandom01() {
     x ^= x << 13; x ^= x >> 17; x ^= x << 5;
     return float(x % 10000u) / 10000.0f;
 }
+
+// Track 49: boss-fight tuning. File scope so UpdateHUD (boss bar/QTE HUD
+// sync) and the boss FSM below share one definition set.
+// Phase -> melee cadence multipliers (smaller = attacks more often).
+constexpr float kBossPhase2Mult = 0.72f;
+constexpr float kBossPhase3Mult = 0.50f;
+// Special cooldown shrink per phase (desperate bosses chain moves faster).
+constexpr float kBossPhase2Cd   = 0.75f;
+constexpr float kBossPhase3Cd   = 0.55f;
+// QTE tuning. Windows shrink in phase 3 (desperation cuts both ways).
+constexpr float kQteWindowBase   = 1.5f;
+constexpr float kQteWindowPhase3 = 1.1f;
+constexpr float kQteCooldown     = 1.5f;   // gap before the next prompt
+constexpr float kQteResultFlash  = 0.9f;   // SUCCESS/TOO SLOW flash (s)
+constexpr int   kQteDamageToBoss   = 14;    // boss HP cost on a win
+constexpr int   kQteDamageToPlayer = 12;    // player HP cost on a miss
+// Prompt keys (SDL scancodes; verified against SDL 2.30.12 headers):
+// W=26 S=22 A=4 D=7.
+const int kQteKeys[4] = { 26, 22, 4, 7 };
 
 // Track 28: reaction tuning. File scope so UpdateNpcs (KO fall + flinch) and
 // the reaction system below share one definition set.
@@ -911,10 +931,34 @@ void Engine::UpdateJimmy(float dt) {
         p->velocity.y = 0.0f;
         p->onGround = true;
         p->groundNormalY = newNormal.y;
+        m_lastGroundY = pos.y; // Track 49: void-guard reference level
         // Downhill continuation while sliding: keep the slide velocity.
     } else {
         p->onGround = false;
         p->groundNormalY = 1.0f;
+        // Track 49: void guard. The spawn rooftop has walkable-looking edges;
+        // falling through (boss chase pushes, scripted walks) sends Jimmy to
+        // -inf, and the NaN-poisoned view/projection math trips asserts in
+        // bgfx's debug validation. Falling >6u below the last ground level
+        // (or any NaN) = off the world: respawn at the checkpoint (boss
+        // fights treat it as a retry).
+        const bool nan = pos.y != pos.y; // fast NaN check
+        if (nan || pos.y < m_lastGroundY - 6.0f) {
+            Logger::Warning("Jimmy: fell off the world (y %.1f, ground %.1f%s) - "
+                            "respawning at checkpoint", pos.y, m_lastGroundY,
+                            nan ? ", NaN" : "");
+            bool bossActive = m_boss.entity.IsValid() &&
+                m_entities.IsAlive(m_boss.entity);
+            if (bossActive) {
+                if (BossComponent* bc = m_entities.GetBoss(m_boss.entity))
+                    bossActive = bc->engaged && !m_boss.victory;
+            }
+            if (bossActive) OnPlayerDefeatedByBoss();
+            else {
+                pos = m_jimmySpawn + glm::vec3(0.0f, 2.0f, 0.0f);
+                p->velocity = glm::vec3(0.0f);
+            }
+        }
     }
 
     // --- 5. Wall slide --------------------------------------------------------
@@ -994,17 +1038,26 @@ void Engine::UpdateJimmyCombat(float dt) {
         }
     }
 
-    const bool blocking = m_input.IsDown(Button::Block) && !m_aiming; // Track 39: RMB aims the slingshot when equipped
+    const bool blocking = m_input.IsDown(Button::Block) && !m_aiming &&
+                          !m_photoMode; // Track 39/47: RMB aims slingshot / photo viewfinder
 
     // --- 2. Attack (LMB) ------------------------------------------------------
     // Can't attack during a dodge roll; otherwise costs 10 stamina. A
     // counter-armed attack consumes the armed flag for 4x damage.
     // Track 30: no attacks while a conversation is active.
     if (m_input.IsPressed(Button::Attack) && !m_dialogue.IsActive()) {
+        // Track 47: in photo mode the shutter consumes LMB — no punch, no
+        // weapon attack (TakePhoto validates subjects + feeds missions).
+        if (m_photoMode) {
+            if (pc->attackCooldown <= 0.0f) {
+                TakePhoto();
+                pc->attackCooldown = 0.25f; // gentle shutter rate limit
+            }
+        }
         // Track 26: an equipped weapon replaces the unarmed punch entirely
         // (dodge still blocks it; the weapon's own cooldown governs the rate
         // and counter-arming is honored inside WeaponTryAttack).
-        if (pc->equippedSlot >= 0) {
+        else if (pc->equippedSlot >= 0) {
             if (pc->state != DefenseState::Dodge && pc->attackCooldown <= 0.0f)
                 WeaponTryAttack(pc);
         } else if (pc->state == DefenseState::Dodge) {
@@ -1102,6 +1155,12 @@ void Engine::DamagePlayer(int amount, const char* source) {
         ? m_entities.GetPlayer(m_jimmyId) : nullptr;
     if (!pc || amount <= 0) return;
 
+    // Track 46: OPENBULLY_GOD=1 keeps the player alive for scripted stability
+    // runs (the boss/AI tracks happily beat a mounted demo rider to death
+    // mid-run, which ends the game before the stability window closes).
+    static const bool s_god = std::getenv("OPENBULLY_GOD") != nullptr;
+    if (s_god) return;
+
     // Track 41: the class session is a protected bubble — NPC fights outside
     // the (conceptual) classroom door cannot interrupt attendance.
     if (m_classSessionActive) {
@@ -1148,6 +1207,13 @@ void Engine::UpdateJimmyCamera(float dt) {
     if (!t) return;
 
     const glm::vec3 focus = t->position + glm::vec3(0.0f, 1.0f, 0.0f);
+    // Track 49: NaN guard. A void fall used to poison focus with NaNs, and
+    // the NaN view matrix tripped bgfx debug asserts (process exit 0x80000003).
+    if (focus.x != focus.x || focus.y != focus.y || focus.z != focus.z) {
+        m_camera.SetPosition(m_jimmySpawn + glm::vec3(0.0f, 4.0f, -6.0f));
+        m_camera.SetLookAt(glm::vec3(0.0f, 1.0f, 0.0f));
+        return;
+    }
     const float yaw = m_camera.GetYaw(), pitch = m_camera.GetPitch();
     const float cy = std::cos(yaw), sy = std::sin(yaw);
     const float cp = std::cos(pitch), sp = std::sin(pitch);
@@ -1388,6 +1454,9 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
         ai.timer = 0.2f + unit() * 2.8f;
         ai.moveSpeed = 1.0f + unit() * 1.0f; // 1.0-2.0 u/s
         ai.wanderRadius = 3.0f;              // stay close on uneven geometry
+        // Track 42: faction membership from the model index (deterministic
+        // clique round robin; prefects are overridden to Authority below).
+        ai.faction = FactionForModel(uint32_t(i % m_npcModels.size()));
         // Track 27: every 4th NPC walks a patrol loop — 4 ground-snapped
         // waypoints on a square around its spawn (3.5-5.5u radius, random
         // phase). Waypoints stay on the spawn plane; the walk re-snaps.
@@ -1425,12 +1494,24 @@ void Engine::SpawnNpcs(const glm::vec3& center) {
             ai.role = AIRole::Prefect;
             mc.npcModelIndex = 0;
             ai.sightRadius = 14.0f; // authorities keep a wider watch
+            ai.faction = Faction::Authority; // Track 42: authorities
             m_prefectIds[prefectCount] = e;
             ++prefectCount;
         }
         m_entities.AddAI(e, ai);
         // Track 23: melee combat state (stun/knockdown/combo on the target).
         m_entities.AddMeleeCombat(e);
+
+        // Track 47: every NPC is a photo subject — prefects under their role
+        // label, the rest under their model file name (minus .nif).
+        if (ai.role == AIRole::Prefect) {
+            RegisterPhotoTarget(e, "Prefect", Photo::TargetKind::Person, 1.8f);
+        } else {
+            std::string lbl = model.name;
+            if (lbl.size() > 4 && lbl.substr(lbl.size() - 4) == ".nif")
+                lbl.resize(lbl.size() - 4);
+            RegisterPhotoTarget(e, lbl, Photo::TargetKind::Person, 1.8f);
+        }
 
         // Track 17: attach the animation state when the model has a rig;
         // start idle so the crowd poses immediately.
@@ -1548,12 +1629,15 @@ void Engine::UpdateNpcs(float dt) {
     m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
         // Track 28: KO'd NPCs fall over, lie down, then respawn. Runs before
         // every other branch - a downed NPC is out of the AI rotation.
+        // Track 49: bosses stay down for good (a respawned boss would break
+        // the fight's victory/retry flow).
         if (ai.state == AIState::Ko) {
             ai.fallTimer += dt;
             const float k = std::min(1.0f, ai.fallTimer / kFallTime);
             t.rotation.x = -1.5707963f * (k * k); // ease-in fall onto the back
             ai.koTimer -= dt;
-            if (ai.koTimer <= 0.0f) RespawnNpc(id, ai, t);
+            if (ai.koTimer <= 0.0f && !m_entities.GetBoss(id))
+                RespawnNpc(id, ai, t);
             UpdateEntityAnimation(id, false, dt);
             return;
         }
@@ -1572,6 +1656,13 @@ void Engine::UpdateNpcs(float dt) {
             }
         }
 
+        // Track 48: the cutscene's scripted actors are frozen (their pose
+        // comes from the timeline via ApplyCutscenePoses); the animation
+        // driver below still picks walk/idle from the scripted move.
+        if (IsCutsceneActor(id)) {
+            UpdateEntityAnimation(id, CutsceneActorMoving(id), dt);
+            return;
+        }
         // Track 24: grappled NPCs are frozen (held at arm's length by
         // Engine::UpdateGrapple); only the walk/idle driver runs.
         if (id == m_grappleTarget) {
@@ -1591,6 +1682,13 @@ void Engine::UpdateNpcs(float dt) {
                 }
             }
             UpdateEntityAnimation(id, false, dt); // idle in place
+            return;
+        }
+        // Track 49: boss entities run the dedicated boss FSM instead of the
+        // regular Track 27 state machine (it handles its own melee progress,
+        // specials and phases; bosses never flee or return home).
+        if (m_entities.GetBoss(id)) {
+            UpdateBossEntity(id, t, ai, dt);
             return;
         }
         // Track 27: the NPC's own attack progresses here (rooted swing);
@@ -1629,7 +1727,14 @@ void Engine::UpdateNpcs(float dt) {
             ? glm::length(glm::vec3(targetPos.x - pos.x, 0.0f,
                                     targetPos.z - pos.z))
             : distP;
-        const bool seen = havePlayer && distP <= ai.sightRadius &&
+        // Track 43: a hidden player cannot be spotted by authority at range
+        // (within kHiddenBreakDist they notice the locker anyway). This makes
+        // engaged authorities accumulate loseTimer and give up (RETURN).
+        const bool hiddenBlind = m_wanted.hidden &&
+            ai.role == AIRole::Prefect && // cops carry the prefect role
+            distP > WantedSystem::kHiddenBreakDist;
+        const bool seen = havePlayer && !hiddenBlind &&
+            distP <= ai.sightRadius &&
             hasLineOfSight(pos + glm::vec3(0.0f, 1.6f, 0.0f),
                            playerPos + glm::vec3(0.0f, 1.4f, 0.0f));
         // Track 28: target-aware sight. With an event-assigned entity the LOS
@@ -1637,11 +1742,12 @@ void Engine::UpdateNpcs(float dt) {
         // 27 semantics), so `seenT` must fall back to `seen` — gating sight
         // on haveTgt alone made every player-targeted NPC flap ALERT↔RETURN
         // (sight "lost" it never had) instead of committing to CHASE.
-        const bool seenT = haveTgt
+        const bool seenT = hiddenBlind ? false
+            : (haveTgt
             ? (distT <= ai.sightRadius &&
                HasLineOfSight(pos + glm::vec3(0.0f, 1.6f, 0.0f),
                               targetPos + glm::vec3(0.0f, 1.4f, 0.0f)))
-            : seen;
+            : seen);
 
         const bool engaged = ai.state == AIState::Alert ||
                              ai.state == AIState::Chase ||
@@ -1680,14 +1786,31 @@ void Engine::UpdateNpcs(float dt) {
         // Detection: roaming states notice the player -> ALERT (face + pause).
         // Track 28: event-driven reactions skip this gate (their events put
         // the NPC straight into ALERT/CHASE with targetEntity already set).
+        // Track 42: faction stance gates the sighting - Hostile factions skip
+        // the deciding pause entirely (commit runs this frame), Friendly
+        // factions never react to the player (they greet instead, below),
+        // Neutral keeps the Track 27 face-then-disperse behavior.
+        const FactionStance stance = m_factions.Stance(ai.faction);
         const bool roaming = ai.state == AIState::Idle ||
                              ai.state == AIState::Wander ||
                              ai.state == AIState::FacePlayer ||
                              ai.state == AIState::Patrol ||
                              ai.state == AIState::Return;
-        if (roaming && seen) {
-            ai.alertTimer = ai.alertDuration;
+        if (roaming && seen && stance != FactionStance::Friendly) {
+            ai.alertTimer = (stance == FactionStance::Hostile)
+                ? 0.0f                     // attack on sight
+                : ai.alertDuration;        // neutral: deciding pause
             setState(AIState::Alert);
+        }
+        // Track 42: friendly greeting - turn toward the player without
+        // breaking the roam loop (high respect = more NPCs greet you).
+        if (roaming && seen && stance == FactionStance::Friendly &&
+            distP <= ai.faceRadius) {
+            const float greetYaw = std::atan2(playerPos.x - pos.x,
+                                              playerPos.z - pos.z);
+            ai.facingYaw += shortestArc(ai.facingYaw, greetYaw) *
+                            std::min(1.0f, ai.turnSpeed * dt);
+            t.rotation.y = ai.facingYaw;
         }
 
         // Shared stuck/sidestep steering (CHASE + RETURN): straight at the
@@ -1882,12 +2005,17 @@ void Engine::UpdateNpcs(float dt) {
                     }
                 }
                 ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
-                // Plain player sighting: stare, then disperse — do NOT auto-
+                // Plain player sighting: stare, then disperse - do NOT auto-
                 // chase. Track 28 reactions (fight-back, help calls, prefect
                 // response) drive CHASE; ambient sight-chase pinned every NPC
                 // in ATTACK on the player and made Track 30's talk-to-calm-NPC
                 // unreachable (retail Bully NPCs gather, they don't swarm).
-                setState(crowdSlot ? AIState::Watch : AIState::Return);
+                // Track 42 exception: a HOSTILE-faction sighting commits to
+                // CHASE the player (respect < -50 = attack on sight).
+                const bool hostileCommit =
+                    stance == FactionStance::Hostile && !ai.targetEntity.IsValid();
+                setState(crowdSlot ? AIState::Watch
+                         : hostileCommit ? AIState::Chase : AIState::Return);
             }
             break;
 
@@ -2328,10 +2456,13 @@ void Engine::UpdateEntityAnimation(EntityID id, bool moving, float dt) {
     const bool meleeLocked = mcom && mcom->state != Melee::CombatState::Idle;
 
     if (!meleeLocked && (moving != ac->wasMoving || !ctrl.IsPlaying())) {
-        if (moving && rig.walkClip >= 0) {
+        // Track 48: a scripted actor's walk/idle comes from the timeline, not
+        // the frozen input state — MOVE_TO in flight = walk, otherwise idle.
+        const bool wantsWalk = moving || CutsceneActorMoving(id);
+        if (wantsWalk && rig.walkClip >= 0) {
             ctrl.Play(rig.walkClip, true, 0.2f);
             ac->playing = true;
-        } else if (!moving && rig.idleClip >= 0) {
+        } else if (!wantsWalk && rig.idleClip >= 0) {
             ctrl.Play(rig.idleClip, true, 0.2f);
             ac->playing = true;
         }
@@ -2462,6 +2593,8 @@ void Engine::UpdateMeleeCombat(float dt) {
             // edge, the block state applies while held (both specs coexist).
             static const bool s_demo = std::getenv("OPENBULLY_MELEE_DEMO") != nullptr;
             if (!s_demo && !m_dialogue.IsActive() && !m_journalOpen &&
+                !m_cutscenePlaying && // Track 48: no attacks during cutscenes
+                !m_photoMode && // Track 47: LMB is the shutter in photo mode
                 pc->equippedSlot < 0 &&
                 pc->state != DefenseState::Dodge &&
                 mc->state == Melee::CombatState::Idle) {
@@ -2588,6 +2721,18 @@ void Engine::ResolveMeleeHit(Melee::CombatComponent* mc, const Melee::AttackData
                   mult > 1.0f ? "FINISHER -%d   COMBO x%d" : "HIT -%d   COMBO x%d",
                   dmg, mc->comboCount);
     m_meleePopupTimer = 1.5f;
+    // Track 49: a counter-boosted hit on a boss opens a punish QTE
+    // (success = extra boss damage; failure = the boss answers back).
+    if (m_entities.GetBoss(best)) {
+        if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+            if (pc->counterArmed) {
+                if (BossComponent* bc = m_entities.GetBoss(best)) {
+                    StartBossQTE(*bc, 1.2f);
+                    Logger::Info("BOSS: counter-hit -> punish QTE");
+                }
+            }
+        }
+    }
     Logger::Info("Melee: %s hit NPC idx=%u for %d%s (health %d/%d, combo %d)",
                  atk.clipName, best.index, dmg,
                  mult > 1.0f ? " FINISHER" : "",
@@ -2740,11 +2885,16 @@ void Engine::ResolveNpcMeleeHit(Melee::CombatComponent* mc,
     const int dmg = int(atk.damage + 0.5f);
     mc->damageDealt += dmg;
     DamagePlayer(dmg, "NPC punch");
-    // Track 28: a prefect downed the player -> BUSTED stub.
+    // Track 49: a BOSS downed the player -> boss retry (NOT the generic
+    // Busted stub: bosses must not trigger the arrest cut on their kill).
     if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
         if (pc->health.current <= 0) {
-            const AIComponent* aai = m_entities.GetAI(attacker);
-            if (aai && aai->role == AIRole::Prefect) Busted();
+            if (m_entities.GetBoss(attacker))
+                OnPlayerDefeatedByBoss();
+            else {
+                const AIComponent* aai = m_entities.GetAI(attacker);
+                if (aai && aai->role == AIRole::Prefect) Busted();
+            }
         }
     }
 }
@@ -2783,7 +2933,18 @@ void Engine::DamageNpc(EntityID npc, EntityID attacker, int dmg,
     AIComponent* ai = m_entities.GetAI(npc);
     if (!ai || ai->state == AIState::Ko) return; // already down: no re-trigger
     ai->health.Damage(dmg);
+    // Track 49: the boss duel is sanctioned - hitting the boss is not a
+    // crime (no respect loss, no wanted heat, no prefect pile-on).
+    const bool bossFight = m_entities.GetBoss(npc) != nullptr;
+    // Track 42: the player's violence costs respect with the victim's faction
+    // (witness reactions run through the HelpCall path below).
+    if (attacker == m_jimmyId && !bossFight)
+        ModifyRespect(NpcFaction(npc), FactionTuning::kHit, "hit faction member");
     RegisterFight(hitPos, attacker);
+    // Track 43: player violence is a crime event - witnessed by any nearby
+    // authority (+1 head) or doubled when the victim is authority itself
+    // (+2). Before the KO early-return so knockouts charge too.
+    if (attacker == m_jimmyId && !bossFight) PlayerViolence(npc, hitPos);
     if (ai->health.current <= 0) {
         KnockOutNpc(npc, attacker);
         return;
@@ -2808,6 +2969,9 @@ void Engine::KnockOutNpc(EntityID npc, EntityID attacker) {
     AIComponent* ai = m_entities.GetAI(npc);
     const Transform* t = m_entities.GetTransform(npc);
     if (!ai || !t || ai->state == AIState::Ko) return;
+    // Track 42: a KO costs extra respect with the victim's faction.
+    if (attacker == m_jimmyId)
+        ModifyRespect(NpcFaction(npc), FactionTuning::kKo, "faction member KO'd");
     ai->state     = AIState::Ko;
     ai->koTimer   = kRespawnDelay;
     ai->fallTimer = 0.0f;
@@ -2828,6 +2992,8 @@ void Engine::KnockOutNpc(EntityID npc, EntityID attacker) {
     QueueAIEvent(e);
     // Mission hook: completes an active DEFEAT_NPC objective on this NPC.
     m_missions.NotifyNpcDefeated(npc);
+    // Track 49: boss down -> victory sequence (banner, cutscene, mission).
+    if (m_entities.GetBoss(npc)) OnBossDefeated(npc);
 }
 
 // KO timer expired: back to the original spawn point with fresh health.
@@ -2968,6 +3134,9 @@ void Engine::ProcessAIEvents() {
             const Transform* caller = m_entities.GetTransform(e.sourceEntity);
             const MeshComponent* cm = m_entities.GetMesh(e.sourceEntity);
             if (!caller || !cm || !cm->isNpc) break;
+            // Track 42: the caller's faction - same-clique allies answer
+            // (Bully crowds back their own), same-model stays as a fallback.
+            const Faction callerFaction = NpcFaction(e.sourceEntity);
             m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
                 (void)t;
                 if (id == e.sourceEntity || id == e.targetEntity) return;
@@ -2976,7 +3145,9 @@ void Engine::ProcessAIEvents() {
                     ai.state != AIState::Patrol && ai.state != AIState::Return)
                     return;
                 const MeshComponent* m = m_entities.GetMesh(id);
-                if (!m || m->npcModelIndex != cm->npcModelIndex) return; // same type
+                const bool sameFaction = ai.faction == callerFaction;
+                if (!m || (!sameFaction &&
+                           m->npcModelIndex != cm->npcModelIndex)) return;
                 if (glm::distance(t.position, caller->position) > kHelpCallRadius)
                     return;
                 ai.state = AIState::Chase;
@@ -3077,10 +3248,12 @@ void Engine::ProcessAIEvents() {
     }
 }
 
-// Track 28 stub: a prefect defeated the player. Logs BUSTED, restores full
-// health and teleports back to the spawn point.
+// Track 28 stub, Track 43 full implementation: the player was caught.
+// Logs BUSTED, restores full health and teleports back to the spawn point.
 void Engine::Busted() {
     Logger::Info("BUSTED");
+    // Track 42: getting caught costs standing with the authorities.
+    ModifyRespect(Faction::Authority, FactionTuning::kBust, "busted");
     PlayerController* pc = m_jimmyId.IsValid()
         ? m_entities.GetPlayer(m_jimmyId) : nullptr;
     Transform* jt = m_jimmyId.IsValid()
@@ -3091,6 +3264,583 @@ void Engine::Busted() {
         pc->wanted = std::min(5, pc->wanted + 1);
     }
     if (jt) jt->position = m_jimmySpawn + glm::vec3(0.0f, 2.0f, 0.0f);
+}
+
+// =========================================================================
+// Track 43: Wanted (trouble) system.
+// =========================================================================
+
+// The single gate for raising the trouble meter. `crime` carries the charge
+// (+1 head normally, +2 for hitting authority); `reason` is the log tag.
+// Per-crime throttling (kCrimeMinGap) keeps one ongoing fight from stacking
+// five heads in five punches; the whistle plays only on the 0 -> 1 climb
+// ("spotted"), and every climb stamps the HUD red flash.
+void Engine::AddWanted(WantedCrime crime, const char* reason) {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return;
+    if (m_wanted.bustPhase != 0) return; // mid-bust cut: ignore further crimes
+    // Throttle: the same crime category cannot re-charge inside the window
+    // (a ten-punch brawl is still one "fighting" head; a second WINDOW after
+    // the gap re-charges, so prolonged trouble still escalates).
+    if (m_time - m_wanted.lastCrimeTime[size_t(crime)] <
+        WantedSystem::kCrimeMinGap) return;
+    m_wanted.lastCrimeTime[size_t(crime)] = m_time + 1e-9;
+
+    const int charge = (crime == WantedCrime::AttackAuthority) ? 2 : 1;
+    const int before = pc->wanted;
+    pc->wanted = std::min(WantedSystem::kMaxHeads, pc->wanted + charge);
+    if (pc->wanted == before) return; // already at max: meter pins at 5
+    m_wanted.flashTimer = 1.2f;       // HUD red flash on every climb
+    Logger::Info("WANTED: %s -> %d head%s (%s)", reason, pc->wanted,
+                 pc->wanted == 1 ? "" : "s",
+                 crime == WantedCrime::Fighting       ? "fighting" :
+                 crime == WantedCrime::AttackAuthority ? "assault on authority" :
+                 crime == WantedCrime::Vandalism       ? "vandalism" :
+                 crime == WantedCrime::Trespass        ? "trespassing" :
+                                                         "curfew violation");
+    // "Spotted" whistle: the transition from clean to hunted.
+    if (before == 0 && m_audio) m_audio->PlaySound(SoundId::Whistle, 0.9f);
+}
+
+// Combat hook: the player just damaged `victim`. Fighting raises the meter
+// only when an authority actually sees it (within the hunt radius with LOS,
+// or close enough that sight is moot); striking authority is always
+// witnessed by the victim itself and worth double.
+void Engine::PlayerViolence(EntityID victim, const glm::vec3& pos) {
+    const AIComponent* vai = m_entities.GetAI(victim);
+    if (vai && vai->role == AIRole::Prefect) { // cops share the prefect role
+        AddWanted(WantedCrime::AttackAuthority, "attacked authority");
+        return;
+    }
+    if (AnyAuthorityWitnessed(pos))
+        AddWanted(WantedCrime::Fighting, "fighting");
+}
+
+// Projectile/world hook: the player just vandalized something at `pos`.
+// Same witness rule as fighting; also counts as the "breaking windows"
+// charge for the task table.
+void Engine::VandalismCrime(const glm::vec3& pos) {
+    if (AnyAuthorityWitnessed(pos))
+        AddWanted(WantedCrime::Vandalism, "vandalism");
+}
+
+// True when any authority (prefect or cop) is within `radius` of `pos`
+// with a clear line of sight (or simply very close, where LOS is moot).
+bool Engine::AnyAuthorityWitnessed(const glm::vec3& pos) {
+    const float closeSq = 6.0f * 6.0f;
+    const float radSq = WantedSystem::kAuthorityHuntRange *
+                        WantedSystem::kAuthorityHuntRange;
+    bool seen = false;
+    m_entities.ForEachAI([&](EntityID, const Transform& t,
+                             const AIComponent& ai) {
+        if (seen) return;
+        if (ai.role != AIRole::Prefect) return; // cops carry the prefect role
+        if (ai.state == AIState::Ko) return;
+        const glm::vec3 d = t.position - pos;
+        const float distSq = d.x * d.x + d.z * d.z;
+        if (distSq > radSq) return;
+        if (distSq <= closeSq ||
+            HasLineOfSight(t.position + glm::vec3(0.0f, 1.6f, 0.0f),
+                           pos + glm::vec3(0.0f, 1.2f, 0.0f)))
+            seen = true;
+    });
+    return seen;
+}
+
+// True when any living authority stands within `radius` of the player
+// (no LOS check: used for the hide-broken and leave-area decay gates).
+bool Engine::AnyAuthorityNear(float radius) {
+    if (!m_jimmyId.IsValid()) return false;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return false;
+    const float radSq = radius * radius;
+    bool inRange = false;
+    m_entities.ForEachAI([&](EntityID, const Transform& t,
+                             const AIComponent& ai) {
+        if (inRange) return;
+        if (ai.role != AIRole::Prefect) return; // cops carry the prefect role
+        if (ai.state == AIState::Ko) return;
+        const glm::vec3 d = t.position - jt->position;
+        if (d.x * d.x + d.z * d.z <= radSq) inRange = true;
+    });
+    return inRange;
+}
+
+// Any authority currently pursuing Jimmy (chase/attack with him as target,
+// or a plain player-targeted engagement)? Drives the wardrobe-reset rule
+// and the "leave the area" slow decay.
+bool Engine::AnyAuthorityChasing() {
+    if (!m_jimmyId.IsValid()) return false;
+    bool chasing = false;
+    m_entities.ForEachAI([&](EntityID, const Transform&,
+                             const AIComponent& ai) {
+        if (chasing) return;
+        if (ai.role != AIRole::Prefect) return; // cops carry the prefect role
+        if (ai.state != AIState::Chase && ai.state != AIState::Attack &&
+            ai.state != AIState::Alert) return;
+        // Engaged on Jimmy specifically (explicit target or the fallback).
+        if (!ai.targetEntity.IsValid() || ai.targetEntity == m_jimmyId)
+            chasing = true;
+    });
+    return chasing;
+}
+
+// Builds the restricted (trespass) zones once, relative to Jimmy's spawn so
+// they stay valid wherever the level loads. Two roof-edge strips, placed to
+// NOT overlap the demo mission walk targets (x [-12.1, 12.9], z [-4.5, 3.5]
+// relative to spawn) so the scripted mission drive never trips them.
+void Engine::SetupTrespassZones() {
+    if (!m_trespassZones.empty()) return;
+    if (m_jimmySpawn == glm::vec3(0.0f)) return; // not initialized yet
+    const glm::vec3 s = m_jimmySpawn;
+    m_trespassZones.push_back({"roof_north_strip",
+        s + glm::vec3(-13.5f, -2.0f, 4.2f), s + glm::vec3(13.5f, 4.0f, 8.2f)});
+    m_trespassZones.push_back({"roof_west_edge",
+        s + glm::vec3(-13.5f, -2.0f, -4.5f), s + glm::vec3(-12.2f, 4.0f, 4.2f)});
+    Logger::Info("Wanted: %zu restricted zone(s) registered (trespass = +1 head)",
+                 m_trespassZones.size());
+}
+
+// Per-frame wanted driver: HUD flash decay, the bust cut, curfew/trespass
+// crime checks, the two escape decays (hidden / left the area), cop spawn
+// and the authority response (hunt + grab-range bust).
+void Engine::UpdateWanted(float dt) {
+    if (dt <= 0.0f) return;
+
+    // HUD flash decays even without a player (free camera still shows it).
+    if (m_wanted.flashTimer > 0.0f)
+        m_wanted.flashTimer = std::max(0.0f, m_wanted.flashTimer - dt);
+
+    // The bust cut runs on engine time even mid-chase.
+    if (m_wanted.bustPhase == 1) {
+        m_wanted.bustTimer += dt;
+        m_wanted.bustFade = std::min(1.0f, m_wanted.bustTimer /
+                                               WantedSystem::kBustFadeSeconds);
+        if (m_wanted.bustTimer >= WantedSystem::kBustFadeSeconds) FinishBust();
+        return; // the world is behind the black screen
+    }
+    if (m_wanted.bustPhase == 2) {
+        m_wanted.bustTimer -= dt;
+        m_wanted.bustFade = std::max(0.0f, m_wanted.bustTimer /
+                                               WantedSystem::kBustFadeSeconds);
+        if (m_wanted.bustTimer <= 0.0f) {
+            m_wanted.bustFade = 0.0f;
+            m_wanted.bustPhase = 0;
+            Logger::Info("BUSTED: back in control (outside the school)");
+        }
+        return;
+    }
+
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    const glm::vec3 pos = jt->position;
+
+    // --- Crime: restricted areas (trespass = +1 head per entry) ------------
+    SetupTrespassZones();
+    bool trespassing = false;
+    for (const TrespassZone& z : m_trespassZones) {
+        if (pos.x >= z.bmin.x && pos.x <= z.bmax.x &&
+            pos.y >= z.bmin.y && pos.y <= z.bmax.y &&
+            pos.z >= z.bmin.z && pos.z <= z.bmax.z) {
+            trespassing = true;
+            break;
+        }
+    }
+    if (trespassing && !m_wanted.trespassInside) {
+        m_wanted.trespassInside = true;
+        AddWanted(WantedCrime::Trespass, "trespassing (restricted area)");
+    } else if (!trespassing) {
+        m_wanted.trespassInside = false;
+    }
+
+    // --- Crime: curfew (out after 23:00, until 07:00) ----------------------
+    // One charge per night: the latch clears in the morning. Hiding out
+    // skips the charge (a locker is technically indoors).
+    const bool curfew = m_clockMinutes >= int(WantedSystem::kCurfewStartMin) ||
+                        m_clockMinutes <  int(WantedSystem::kCurfewEndMin);
+    if (curfew && !m_wanted.curfewCharged) {
+        m_wanted.curfewCharged = true;
+        if (!m_wanted.hidden)
+            AddWanted(WantedCrime::Curfew, "curfew (out after 23:00)");
+    } else if (!curfew) {
+        m_wanted.curfewCharged = false;
+    }
+
+    // --- Escape: decay while hidden or out of reach ------------------------
+    if (pc->wanted > 0) {
+        if (m_wanted.hidden) {
+            m_wanted.hideTimer += dt;
+            m_wanted.safetyTimer = 0.0f;
+            if (m_wanted.hideTimer >= WantedSystem::kHideDecayInterval) {
+                m_wanted.hideTimer -= WantedSystem::kHideDecayInterval;
+                pc->wanted = std::max(0, pc->wanted - 1);
+                Logger::Info("WANTED: heat decays while hidden -> %d", pc->wanted);
+            }
+        } else if (!AnyAuthorityNear(WantedSystem::kAuthorityClearDist)) {
+            // Left the area: nobody hunting within 30 u, heat bleeds slowly.
+            m_wanted.safetyTimer += dt;
+            m_wanted.hideTimer = 0.0f;
+            if (m_wanted.safetyTimer >= WantedSystem::kLeaveDecayInterval) {
+                m_wanted.safetyTimer -= WantedSystem::kLeaveDecayInterval;
+                pc->wanted = std::max(0, pc->wanted - 1);
+                Logger::Info("WANTED: heat decays out of sight -> %d", pc->wanted);
+            }
+        } else {
+            m_wanted.safetyTimer = 0.0f;
+            m_wanted.hideTimer = 0.0f;
+        }
+    }
+
+    // --- Cops: spawn at 4+ heads, stand down below 4 -----------------------
+    // Entity create/destroy is deferred to the top of the next frame
+    // (ServiceCopRequests): mid-frame mutation reallocates the entity and rig
+    // stores while other systems hold component/rig references.
+    // OPENBULLY_NO_COPS=1: diagnostic gate - skips cop spawning entirely
+    // (prefects still chase + bust; used to isolate the cop-spawn crash).
+    static const bool s_noCops = std::getenv("OPENBULLY_NO_COPS") != nullptr;
+    if (!s_noCops) {
+        if (pc->wanted >= WantedSystem::kCopSpawnAtHeads && m_copIds.empty() &&
+            !m_copsPending)
+            m_copsPending = true;
+        else if (pc->wanted < WantedSystem::kCopSpawnAtHeads &&
+                 (!m_copIds.empty() || m_copsPending))
+            m_copsStandDown = true;
+    }
+
+    // --- Authority response -------------------------------------------------
+    const bool wasChased = m_wanted.chased;
+    m_wanted.chased = false;
+    if (pc->wanted > 0) {
+        bool bustNow = false;
+        // Post-bust walk-away grace: while the respawn i-frames tick, local
+        // authorities do not re-aggro (retail lets you walk out of the office
+        // first; without this the schedule-prefect camping the spawn busts
+        // again the instant a new crime charges).
+        const bool grace = pc->invincibleTimer > 0.0f;
+        m_entities.ForEachAI([&](EntityID id, Transform& t, AIComponent& ai) {
+            if (ai.role != AIRole::Prefect || ai.state == AIState::Ko) return;
+            const float dxz = glm::length(
+                glm::vec2(t.position.x - pos.x, t.position.z - pos.z));
+            const bool engaged = ai.state == AIState::Alert ||
+                                 ai.state == AIState::Chase ||
+                                 ai.state == AIState::Attack;
+            if (!engaged) {
+                // Hot player: any authority that spots Jimmy gives chase
+                // (skipped while hidden - that is the whole point of hiding,
+                // and during the post-bust walk-away grace).
+                if (m_wanted.hidden || grace) return;
+                if (dxz > WantedSystem::kAuthorityHuntRange) return;
+                if (!HasLineOfSight(t.position + glm::vec3(0.0f, 1.6f, 0.0f),
+                                    pos + glm::vec3(0.0f, 1.2f, 0.0f))) return;
+                ai.state = AIState::Chase;
+                ai.targetEntity = m_jimmyId;
+                ai.hasTarget = false;
+                ai.loseTimer = 0.0f;
+                ai.stuckTimer = 0.0f;
+                ai.sidestepTimer = 0.0f;
+                ai.lastPos = t.position;
+                Logger::Info("WANTED: authority %u spotted Jimmy (wanted %d) "
+                             "- giving chase", id.index, pc->wanted);
+                return;
+            }
+            // Engaged on Jimmy: counts as chased; within grab range = busted.
+            if (!ai.targetEntity.IsValid() || ai.targetEntity == m_jimmyId) {
+                m_wanted.chased = true;
+                if (dxz <= WantedSystem::kGrabRange) bustNow = true;
+            }
+        });
+        // "Spotted" whistle when a pursuit begins (re-arms once pursuit ends).
+        if (m_wanted.chased && !wasChased && m_audio)
+            m_audio->PlaySound(SoundId::Whistle, 0.8f);
+        if (bustNow) {
+            BeginBust();
+            return;
+        }
+    }
+}
+
+// 4+ heads: the police arrive. Two cop NPCs (prefect-role AI, tuned faster
+// and sharper-sighted) walk in from kCopSpawnDistance and immediately chase.
+void Engine::SpawnCops() {
+    if (m_npcModels.empty() || !m_jimmyId.IsValid()) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    Logger::Info("WANTED: %d heads - cops called in", WantedSystem::kCopSpawnAtHeads);
+    for (int i = 0; i < WantedSystem::kCopSpawnCount; ++i) {
+        const float ang = float(i) * 3.14159265f + 0.7f;
+        glm::vec3 pos = jt->position +
+            glm::vec3(std::cos(ang) * WantedSystem::kCopSpawnDistance, 0.0f,
+                      std::sin(ang) * WantedSystem::kCopSpawnDistance);
+        // Ground snap from just above the player's plane (same guard as the
+        // crowd spawn: never drop an NPC through hollow geometry).
+        if (m_collisionWorld) {
+            Ray down;
+            down.origin[0] = pos.x; down.origin[1] = jt->position.y + 10.0f;
+            down.origin[2] = pos.z;
+            down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+            down.direction[2] = 0.0f;
+            RayHit hit;
+            if (m_collisionWorld->Raycast(down, hit) &&
+                std::fabs(hit.point[1] - jt->position.y) < 6.0f)
+                pos.y = hit.point[1];
+            else
+                pos.y = jt->position.y;
+        }
+        // Cop entities reuse the crowd's model-0 rig (same lazy-build path
+        // as the schedule spawner) so they render + animate like prefects.
+        NpcModel& model = m_npcModels[0];
+        uint32_t rigIndex = model.rigIndex;
+        if (rigIndex == 0xFFFFFFFF && !m_sharedClips.empty() &&
+            !model.sourcePath.empty()) {
+            const NifLoadResult nif = LoadNifFile(model.sourcePath);
+            if (nif.ok) rigIndex = CreateRig(nif);
+            model.rigIndex = rigIndex; // cached even on failure (no retry)
+        }
+        if (rigIndex != 0xFFFFFFFF) rigIndex = CloneRig(rigIndex);
+
+        EntityID e = m_entities.Create();
+        Transform t;
+        t.position = pos;
+        t.scale = glm::vec3(model.bodyScale);
+        t.rotation.y = ang + 3.14159265f; // face the player
+        m_entities.AddTransform(e, t);
+        MeshComponent mc;
+        mc.isBox = false;
+        mc.isNpc = true;
+        mc.npcModelIndex = 0;
+        m_entities.AddMesh(e, mc);
+        CollisionComponent cc;
+        cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+        cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+        cc.layerMask = 2u;
+        m_entities.AddCollision(e, cc);
+        PhysicsComponent phy;
+        phy.gravity = -9.8f;
+        m_entities.AddPhysics(e, phy);
+        AIComponent ai;
+        ai.homePos = pos;
+        ai.facingYaw = t.rotation.y;
+        ai.lastPos = pos;
+        ai.role = AIRole::Prefect;      // authority: chases + busts like a prefect
+        ai.state = AIState::Chase;
+        ai.targetEntity = m_jimmyId;
+        ai.hasTarget = false;
+        ai.sightRadius = 24.0f;         // cops see farther than prefects
+        ai.moveSpeed = 2.6f;            // cops are faster than the crowd
+        ai.timer = 0.0f;
+        ai.loseTimer = 0.0f;
+        m_entities.AddAI(e, ai);
+        m_entities.AddMeleeCombat(e);
+        if (rigIndex != 0xFFFFFFFF) {
+            AnimationComponent ac;
+            ac.rigIndex = rigIndex;
+            ac.playing = true;
+            ac.wasMoving = false;
+            m_entities.AddAnimation(e, ac);
+            AnimRig& rig = m_animRigs[rigIndex];
+            if (rig.idleClip >= 0) rig.controller.Play(rig.idleClip, true, 0.0f);
+        }
+        m_copIds.push_back(e);
+        Logger::Info("WANTED: cop spawned at (%.1f, %.1f, %.1f) - chasing",
+                     pos.x, pos.y, pos.z);
+    }
+}
+
+// Heat dropped below 4 (or the bust cut): send the cops away.
+void Engine::DespawnCops() {
+    if (m_copIds.empty()) return;
+    for (EntityID id : m_copIds)
+        if (id.IsValid() && m_entities.IsAlive(id)) m_entities.Destroy(id);
+    Logger::Info("WANTED: %zu cop(s) stood down", m_copIds.size());
+    m_copIds.clear();
+}
+
+// Track 43: materializes deferred cop spawn/despawn requests at the TOP of
+// the frame, before any system holds entity/rig references. SpawnCops clones
+// animation rigs (reallocating m_animRigs) and DespawnCops destroys entities;
+// doing either mid-frame (from UpdateWanted) risks dangling references in
+// systems that already iterated the stores this frame.
+void Engine::ServiceCopRequests() {
+    if (m_copsStandDown) {
+        m_copsStandDown = false;
+        m_copsPending = false; // a stand-down cancels an un-materialized spawn
+        DespawnCops();
+    }
+    if (m_copsPending) {
+        m_copsPending = false;
+        SpawnCops();
+    }
+}
+
+// Busted! Starts the cut: fade to black (FinishBust applies the penalty at
+// full black and fades back in). Safe to call repeatedly - the phase guard
+// makes the second call a no-op.
+void Engine::BeginBust() {
+    if (m_wanted.bustPhase != 0) return;
+    if (!m_jimmyId.IsValid()) return;
+    m_wanted.bustPhase = 1;
+    m_wanted.bustTimer = 0.0f;
+    m_wanted.bustFade = 0.0f;
+    if (m_audio) m_audio->PlaySound(SoundId::Whistle, 1.0f);
+    Logger::Info("BUSTED! caught by authority - fading out");
+}
+
+// Full black: apply the bust penalty, cut to the spawn point, fade back in.
+// Authority lets go (cops despawn, prefects resume their beat), fight
+// records and the event queue clear, and any active "don't get busted"
+// mission fails.
+void Engine::FinishBust() {
+    m_wanted.bustPhase = 2;
+    m_wanted.bustTimer = WantedSystem::kBustFadeSeconds;
+
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (pc) {
+        const int hadWanted = pc->wanted;
+        const int hadMoney  = pc->money;
+        pc->wanted = 0;
+        pc->health.current = pc->health.max;
+        pc->state = DefenseState::Normal;
+        pc->invincibleTimer = 6.0f; // walk-away grace after the bust cut
+        const int loss = (hadMoney * WantedSystem::kMoneyLossPercent) / 100;
+        pc->money = hadMoney - loss;
+        Logger::Info("BUSTED: wanted %d -> 0, money -%d (kept %d)",
+                     hadWanted, loss, pc->money);
+    }
+
+    // Respawn outside: at the spawn point (school front), ground-snapped.
+    Transform* jt = m_jimmyId.IsValid()
+        ? m_entities.GetTransform(m_jimmyId) : nullptr;
+    glm::vec3 pos = m_jimmySpawn;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = pos.x; down.origin[1] = pos.y + 10.0f;
+        down.origin[2] = pos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+        down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+    }
+    if (jt) {
+        jt->position = pos + glm::vec3(0.0f, 0.2f, 0.0f);
+        jt->rotation.x = 0.0f;
+        jt->rotation.z = 0.0f;
+    }
+    m_camDesired = pos;
+
+    // Everyone lets go: cops go home (deferred to the top of the frame -
+    // destroying entities mid-frame can dangle references), prefects resume
+    // their patrol.
+    m_copsStandDown = true;
+    m_copsPending = false;
+    m_entities.ForEachAI([&](EntityID, Transform&, AIComponent& ai) {
+        if (ai.role != AIRole::Prefect) return;
+        ai.state = AIState::Idle;
+        ai.targetEntity = EntityID{};
+        ai.hasTarget = false;
+        ai.loseTimer = 0.0f;
+        ai.timer = 1.0f;
+    });
+    m_aiEvents.clear();
+    m_fights.clear();
+    m_wanted.hidden = false;
+    m_wanted.hideTimer = 0.0f;
+    m_wanted.safetyTimer = 0.0f;
+    m_wanted.curfewCharged = false;
+
+    // Mission hook: "don't get busted" objectives fail their mission.
+    const int failed = m_missions.NotifyBust();
+    if (failed > 0)
+        Logger::Info("BUSTED: %d mission(s) failed (DON'T GET BUSTED)", failed);
+}
+
+// OPENBULLY_WANTED_DEMO=1: scripted wanted-system drive for headless
+// verification (same philosophy as the other *_DEMO hooks - OS key
+// injection is unreliable). Timeline (engine seconds):
+//    1.0  assault on authority (+2)  -> wanted 2, whistle + HUD flash;
+//         the nearby schedule-prefect gives chase (authority response)
+//   ~4.5  prefect reaches grab range -> BUST: fade out, -50%% money,
+//         respawn at the spawn point, wanted 0 (bust cut lands on its own)
+//    8.0  trespass (+1)              -> wanted 1 (post-bust re-charge works)
+//   10.0  hide (as if B pressed)     -> 1 head decays every 10 s
+//   21.0  unhide                     -> wanted 0 (hide decay verified)
+//   23.0  vandalism (+1)             -> wanted 1
+//   25.0  assault (+2)               -> wanted 3
+//   27.0  trespass (+1)              -> wanted 4 -> COPS SPAWN next frame
+//   ~35   an authority reaches grab range -> second BUST (cops involved)
+//   45.0  summary log line
+void Engine::DriveWantedDemo(float dt) {
+    (void)dt;
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return;
+    static int s_step = 0;
+    switch (s_step) {
+    case 0:
+        if (m_time >= 1.0) {
+            s_step = 1;
+            AddWanted(WantedCrime::AttackAuthority, "DEMO: punched a prefect");
+        }
+        break;
+    case 1: // wait for the first bust cycle to complete (wanted back to 0)
+        if (m_time >= 8.0) {
+            s_step = 2;
+            AddWanted(WantedCrime::Trespass, "DEMO: entered a restricted area");
+        }
+        break;
+    case 2:
+        if (m_time >= 10.0) {
+            s_step = 3;
+            m_wanted.hidden = true;
+            m_wanted.hideTimer = 0.0f;
+            Logger::Info("WANTED DEMO: hidden - decay every %.0f s",
+                         WantedSystem::kHideDecayInterval);
+        }
+        break;
+    case 3:
+        if (m_time >= 21.0) {
+            s_step = 4;
+            m_wanted.hidden = false;
+            Logger::Info("WANTED DEMO: unhidden (wanted now %d)", pc->wanted);
+        }
+        break;
+    case 4:
+        if (m_time >= 23.0) {
+            s_step = 5;
+            AddWanted(WantedCrime::Vandalism, "DEMO: smashed a window");
+        }
+        break;
+    case 5:
+        if (m_time >= 25.0) {
+            s_step = 6;
+            m_wanted.lastCrimeTime[size_t(WantedCrime::AttackAuthority)] = -1e9;
+            AddWanted(WantedCrime::AttackAuthority, "DEMO: attacked authority");
+        }
+        break;
+    case 6:
+        if (m_time >= 27.0) {
+            s_step = 7;
+            AddWanted(WantedCrime::Trespass, "DEMO: entered a restricted area");
+            Logger::Info("WANTED DEMO: 4 heads - expecting cops next frame");
+        }
+        break;
+    case 7:
+        if (m_time >= 45.0) {
+            s_step = 8;
+            Logger::Info("WANTED DEMO: complete (wanted=%d bustPhase=%d "
+                         "cops=%zu money=%d health=%d hidden=%d)",
+                         pc->wanted, m_wanted.bustPhase, m_copIds.size(),
+                         pc->money, pc->health.current,
+                         m_wanted.hidden ? 1 : 0);
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 // OPENBULLY_NPC_DEMO: scripted headless verification of the Track 27 AI
@@ -3292,6 +4042,341 @@ Engine::Engine() = default; // members built here where the types are complete
 // demo level. Positions in the file are expressed relative to runtime
 // reference points (Jimmy's spawn, the anchor-mesh bounds) so the content
 // stays aligned with wherever the level geometry lands.
+// =========================================================================
+// Track 42: faction respect (Nerds / Jocks / Greasers / Preppies / Bullies /
+// Townies / Authority). One respect value per faction, clamped [-100, 100].
+// Bands gate NPC perception: Hostile (< -50) attacks on sight, Friendly
+// (> +50) never attacks and greets instead; Neutral keeps the Track 27
+// face-then-disperse sighting. Overall respect = mean + mission bonus.
+// =========================================================================
+
+// Deterministic model -> faction mapping: the crowd is a round-robin mix of
+// the 6 student cliques so every faction is represented wherever NPCs spawn.
+// Authority comes only from AIRole::Prefect (applied at the spawn sites).
+Faction Engine::FactionForModel(uint32_t modelIndex) {
+    static const Faction kMix[6] = {
+        Faction::Nerds, Faction::Jocks, Faction::Greasers,
+        Faction::Preppies, Faction::Bullies, Faction::Townies,
+    };
+    return kMix[modelIndex % 6u];
+}
+
+// Faction of a live NPC entity. Authorities (role Prefect) always read as
+// Faction::Authority regardless of the model-index mapping.
+Faction Engine::NpcFaction(EntityID id) {
+    if (!m_entities.IsAlive(id)) return Faction::Townies;
+    const AIComponent* ai = m_entities.GetAI(id);
+    if (!ai) return Faction::Townies;
+    return (ai->role == AIRole::Prefect) ? Faction::Authority : ai->faction;
+}
+
+// Adds a respect delta to one faction (clamped inside FactionSystem) and
+// logs the before/after pair - the primary verification signal for headless
+// faction runs.
+void Engine::ModifyRespect(Faction f, float delta, const char* reason) {
+    const float before = m_factions.Get(f);
+    if (delta == 0.0f) return;
+    const float after = m_factions.Modify(f, delta, reason);
+    const FactionStance st = m_factions.Stance(f);
+    Logger::Info("RESPECT: %s %+.0f -> %.0f (%s) [%s]",
+                 FactionName(f), after - before, after,
+                 reason ? reason : "?", FactionStanceName(st));
+}
+
+// TAB toggles the stats overlay; F gifts the nearest NPC.
+void Engine::HandleFactionKeys() {
+    if (m_input.WasKeyPressed(SDL_SCANCODE_TAB)) {
+        m_statsOpen = !m_statsOpen;
+        Logger::Info("Faction stats: %s", m_statsOpen ? "OPEN" : "closed");
+    }
+    if (m_input.WasKeyPressed(SDL_SCANCODE_F))
+        TryGiftToNpc();
+}
+
+// F key: give a gift to the nearest NPC within 3u. Small respect boost with
+// that NPC's faction; gifts cannot reach a KO'd NPC (they are on the floor).
+void Engine::TryGiftToNpc() {
+    if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    static constexpr float kGiftRange = 3.0f;
+    EntityID best{};
+    float bestDist = 1e9f;
+    m_entities.ForEachAI([&](EntityID id, const Transform& t, const AIComponent& ai) {
+        if (ai.state == AIState::Ko) return;
+        const float d = glm::length(t.position - jt->position);
+        if (d < bestDist) { bestDist = d; best = id; }
+    });
+    if (!best.IsValid() || bestDist > kGiftRange) {
+        Logger::Info("GIFT: no NPC within %.1fu (closest %.1fu)",
+                     kGiftRange, bestDist);
+        return;
+    }
+    const Faction f = NpcFaction(best);
+    ModifyRespect(f, FactionTuning::kGift, "gift");
+    AppendJournalLog(std::string("Gift given - ") + FactionName(f) +
+                     " respect " + std::to_string(m_factions.GetRounded(f)));
+}
+
+// Flattens faction state into HUDState: per-faction rows (stats screen),
+// the overall aggregate, and the nearest-NPC interaction readout.
+void Engine::UpdateFactionHUD() {
+    for (int i = 0; i < kFactionCount; ++i) {
+        const Faction f = static_cast<Faction>(i);
+        HUDState::FactionRow& row = m_hudState.factionRows[i];
+        std::snprintf(row.name, sizeof(row.name), "%s", FactionName(f));
+        row.respect = m_factions.GetRounded(f);
+        row.stance  = static_cast<int>(m_factions.Stance(f));
+    }
+    m_hudState.overallRespect    = m_factions.GetRoundedOverall();
+    m_hudState.completedMissions = m_factions.CompletedMissions();
+    m_hudState.statsVisible      = m_statsOpen;
+
+    // Interaction readout: nearest standing NPC within gift reach.
+    m_hudState.factionBarVisible = false;
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+            static constexpr float kBarRange = 3.0f;
+            EntityID best{};
+            float bestDist = 1e9f;
+            m_entities.ForEachAI([&](EntityID id, const Transform& t,
+                                     const AIComponent& ai) {
+                if (ai.state == AIState::Ko) return;
+                const float d = glm::length(t.position - jt->position);
+                if (d < bestDist) { bestDist = d; best = id; }
+            });
+            if (best.IsValid() && bestDist <= kBarRange) {
+                const Faction f = NpcFaction(best);
+                m_hudState.factionBarVisible = true;
+                m_hudState.factionRespect = m_factions.GetRounded(f);
+                m_hudState.factionStance  = static_cast<int>(m_factions.Stance(f));
+                std::snprintf(m_hudState.factionName,
+                              sizeof(m_hudState.factionName), "%s",
+                              FactionName(f));
+            }
+        }
+    }
+}
+
+// Applies a mission's faction respect reward on completion (fired through
+// MissionManager::SetOnComplete). Also bumps the completed-mission tally
+// that feeds the overall-respect aggregate.
+void Engine::ApplyMissionReward(const Mission* m) {
+    if (!m) return;
+    m_factions.AddCompletedMission();
+    if (m->respectFaction < 0 || m->respectFaction >= kFactionCount) return;
+    const Faction f = static_cast<Faction>(m->respectFaction);
+    const float amount = m->respectReward != 0
+        ? float(m->respectReward) : FactionTuning::kMission;
+    ModifyRespect(f, amount, "mission reward");
+    AppendJournalLog(std::string("Mission complete - ") + FactionName(f) +
+                     " respect " + std::to_string(m_factions.GetRounded(f)));
+}
+
+// UI color pack matching UIRenderer::PackRGBA (0xAARRGGBB literals used
+// elsewhere in this file; this helper keeps the faction panel readable).
+namespace {
+inline uint32_t FactionCol(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    return (uint32_t(a) << 24) | (uint32_t(b) << 16) |
+           (uint32_t(g) << 8) | uint32_t(r);
+}
+} // namespace
+
+// Track 42 overlay: (1) the interaction readout - nearest NPC's faction +
+// respect while within gift range; (2) the TAB stats screen - one bar per
+// faction (center-origin: negative red, positive green), the overall
+// aggregate and the completed-mission tally.
+void Engine::DrawFactionStats() {
+    if (!m_ui.IsInitialized()) return;
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    if (W <= 0.0f || H <= 0.0f) return;
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+
+    const uint32_t white    = FactionCol(235, 235, 240, 255);
+    const uint32_t dim      = FactionCol(170, 170, 178, 220);
+    const uint32_t hostile  = FactionCol(240, 90, 90, 255);
+    const uint32_t neutral  = FactionCol(235, 210, 80, 255);
+    const uint32_t friendly = FactionCol(90, 220, 110, 255);
+    const uint32_t gold     = FactionCol(255, 215, 80, 255);
+    const uint32_t panelBg  = FactionCol(12, 12, 18, 235);
+    const uint32_t trackBg  = FactionCol(40, 40, 48, 220);
+    const uint32_t border   = FactionCol(200, 190, 140, 180);
+    const uint32_t veil     = FactionCol(0, 0, 0, 150);
+
+    // --- interaction readout (top-left) ------------------------------------
+    if (m_hudState.factionBarVisible) {
+        char line[64];
+        std::snprintf(line, sizeof(line), "%s: %+d (%s)",
+                      m_hudState.factionName, m_hudState.factionRespect,
+                      m_hudState.factionStance == 0 ? "HOSTILE" :
+                      m_hudState.factionStance == 2 ? "FRIENDLY" : "NEUTRAL");
+        const uint32_t col =
+            m_hudState.factionStance == 0 ? hostile :
+            m_hudState.factionStance == 2 ? friendly : neutral;
+        m_ui.DrawText(24.0f * s, 24.0f * s, line, col);
+        // Center-origin mini bar under the label.
+        const float barW = 120.0f * s, barH = 8.0f * s;
+        const float bx = 24.0f * s, by = 24.0f * s + 12.0f * s;
+        m_ui.DrawRect(bx - 2.0f * s, by - 2.0f * s, barW + 4.0f * s,
+                      barH + 4.0f * s, panelBg);
+        m_ui.DrawRect(bx, by, barW, barH, trackBg);
+        const float half = barW * 0.5f;
+        const float fill = (std::min(100, std::max(-100,
+                              m_hudState.factionRespect)) / 100.0f) * half;
+        if (fill >= 0.0f) m_ui.DrawRect(bx + half, by, fill, barH, col);
+        else m_ui.DrawRect(bx + half + fill, by, -fill, barH, col);
+        m_ui.DrawRect(bx + half - 1.0f, by, 2.0f, barH, dim);
+    }
+
+    // --- TAB stats screen ---------------------------------------------------
+    if (!m_statsOpen) return;
+    m_ui.DrawRect(0.0f, 0.0f, W, H, veil);
+
+    const float panelW = 430.0f * s;
+    const float rowH   = 26.0f * s;
+    const float headH  = 46.0f * s;
+    const float footH  = 30.0f * s;
+    const float panelH = headH + float(kFactionCount) * rowH + footH;
+    const float px = 0.5f * (W - panelW);
+    const float py = 0.5f * (H - panelH);
+    m_ui.DrawRect(px, py, panelW, panelH, panelBg);
+    m_ui.DrawRect(px, py, panelW, 2.0f * s, border);
+    m_ui.DrawRect(px, py + panelH - 2.0f * s, panelW, 2.0f * s, border);
+
+    m_ui.DrawText(px + 16.0f * s, py + 12.0f * s, "RESPECT", gold);
+    char head[64];
+    std::snprintf(head, sizeof(head), "OVERALL %+d   MISSIONS %d",
+                  m_hudState.overallRespect, m_hudState.completedMissions);
+    m_ui.DrawText(px + panelW - 16.0f * s - m_ui.MeasureText(head),
+                  py + 12.0f * s, head, white);
+
+    const float nameW = 78.0f * s;
+    const float valW  = 40.0f * s;
+    const float barW  = panelW - 32.0f * s - nameW - valW;
+    const float barH  = 10.0f * s;
+    float y = py + headH;
+    for (int i = 0; i < kFactionCount; ++i, y += rowH) {
+        const HUDState::FactionRow& row = m_hudState.factionRows[i];
+        const uint32_t col = row.stance == 0 ? hostile :
+                             row.stance == 2 ? friendly : neutral;
+        const float x = px + 16.0f * s;
+        m_ui.DrawText(x, y + 1.0f * s, row.name, white);
+        const float bx = x + nameW;
+        m_ui.DrawRect(bx, y + 1.0f * s, barW, barH, trackBg);
+        const float half = barW * 0.5f;
+        const float fill = (std::min(100, std::max(-100, row.respect)) /
+                            100.0f) * half;
+        if (fill >= 0.0f) m_ui.DrawRect(bx + half, y + 1.0f * s, fill, barH, col);
+        else m_ui.DrawRect(bx + half + fill, y + 1.0f * s, -fill, barH, col);
+        m_ui.DrawRect(bx + half - 1.0f, y + 1.0f * s, 2.0f, barH, dim);
+        char vb[12];
+        std::snprintf(vb, sizeof(vb), "%+d", row.respect);
+        m_ui.DrawText(bx + barW + 6.0f * s, y + 1.0f * s, vb, col);
+    }
+    m_ui.DrawText(px + 16.0f * s, py + panelH - footH + 8.0f * s,
+                  "TAB: CLOSE    F: GIFT    J: JOURNAL", dim);
+}
+
+// OPENBULLY_FACTION_DEMO=1: scripted headless verification of the Track 42
+// faction system. Phases:
+//   t 0-8    walk toward the nearest living NPC (position-direct, like the
+//            melee demo) and chain light/light/heavy attacks into it.
+//            Expected log: RESPECT <faction> -3 -> ... per hit, then the KO
+//            bonus line; the HelpCall drives nearby same-faction NPCs to
+//            CHASE (witness mechanic).
+//   t 8      gift to the nearest NPC (F path): RESPECT +5 line.
+//   t 10     open the stats overlay (TAB path) for the OPENBULLY_SHOT
+//            capture; per-second census logs every faction score.
+//   t 12+    idle - 2-minute stability soak with the census ticking.
+void Engine::DriveFactionDemo(float dt) {
+    if (!m_jimmyActive || !m_jimmyId.IsValid() || dt <= 0.0f) return;
+    Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId);
+    PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    Transform* pt = m_entities.GetTransform(m_jimmyId);
+    if (!mc || !pc || !pt) return;
+
+    // Nearest living NPC.
+    EntityID best{};
+    float bestDist = 1e9f;
+    m_entities.ForEachAI([&](EntityID id, const Transform& t,
+                             const AIComponent& ai) {
+        if (ai.state == AIState::Ko) return;
+        const float d = glm::length(t.position - pt->position);
+        if (d < bestDist) { bestDist = d; best = id; }
+    });
+
+    // Per-second census: one RESPECT-CENSUS line per faction + overall.
+    if (m_time - m_factionCensusLast >= 1.0) {
+        m_factionCensusLast = m_time;
+        for (int i = 0; i < kFactionCount; ++i) {
+            const Faction f = static_cast<Faction>(i);
+            Logger::Info("RESPECT-CENSUS: %-9s %+.0f [%s]",
+                         FactionName(f), m_factions.Get(f),
+                         FactionStanceName(m_factions.Stance(f)));
+        }
+        Logger::Info("RESPECT-CENSUS: OVERALL %+.0f (missions %d)",
+                     m_factions.Overall(), m_factions.CompletedMissions());
+    }
+
+    // Phase: stats overlay opens at t=10 and stays open (screenshot target).
+    if (!m_statsOpen && m_time >= 10.0) {
+        m_statsOpen = true;
+        Logger::Info("Faction demo: stats overlay OPEN");
+    }
+
+    // Phase: gift once at t=8 (nearest NPC in range).
+    static bool s_giftDone = false;
+    if (!s_giftDone && m_time >= 8.0) {
+        s_giftDone = true;
+        TryGiftToNpc();
+    }
+
+    if (!best.IsValid() || m_time >= 8.0) return; // fight phase only t<8
+    const Transform* nt = m_entities.GetTransform(best);
+    if (!nt) return;
+
+    // Walk toward the target (position-direct; shell-plane guard included).
+    glm::vec3 pos = pt->position;
+    PhysicsComponent* pphys = m_entities.GetPhysics(m_jimmyId);
+    if (pphys && pos.y < nt->position.y - 1.0f) {
+        pos.y = nt->position.y;
+        pphys->velocity.y = 0.0f;
+    }
+    glm::vec3 to = nt->position - pos;
+    to.y = 0.0f;
+    const float dist = glm::length(to);
+    if (dist > 1.1f && dist < 50.0f) {
+        const glm::vec3 dir = to / dist;
+        pos += dir * (3.0f * dt);
+        pc->facingYaw   = std::atan2(dir.x, dir.z);
+        pc->facingValid = true;
+        pt->rotation.y  = pc->facingYaw;
+    }
+    pt->position = pos;
+
+    // Snap the follow camera behind Jimmy (screenshots need the fight).
+    {
+        const float cy = std::cos(pc->facingYaw), sy = std::sin(pc->facingYaw);
+        const glm::vec3 focus = pos + glm::vec3(0.0f, 1.2f, 0.0f);
+        m_camera.SetPosition(focus - glm::vec3(sy, 0.0f, cy) * 3.2f +
+                             glm::vec3(0.0f, 1.4f, 0.0f));
+        m_camera.SetLookAt(focus - m_camera.GetPosition());
+    }
+
+    // Light -> light -> heavy chain while in range.
+    if (dist < 1.4f && mc->state == Melee::CombatState::Idle &&
+        m_time - m_meleeDemoLastAtk > 1.4) {
+        m_meleeDemoLastAtk = m_time;
+        switch (m_meleeDemoStep++ % 3) {
+        case 0: StartMeleeAttack(Melee::AttackType::LightPunch); break;
+        case 1: StartMeleeAttack(Melee::AttackType::LightPunch); break;
+        case 2: StartMeleeAttack(Melee::AttackType::HeavyPunch); break;
+        }
+        if (dist > 1e-3f) mc->attackYaw = std::atan2(to.x, to.y);
+    }
+}
+
 bool Engine::InitMissions() {
     // Reference points for the JSON loader.
     std::unordered_map<std::string, glm::vec3> refs;
@@ -3327,6 +4412,10 @@ bool Engine::InitMissions() {
     }
     Logger::Info("Missions: %zu mission(s), %zu trigger zone(s) registered",
                  m_missions.MissionCount(), m_missions.TriggerCount());
+
+    // Track 42: mission completion -> faction respect reward (per-mission
+    // JSON "respect_reward"); also journals the standing change.
+    m_missions.SetOnComplete([this](const Mission& m) { ApplyMissionReward(&m); });
 
     // Objective beacon geometry (renderer draws it with the emissive path).
     m_beaconMesh = m_renderer->UploadMeshGpu(MakeBeaconCubeMesh());
@@ -3673,6 +4762,7 @@ bool Engine::Init(const Window& window) {
         }
         m_jimmySpawn = jimmySpawn;
         m_jimmyActive = SpawnJimmy(jimmySpawn);
+        m_lastGroundY = jimmySpawn.y; // Track 49: void-guard reference
         // Track 23: melee combat state on the player (covers every spawn path).
         if (m_jimmyActive) m_entities.AddMeleeCombat(m_jimmyId);
     } else {
@@ -3703,6 +4793,25 @@ bool Engine::Init(const Window& window) {
         SpawnNpcs(npcCenter);
     }
 
+    // Track 49: the boss. Spawns 7u from Jimmy so the approach triggers the
+    // engagement; OPENBULLY_BOSS_TYPE picks the roster slot (0 Gary,
+    // 1 Russell [default], 2 Johnny, 3 Derby, 4 Ted).
+    if (m_jimmyActive && !m_bossSpawned) {
+        BossType btype = BossType::Russell;
+        bool spawnIt = true;
+        if (const char* env = std::getenv("OPENBULLY_BOSS_TYPE")) {
+            // "none"/"off" disables the boss (crash bisect + crowd-only runs).
+            if (std::strcmp(env, "none") == 0 || std::strcmp(env, "off") == 0) {
+                spawnIt = false;
+            } else {
+                const int idx = std::atoi(env);
+                if (idx >= 0 && idx < int(BossType::Count)) btype = BossType(idx);
+            }
+        }
+        m_bossSpawned = spawnIt &&
+            SpawnBoss(btype, m_jimmySpawn + glm::vec3(7.0f, 0.0f, 0.0f));
+    }
+
     // Track 26: weapon models (bat/garbage lid/yardstick/slingshot from
     // World.img) + ground pickups around Jimmy so E-collect/1-5 equip are
     // immediately exercisable.
@@ -3712,6 +4821,8 @@ bool Engine::Init(const Window& window) {
     SpawnWeaponPickups(m_jimmySpawn);
     // Track 39: ammo boxes in the world (walk over to reload the slingshot).
     SpawnAmmoBoxes(m_jimmySpawn);
+    // Track 47: photo system — load the album + spawn the camera pickup.
+    InitPhotoSystem();
 
     if (!m_worldMeshes.empty()) {
         const WorldMesh* anchor = &m_worldMeshes.front();
@@ -3731,14 +4842,29 @@ bool Engine::Init(const Window& window) {
     // Track 30: dialogue system (same JSON probing convention as missions).
     InitDialogue();
 
+    // Track 48: cutscene playback (same JSON probing convention; needs the
+    // Jimmy spawn + anchor refs, so it runs after the character setup).
+    InitCutscenes();
+
     // Track 41: class system (schedule + location + rewards; JSON probing
     // convention shared with missions/dialogue).
     InitClasses();
+
+    // Track 44: minigame framework — persist per-type progress next to the
+    // save slot and bind the class result path (rewards + journal) once.
+    m_minigames.SetOnResult([this](const Minigames::MinigameResult& r) {
+        OnMinigameResult(r);
+    });
+    m_minigames.LoadProgress(SDL_GetBasePath());
 
     // Track 31: vehicles — load 4 drivable models + spawn one of each near
     // Jimmy (E mounts within 2.5u).
     if (LoadVehicleModels())
         SpawnVehicles(m_jimmyActive ? m_jimmySpawn : m_camera.GetPosition());
+
+    // Track 45: arcade cabinets — Nut Shots + Monkey Fling in the same
+    // ground-verified ring (E plays within 2.2u, $1 per play).
+    SpawnArcadeCabinets();
 
     // Track 20 (UI): HUD renderer. Runs on bgfx view 10 with the same
     // shaderRoot convention as Renderer::Init. Non-fatal on failure: the
@@ -3757,6 +4883,10 @@ bool Engine::Init(const Window& window) {
 
 void Engine::Update() {
     if (!m_initialized) return;
+
+    // Track 43: materialize deferred cop spawns/despawns FIRST (before any
+    // entity/rig reference exists this frame - see ServiceCopRequests).
+    ServiceCopRequests();
 
     const Uint64 now = SDL_GetPerformanceCounter();
     const double deltaTime = double(now - m_lastPerf) / double(SDL_GetPerformanceFrequency());
@@ -3790,22 +4920,72 @@ void Engine::Update() {
         m_input.ClearQuit();
         Logger::Info("Schedule: closed (ESC)");
     }
-    if (!m_journalOpen && !m_scheduleOpen && m_classSessionActive &&
-        m_input.QuitRequested()) {
-        m_input.ClearQuit(); // session input handles the abort in UpdateClasses
+    // Track 44: an active minigame owns ESC (forfeit / continue); the quit
+    // latch is cleared so main.cpp cannot exit, and the same edge reaches
+    // the manager through the raw snapshot UpdateMinigames captures.
+    if (!m_journalOpen && !m_scheduleOpen && !m_classSessionActive &&
+        m_minigames.IsActive() && m_input.QuitRequested()) {
+        m_input.ClearQuit();
     }
-    if (m_journalOpen || m_scheduleOpen || m_classSessionActive)
+    // Track 45: the arcade cabinet view is modal too — ESC exits the game
+    // (no refund) instead of quitting. UpdateActive runs BEFORE the button/
+    // mouse strip-freeze below so this frame's click edge + deltas reach the
+    // mini-game; the world then holds still like the other overlays.
+    if (!m_journalOpen && !m_scheduleOpen && !m_classSessionActive &&
+        !m_minigames.IsActive() && m_arcade.IsActive() &&
+        m_input.QuitRequested()) {
+        m_input.ClearQuit();
+        m_arcade.ExitGame();
+    }
+    if (m_arcade.IsActive()) {
+        int arcadeMoney = 0;
+        if (PlayerController* apc = m_entities.GetPlayer(m_jimmyId))
+            arcadeMoney = apc->money;
+        m_arcade.UpdateActive(m_input, float(deltaTime), arcadeMoney,
+                              m_input.IsPressed(Button::Attack));
+        if (PlayerController* apc = m_entities.GetPlayer(m_jimmyId))
+            apc->money = arcadeMoney; // coin/prize bookkeeping lands here
+    }
+    // Track 44: the minigame overlay is modal like the journal/schedule:
+    // no camera look, all gameplay buttons held off while it is open.
+    // Track 45: the arcade view freezes the world the same way.
+    const bool anyModalOpen = m_journalOpen || m_scheduleOpen ||
+                              m_classSessionActive || m_minigames.IsActive() ||
+                              m_arcade.IsActive();
+    if (anyModalOpen)
         m_input.SetMouseDelta(0, 0);
     // Track 40: modal journal — hold the world still for the player. NPC AI
     // and schedules keep ticking (Bully's journal is a full pause; that
     // polish lands with a real pause system), but Jimmy drops all inputs so
     // he does not keep walking into walls while the player reads.
     // Track 41: schedule overlay + class session freeze Jimmy the same way.
-    if ((m_journalOpen || m_scheduleOpen || m_classSessionActive) && m_jimmyActive) {
+    if (anyModalOpen && m_jimmyActive) {
         for (int b = 0; b < int(Button::Count); ++b)
             m_input.SetButton(Button(b), false);
     }
+    // Track 48: during a cutscene ESC skips the scene instead of quitting —
+    // consumed here, before the quit latch, exactly like the modal overlays
+    // above (the button/mouse freeze itself happens in UpdateCutscenes so a
+    // scripted demo can never re-inject input after it).
+    if (m_cutscenePlaying && m_input.QuitRequested()) {
+        m_input.ClearQuit();
+        Logger::Info("Cutscenes: skip requested (ESC)");
+        m_cutscenes.Stop(); // fires OnCutsceneEnded(true)
+    }
     if (m_input.QuitRequested()) m_quitRequested = true;
+
+    // Track 44: scripted minigame verification (OPENBULLY_MINIGAME_DEMO).
+    // Runs before the key capture inside UpdateMinigames so injected presses
+    // flow through the exact same snapshot/strip path as a physical keyboard.
+    static const bool s_minigameDemo =
+        std::getenv("OPENBULLY_MINIGAME_DEMO") != nullptr;
+    if (s_minigameDemo)
+        m_minigames.DriveDemo(m_time, &m_input, SDL_GetBasePath());
+
+    // Track 44: minigame tick — capture the isolated key set, strip it from
+    // the shared snapshot, then advance the phase machine. Must run before
+    // every gameplay input consumer below.
+    UpdateMinigames(float(deltaTime));
 
     // OPENBULLY_SAVE_DEMO=1: scripted save/load for headless verification.
     // Saves at t=5s, loads at t=15s — exercises the same F5/F9 paths.
@@ -3838,6 +5018,11 @@ void Engine::Update() {
         }
     }
 
+    // Track 42: TAB toggles the faction stats overlay; F gifts the nearest
+    // NPC (small respect boost with its faction). Edge-triggered keys.
+    HandleFactionKeys();
+    static const bool s_factionDemo = std::getenv("OPENBULLY_FACTION_DEMO") != nullptr;
+
     // OPENBULLY_CAM_DEMO=1: scripted flythrough for headless verification of
     // the movement integration (OS-level key injection is unreliable from
     // automated environments). Drives the same Camera::Update path as real
@@ -3861,7 +5046,11 @@ void Engine::Update() {
     static const bool s_jimmyDemo   = std::getenv("OPENBULLY_JIMMY_DEMO") != nullptr;
     static const bool s_missionDemo = std::getenv("OPENBULLY_MISSION_DEMO") != nullptr;
     static const bool s_combatDemo  = std::getenv("OPENBULLY_COMBAT_DEMO") != nullptr;
-    if (s_missionDemo && m_jimmyActive) {
+    if (s_factionDemo && m_jimmyActive) {
+        // Track 42: scripted faction verification (beats a faction member
+        // down, exercises gifts + save/load, then opens the stats overlay).
+        DriveFactionDemo(float(deltaTime));
+    } else if (s_missionDemo && m_jimmyActive) {
         // Track 20: scripted walk toward the active objective (beacon target)
         // so headless runs exercise trigger activation, objective completion,
         // and mission chaining without OS-level key injection.
@@ -3918,6 +5107,23 @@ void Engine::Update() {
     static const bool s_npcDemo = std::getenv("OPENBULLY_NPC_DEMO") != nullptr;
     if (s_npcDemo && m_jimmyActive) DriveNpcDemo(float(deltaTime));
 
+    // Track 49: scripted boss-fight drive (before UpdateJimmy consumes input,
+    // same injection discipline as the other demos).
+    static const bool s_bossDemo = std::getenv("OPENBULLY_BOSS_DEMO") != nullptr;
+    if (s_bossDemo && m_jimmyActive) DriveBossDemo(float(deltaTime));
+
+    // Track 43: scripted wanted-system drive (position/state-direct, must run
+    // before UpdateWanted consumes the state this frame).
+    static const bool s_wantedDemo = std::getenv("OPENBULLY_WANTED_DEMO") != nullptr;
+    if (s_wantedDemo && m_jimmyActive) DriveWantedDemo(float(deltaTime));
+
+    // Track 48: cutscene tick — Space/ESC skip, gameplay input freeze, then
+    // the timeline advance (fires due actions through ExecuteCutsceneAction
+    // and OnCutsceneEnded at the end). Runs after the scripted demo hooks so
+    // a cutscene always wins the input race, and before the world updates so
+    // this frame's actions apply coherently.
+    UpdateCutscenes(float(deltaTime));
+
     m_camera.Update(float(deltaTime), m_input, /*ignoreMove=*/m_jimmyActive);
 
     // Track 14: entity update (physics integration on gravity carriers).
@@ -3928,6 +5134,13 @@ void Engine::Update() {
     UpdateJimmy(float(deltaTime));
     // Track 16: NPC AI (after physics so ground/wall state is settled).
     UpdateNpcs(float(deltaTime));
+    // Track 49: boss bookkeeping outside the boss entity's own AI (zones,
+    // banner, stale handles, player-death retry).
+    UpdateBosses(float(deltaTime));
+
+    // Track 48: scripted actor positions win over the AI (last writer), with
+    // the tween speed fed back into the physics state for the walk cycle.
+    ApplyCutscenePoses(float(deltaTime));
 
     // Track 29: schedule debug keys (T = +1 hour) + spawn/despawn/behavior
     // ticks driven by the game clock.
@@ -3947,6 +5160,10 @@ void Engine::Update() {
     // Track 41: deferred attend — E was pressed on a class prompt; start the
     // session unless the dialogue started instead (same-frame E arbitration).
     UpdateClassAttend();
+
+    // Track 45: arcade cabinets — near-prompt + E entry (dialogue and class
+    // attend keep first claim on the E press; this runs after them).
+    UpdateArcade(float(deltaTime));
 
     // Track 24: combat input + grapple state machine (after the NPC update
     // so hold positions settle this frame). The demo script runs ahead of
@@ -3970,14 +5187,57 @@ void Engine::Update() {
     UpdateProjectiles(float(deltaTime));
 
     // Track 31: vehicles — E toggle, mounted driving, then the camera (the
-    // vehicle follow replaces UpdateJimmyCamera while mounted).
+    // vehicle follow replaces UpdateJimmyCamera while mounted). Track 48: a
+    // playing cutscene owns the camera outright (keyframe interpolation),
+    // overriding both the follow and the vehicle cameras.
     UpdateVehicles(float(deltaTime));
-    if (m_mountedVehicle.IsValid()) UpdateVehicleCamera(float(deltaTime));
-    else UpdateJimmyCamera(float(deltaTime));
+    if (m_cutscenePlaying)
+        UpdateCutsceneCamera(float(deltaTime));
+    else if (m_mountedVehicle.IsValid())
+        UpdateVehicleCamera(float(deltaTime));
+    else if (!UpdateBossCutsceneCamera(float(deltaTime))) // Track 49: victory orbit fallback
+        UpdateJimmyCamera(float(deltaTime));
+
+    // Track 47: photo mode. Input gating + shutter live in UpdatePhotoMode,
+    // which runs after the camera update so the view/projection cache matches
+    // the frame Render will submit. OPENBULLY_PHOTO_DEMO drives everything.
+    static const bool s_photoDemo = std::getenv("OPENBULLY_PHOTO_DEMO") != nullptr;
+    if (s_photoDemo && m_jimmyActive) DrivePhotoDemo(float(deltaTime));
+    UpdatePhotoMode(float(deltaTime));
 
     // Track 37: M toggles minimap visibility.
     if (m_input.WasKeyPressed(SDL_SCANCODE_M))
         m_hudState.minimapVisible = !m_hudState.minimapVisible;
+
+    // Track 43: wanted system - hide/wardrobe inputs, then the per-frame
+    // driver (curfew/trespass crimes, escape decay, authority response, bust
+    // cut). Runs after the NPC update so authority positions are current and
+    // before the HUD snapshot so the flash/fade draw this frame.
+    if (m_jimmyActive && m_jimmyId.IsValid() && m_wanted.bustPhase == 0 &&
+        !m_journalOpen) {
+        if (m_input.WasKeyPressed(SDL_SCANCODE_B)) {
+            m_wanted.hidden = !m_wanted.hidden;
+            m_wanted.hideTimer = 0.0f;
+            m_wanted.safetyTimer = 0.0f;
+            Logger::Info("WANTED: %s", m_wanted.hidden
+                ? "hidden (heat decays 1 head / 10 s, cannot be spotted)"
+                : "no longer hidden");
+        }
+        if (m_input.WasKeyPressed(SDL_SCANCODE_V)) {
+            if (m_wanted.hidden) {
+                Logger::Info("WANTED: cannot change clothes while hidden");
+            } else if (AnyAuthorityChasing()) {
+                Logger::Info("WANTED: cannot change clothes - being chased!");
+            } else {
+                if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+                    const int before = pc->wanted;
+                    pc->wanted = 0;
+                    Logger::Info("WANTED: wardrobe reset %d -> 0", before);
+                }
+            }
+        }
+    }
+    UpdateWanted(float(deltaTime));
 
     // Track 20 (UI): H/J/K debug keys mutate vitals, then refresh the HUD
     // snapshot the renderer draws from (called again in Render so pauses
@@ -3991,11 +5251,17 @@ void Engine::Update() {
     UpdateHUD(float(deltaTime));
 
     // Track 20: mission system — fire trigger zones and check objective
-    // progress from Jimmy's position every frame.
+    // progress from Jimmy's position every frame. dt feeds the Track 43
+    // AVOID_BUST survival timer.
     if (m_jimmyActive && m_jimmyId.IsValid()) {
         if (const Transform* jt = m_entities.GetTransform(m_jimmyId))
-            m_missions.Update(jt->position);
+            m_missions.Update(jt->position, float(deltaTime));
     }
+
+    // Track 48: mission -> cutscene trigger check (plays authored
+    // auto_mission cutscenes when their mission activates) + the scripted
+    // OPENBULLY_CUTSCENE_DEMO loop.
+    UpdateCutsceneAutoTriggers();
 
     // Track 40: quest journal — input + snapshot rebuild + transition log.
     UpdateQuestJournal();
@@ -4107,6 +5373,7 @@ bool Engine::InitDialogue() {
 // different NPC types carry different conversations.
 void Engine::TryStartDialogue() {
     if (m_dialogue.IsActive() || !m_jimmyActive || !m_jimmyId.IsValid()) return;
+    if (m_arcade.IsActive()) return; // Track 45: the cabinet view owns input
     if (m_dialogue.TreeCount() == 0) return;
     if (m_grappleTarget.IsValid()) return; // mid-grapple: no talking
     if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId))
@@ -4174,6 +5441,357 @@ void Engine::OnDialogueEnded() {
             break;
         }
     }
+}
+
+// =========================================================================
+// Track 48: cutscene playback
+// =========================================================================
+
+// Loads data/cutscenes/demo_cutscene.json (camera keyframes + actor actions
+// + subtitle lines; positions resolve against the same reference-point map as
+// the mission loader) and wires the timeline callbacks the per-frame playback
+// consumes. Non-fatal: without the file the game runs cutscene-free.
+bool Engine::InitCutscenes() {
+    // Reference points for the JSON loader (mission-loader convention).
+    std::unordered_map<std::string, glm::vec3> refs;
+    refs["spawn"] = m_jimmySpawn;
+    if (!m_worldMeshes.empty()) {
+        const WorldMesh* anchor = &m_worldMeshes.front();
+        for (const WorldMesh& wm : m_worldMeshes)
+            if (wm.gpu.vertexCount > anchor->gpu.vertexCount) anchor = &wm;
+        refs["anchor_center"] = 0.5f * (glm::make_vec3(anchor->boundsMin) +
+                                         glm::make_vec3(anchor->boundsMax));
+    }
+
+    const char* paths[] = {
+        "data/cutscenes/demo_cutscene.json",
+        "../data/cutscenes/demo_cutscene.json",
+    };
+    bool loaded = false;
+    for (const char* p : paths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            loaded = m_cutscenes.LoadFile(p, refs);
+            break;
+        }
+    }
+    if (!loaded) {
+        Logger::Warning("Cutscenes: demo_cutscene.json not found or empty "
+                        "(cutscene system idle)");
+        return false;
+    }
+    m_cutscenes.SetOnAction([this](const CutsceneAction& a) {
+        ExecuteCutsceneAction(a);
+    });
+    m_cutscenes.SetOnEnd([this](bool skipped) { OnCutsceneEnded(skipped); });
+    return true;
+}
+
+// Starts a cutscene: resolves the actor bindings ("jimmy" -> the player
+// entity, "npc" -> the nearest AI entity to the authored near-point), seeds
+// the timeline with their current positions, and snapshots nothing else — the
+// gameplay camera simply resumes (lerp) when playback ends.
+void Engine::StartCutscene(const Cutscene& cs) {
+    if (m_cutscenePlaying) return;
+    if (m_mountedVehicle.IsValid()) {
+        Logger::Warning("Cutscenes: '%s' skipped while mounted", cs.id.c_str());
+        return;
+    }
+    if (m_journalOpen) { // a cutscene must not fight a modal overlay
+        Logger::Warning("Cutscenes: '%s' skipped while the journal is open",
+                        cs.id.c_str());
+        return;
+    }
+
+    m_cutsceneActors.clear();
+    std::unordered_map<std::string, glm::vec3> actorStart;
+    for (const CutsceneActor& a : cs.actors) {
+        CutsceneActorBinding b;
+        b.name = a.name;
+        if (a.kind == "jimmy") {
+            if (m_jimmyActive && m_jimmyId.IsValid()) b.id = m_jimmyId;
+        } else {
+            b.id = FindNearestNpc(a.npcNear, a.npcRadius);
+        }
+        if (b.id.IsValid()) {
+            if (const Transform* t = m_entities.GetTransform(b.id))
+                b.startPos = t->position;
+            actorStart[b.name] = b.startPos;
+            Logger::Info("Cutscenes: actor '%s' -> entity %u", b.name.c_str(),
+                         b.id.index);
+        } else {
+            Logger::Warning("Cutscenes: actor '%s' unresolved (actions skipped)",
+                            b.name.c_str());
+        }
+        m_cutsceneActors.push_back(b);
+    }
+
+    m_cutscenePlaying = true;
+    m_cutsceneId = cs.id;
+    m_cutscenes.Play(&cs, actorStart);
+    Logger::Info("Cutscenes: '%s' playing (%.2fs, %zu action(s), %zu line(s))",
+                 cs.id.c_str(), cs.duration, cs.actions.size(), cs.lines.size());
+}
+
+// Timeline event: TELEPORT positions were already applied by the manager
+// (ActorPosNow), FACE turns the actor toward the target point, ANIMATE plays
+// a clip (free-form names are looked up on the rig; walk/idle stay under the
+// normal switcher), MOVE_TO needs no event handling (per-frame tween).
+void Engine::ExecuteCutsceneAction(const CutsceneAction& a) {
+    const CutsceneActorBinding* b = nullptr;
+    for (const CutsceneActorBinding& x : m_cutsceneActors)
+        if (x.name == a.actor) { b = &x; break; }
+    if (!b || !b->id.IsValid() || !m_entities.IsAlive(b->id)) return;
+    Transform* t = m_entities.GetTransform(b->id);
+    if (!t) return;
+
+    switch (a.type) {
+        case CutsceneActionType::Teleport:
+            Logger::Info("Cutscenes: TELEPORT '%s' -> (%.1f, %.1f, %.1f)",
+                         a.actor.c_str(), a.target.x, a.target.y, a.target.z);
+            break;
+        case CutsceneActionType::Face: {
+            const glm::vec3 to = a.target - t->position;
+            if (glm::length(glm::vec2(to.x, to.z)) > 1e-4f) {
+                const float yaw = std::atan2(to.x, to.z);
+                t->rotation.y = yaw;
+                if (PlayerController* pc = m_entities.GetPlayer(b->id)) {
+                    pc->facingYaw   = yaw;
+                    pc->facingValid = true;
+                }
+                Logger::Info("Cutscenes: FACE '%s' (yaw %.2f)",
+                             a.actor.c_str(), yaw);
+            }
+            break;
+        }
+        case CutsceneActionType::Animate: {
+            AnimationComponent* ac = m_entities.GetAnimation(b->id);
+            if (!ac || ac->rigIndex == 0xFFFFFFFF ||
+                ac->rigIndex >= m_animRigs.size()) break;
+            AnimRig& rig = m_animRigs[ac->rigIndex];
+            int clip = -1;
+            bool loop = true;
+            if (a.anim == "walk" && rig.walkClip >= 0) {
+                clip = rig.walkClip;
+            } else if (a.anim == "idle" && rig.idleClip >= 0) {
+                clip = rig.idleClip;
+            } else if ((clip = rig.controller.FindClip(a.anim)) >= 0) {
+                loop = a.duration <= 0.0f; // one-shot when a window is authored
+            }
+            if (clip >= 0) {
+                rig.controller.Play(clip, loop, 0.2f);
+                ac->playing = true;
+                Logger::Info("Cutscenes: ANIMATE '%s' -> '%s' (clip %d)",
+                             a.actor.c_str(), a.anim.c_str(), clip);
+            } else {
+                Logger::Warning("Cutscenes: ANIMATE '%s': no clip '%s' on this rig",
+                                a.actor.c_str(), a.anim.c_str());
+            }
+            break;
+        }
+        case CutsceneActionType::MoveTo:
+            break; // per-frame tween (ApplyCutscenePoses)
+    }
+}
+
+// Per-frame cutscene tick: skip handling (Space / ESC), the gameplay input
+// freeze, then the timeline advance (fires due actions through
+// ExecuteCutsceneAction and OnCutsceneEnded at the end). Runs AFTER the
+// scripted demo hooks so a cutscene always wins the input race, and BEFORE
+// the world updates so this frame's actions are applied coherently.
+void Engine::UpdateCutscenes(float dt) {
+    if (!m_cutscenePlaying) return;
+
+    // OPENBULLY_CUTSCENE_SKIP_DEMO=1: scripted skip 5 s into playback. The
+    // OS-level key injection cannot reach a headless window (known limitation
+    // noted on the other *_DEMO hooks), so the demo drives the same
+    // SetButton path a physical Space press produces and the check below
+    // consumes it as the skip edge.
+    static const bool s_skipDemo = std::getenv("OPENBULLY_CUTSCENE_SKIP_DEMO") != nullptr;
+    static bool s_skipDemoFired = false;
+    if (s_skipDemo && !s_skipDemoFired && m_time >= 5.0) {
+        s_skipDemoFired = true;
+        m_input.SetButton(Button::Up, true); // Space edge -> skip below
+    }
+
+    // Skip: Space (button edge or raw key edge). ESC is handled in Update()
+    // before the quit latch (it must not also quit the game).
+    if (m_input.IsPressed(Button::Up) ||
+        m_input.WasKeyPressed(SDL_SCANCODE_SPACE)) {
+        Logger::Info("Cutscenes: skip requested (Space)");
+        m_cutscenes.Stop(); // fires OnCutsceneEnded(true)
+        return;
+    }
+
+    // Freeze every gameplay button + mouse look (same model as the modal
+    // journal). The raw scancode handlers (journal J, save F5, weather W)
+    // stay live — debug affordances, harmless during playback.
+    for (int b = 0; b < int(Button::Count); ++b)
+        m_input.SetButton(Button(b), false);
+    m_input.SetMouseDelta(0, 0);
+
+    m_cutscenes.Update(dt); // timeline: actions + end callback
+}
+
+// Applies the scripted actor positions after the AI/NPC updates (last writer
+// wins), reflects the tween speed into the physics state (the walk cycle
+// speed-matches on HorizontalVelocity, and a parked vertical velocity keeps
+// gravity from fighting the scripted Y), and faces moving actors along their
+// travel. The walk/idle switch itself runs inside UpdateEntityAnimation via
+// CutsceneActorMoving.
+void Engine::ApplyCutscenePoses(float dt) {
+    if (!m_cutscenePlaying) return;
+    for (CutsceneActorBinding& b : m_cutsceneActors) {
+        if (!b.id.IsValid() || !m_entities.IsAlive(b.id)) continue;
+        Transform* t = m_entities.GetTransform(b.id);
+        if (!t) continue;
+        glm::vec3 target;
+        if (!m_cutscenes.ActorPosNow(b.name, target)) continue;
+        const glm::vec3 delta = target - t->position;
+        const bool movingNow = CutsceneActorMoving(b.id);
+
+        t->position = target;
+        if (PhysicsComponent* p = m_entities.GetPhysics(b.id)) {
+            // Feed the tween speed back so the walk cycle rates correctly.
+            p->velocity.x = (movingNow && dt > 0.0f) ? delta.x / dt : 0.0f;
+            p->velocity.z = (movingNow && dt > 0.0f) ? delta.z / dt : 0.0f;
+            p->velocity.y = 0.0f;
+            p->onGround   = true;
+        }
+        if (movingNow && glm::length(glm::vec2(delta.x, delta.z)) > 1e-5f) {
+            const float yaw = std::atan2(delta.x, delta.z);
+            t->rotation.y = yaw;
+            if (PlayerController* pc = m_entities.GetPlayer(b.id)) {
+                pc->facingYaw   = yaw;
+                pc->facingValid = true;
+            }
+        }
+    }
+}
+
+// Cutscene end (fires exactly once via CutsceneManager::SetOnEnd, for both
+// the natural end and a Space/ESC skip): releases the actor bindings and
+// activates the authored on_end_mission (cutscene -> mission-state hook —
+// e.g. "spawn the next beat" by starting the chained mission).
+void Engine::OnCutsceneEnded(bool skipped) {
+    if (!m_cutscenePlaying) return;
+    m_cutscenePlaying = false;
+    const std::string id = m_cutsceneId;
+    m_cutsceneId.clear();
+    m_cutsceneActors.clear();
+    Logger::Info("Cutscenes: '%s' ended (%s)", id.c_str(),
+                 skipped ? "skipped" : "finished");
+    // OPENBULLY_CUTSCENE_DEMO re-arm: next scripted play 4 s after the end.
+    static const bool s_demo = std::getenv("OPENBULLY_CUTSCENE_DEMO") != nullptr;
+    if (s_demo) m_cutsceneDemoNextPlay = m_time + 4.0;
+
+    if (const Cutscene* cs = m_cutscenes.Find(id);
+        cs && !cs->onEndMission.empty()) {
+        for (uint32_t i = 0; i < m_missions.MissionCount(); ++i) {
+            const Mission* m = m_missions.GetMission(i);
+            if (m && m->id == cs->onEndMission) {
+                if (m_missions.ActivateMission(i))
+                    Logger::Info("Cutscenes: '%s' activated mission '%s'",
+                                 id.c_str(), cs->onEndMission.c_str());
+                break;
+            }
+        }
+    }
+}
+
+// Scripted camera override: evaluates the keyframe interpolation (smoothstep
+// eases; cut keys hold the previous pose then pop), resolves the position
+// against level geometry like the follow cam does, and aims at the
+// face-actor's live head position when the active key requests tracking.
+void Engine::UpdateCutsceneCamera(float dt) {
+    (void)dt;
+    if (!m_cutscenePlaying) return;
+    const CutsceneManager::CameraPose pose = m_cutscenes.EvalCamera();
+
+    glm::vec3 pos = pose.position;
+    if (m_collisionWorld) {
+        const float in[3] = { pos.x, pos.y, pos.z };
+        float out[3];
+        if (m_collisionWorld->ResolveSphere(in, 0.35f, out))
+            pos = glm::vec3(out[0], out[1], out[2]);
+    }
+
+    glm::vec3 lookAt = pose.lookAt;
+    if (!pose.faceActor.empty()) {
+        for (const CutsceneActorBinding& b : m_cutsceneActors) {
+            if (b.name == pose.faceActor && b.id.IsValid() &&
+                m_entities.IsAlive(b.id)) {
+                if (const Transform* t = m_entities.GetTransform(b.id))
+                    lookAt = t->position + glm::vec3(0.0f, 1.2f, 0.0f);
+                break;
+            }
+        }
+    }
+
+    m_camera.SetPosition(pos);
+    if (glm::length(lookAt - pos) > 1e-4f)
+        m_camera.SetLookAt(lookAt - pos);
+}
+
+// Mission -> cutscene hook: plays the first unfired cutscene whose
+// auto_mission id matches a mission that is currently Active (trigger zones
+// and chains both count as activation). Called after MissionManager::Update
+// so a zone fired this frame plays its cutscene this frame.
+void Engine::UpdateCutsceneAutoTriggers() {
+    // Track 46: OPENBULLY_NO_CUTSCENE=1 disables auto-triggers. The trick
+    // demo runs script the player (vehicle-demo mount walk); a 13 s intro
+    // cutscene freezes him mid-walk and the script never mounts.
+    static const bool s_noCutscene =
+        std::getenv("OPENBULLY_NO_CUTSCENE") != nullptr;
+    if (s_noCutscene) return;
+    for (size_t i = 0; i < m_cutscenes.Count(); ++i) {
+        const Cutscene* cs = m_cutscenes.At(i);
+        if (!cs || cs->autoMission.empty()) continue;
+        const auto it = m_cutsceneAutoFired.find(cs->id);
+        if (it != m_cutsceneAutoFired.end() && it->second) continue;
+        const Mission* m = m_missions.FindMission(cs->autoMission);
+        if (!m || m->state != MissionState::Active) continue;
+        m_cutsceneAutoFired[cs->id] = true;
+        Logger::Info("Cutscenes: auto-trigger '%s' (mission '%s' active)",
+                     cs->id.c_str(), cs->autoMission.c_str());
+        StartCutscene(*cs);
+        return; // one start per frame
+    }
+
+    // OPENBULLY_CUTSCENE_DEMO=1: scripted playback for headless verification
+    // (screenshot + stability runs): first cutscene at t=1 s, then every
+    // registered cutscene in order, 4 s after each ends (re-armed in
+    // OnCutsceneEnded).
+    static const bool s_demo = std::getenv("OPENBULLY_CUTSCENE_DEMO") != nullptr;
+    if (s_demo && m_jimmyActive && !m_cutscenePlaying &&
+        m_time >= m_cutsceneDemoNextPlay) {
+        static size_t s_index = 0;
+        if (const Cutscene* cs = m_cutscenes.At(s_index)) {
+            m_cutsceneAutoFired[cs->id] = true;
+            StartCutscene(*cs);
+        }
+        s_index = (s_index + 1) % std::max<size_t>(1, m_cutscenes.Count());
+        m_cutsceneDemoNextPlay = m_time + 1e9; // OnCutsceneEnded re-arms
+    }
+}
+
+// --- Track 48: actor helpers --------------------------------------------------
+
+bool Engine::IsCutsceneActor(EntityID id) const {
+    if (!m_cutscenePlaying || !id.IsValid()) return false;
+    for (const CutsceneActorBinding& b : m_cutsceneActors)
+        if (b.id == id) return true;
+    return false;
+}
+
+// True while this entity's scripted MOVE_TO tween is in flight — the
+// walk/idle switcher in UpdateEntityAnimation uses this instead of the
+// frozen input state.
+bool Engine::CutsceneActorMoving(EntityID id) const {
+    if (!m_cutscenePlaying || !id.IsValid()) return false;
+    for (const CutsceneActorBinding& b : m_cutsceneActors)
+        if (b.id == id) return m_cutscenes.ActorMoving(b.name);
+    return false;
 }
 
 // Per-frame dialogue logic: input (start/advance/choose) + typewriter tick.
@@ -4346,6 +5964,9 @@ void Engine::SpawnVehicles(const glm::vec3& center) {
         m_entities.AddVehicle(e, vc);
 
         m_vehicleIds.push_back(e);
+        // Track 47: vehicles photograph too (yearbook objects).
+        RegisterPhotoTarget(e, VehicleTypeName(vm.type),
+                            Photo::TargetKind::Object, std::max(1.0f, vm.height));
         Logger::Info("Vehicle spawned: %s (%s) at (%.1f, %.1f, %.1f)",
                      vm.name.c_str(), VehicleTypeName(vm.type), pos.x, pos.y, pos.z);
     }
@@ -4370,7 +5991,10 @@ EntityID Engine::FindNearestVehicle(const glm::vec3& pos, float maxDist) const {
 void Engine::TryToggleVehicleMount() {
     if (m_journalOpen) return;   // Track 40: the journal is modal
     if (m_scheduleOpen || m_classSessionActive) return; // Track 41: class UI
+    if (m_cutscenePlaying) return; // Track 48: the scene owns the player
+    if (m_arcade.IsActive()) return; // Track 45: the cabinet owns the input
     if (m_mountedVehicle.IsValid()) { DismountVehicle(); return; }
+    if (m_arcade.NearCabinet()) return; // Track 45: E on the prompt plays
     if (!m_jimmyActive || !m_jimmyId.IsValid()) return;
     if (m_dialogue.IsActive() || m_dialogueNpc.IsValid()) return; // talk takes E
     if (m_classPromptIdx >= 0) return; // Track 41: attend-class takes E
@@ -4400,6 +6024,11 @@ void Engine::MountVehicle(EntityID vehicle) {
     vc->speed   = 0.0f;
     vc->steerAngle = 0.0f;
     m_mountedVehicle = vehicle;
+    m_mountTime = m_time;   // Track 46: trick-script clock origin
+
+    // Track 46: fresh trick session — the live trick and combo are cleared,
+    // but career totals and unlocked achievements carry across mounts.
+    m_tricks.ResetSession();
 
     // Hide the player mesh (rider sits inside the model); keep physics/anim
     // state alive so dismount restores exactly.
@@ -4412,6 +6041,14 @@ void Engine::MountVehicle(EntityID vehicle) {
     // Void-guard reference (see UpdateMountedVehiclePhysics).
     m_vehicleMountSeedPos = vt->position + glm::vec3(0.0f, 0.8f, 0.0f);
     m_vehicleVoidFloorY   = vt->position.y - 100.0f;
+    // Track 46 (DEMO=4): the rooftop deck is ~10 u across and the scripted
+    // trick orbit regularly rolls off the rim; a -100 floor means a ~4.5 s
+    // fall per reset, which starves the trick phases of grounded time. Snap
+    // the demo floor to 3 u below the deck so fall -> reset cycles take
+    // ~1 s and the phase machine keeps getting fresh grounded windows.
+    if (const char* vehDemo = std::getenv("OPENBULLY_VEHICLE_DEMO");
+        vehDemo && std::atoi(vehDemo) == 4)
+        m_vehicleVoidFloorY = vt->position.y - 3.0f;
     // Track 32: DEMO=2 closed-loop driver orbits the midpoint of all
     // spawned vehicles (the courtyard deck center — the bike's own spawn
     // sits near the roof rim, where an orbit rolls off the edge). The bike
@@ -4465,6 +6102,24 @@ void Engine::DismountVehicle() {
     Transform* vt = m_entities.GetTransform(m_mountedVehicle);
     m_mountedVehicle = {};
     if (!vc || !vt) return;
+
+    // Track 46: true when the dismount is a crash aftermath (eject) rather
+    // than a deliberate step-off — decides bank vs bail below.
+    const bool foCrashEject = m_vehicleFeel.crashed;
+
+    // Track 46: end the trick session. A crash-eject dismount is a BAIL
+    // (combo lost, pending score forfeited); a deliberate dismount BANKS what
+    // the chain already earned. Career totals always survive either way.
+    if (foCrashEject)
+        m_tricks.Bail();
+    else if (m_tricks.active != TrickType::None || m_tricks.pending > 0) {
+        if (m_tricks.pending > 0)
+            Logger::Info("TRICK: dismount banks +%d (total %d)",
+                         m_tricks.pending, m_tricks.totalScore + m_tricks.pending);
+        m_tricks.BankAndReset();
+    } else {
+        m_tricks.ResetSession();
+    }
 
     vc->mounted = false;
     vc->rider   = EntityID{};
@@ -4521,7 +6176,13 @@ void Engine::UpdateVehicles(float dt) {
                              nt ? glm::length(nt->position - jt->position) : -1.0f);
             }
         }
-        if (m_time >= 2.0 && !m_mountedVehicle.IsValid() && m_time < 5.9) {
+        // Track 46 (DEMO=4): the gate stays open for the whole run so the
+        // scripted crash-eject is followed by an automatic remount and the
+        // trick/crash cycle repeats for the full stability window.
+        static const int s_demoModeSel =
+            std::atoi(std::getenv("OPENBULLY_VEHICLE_DEMO"));
+        if (m_time >= 2.0 && !m_mountedVehicle.IsValid() &&
+            (m_time < 5.9 || s_demoModeSel == 4)) {
             // Teleport Jimmy to the nearest vehicle (position-direct, like
             // DIALOGUE_DEMO): the spawn ring can sit across a courtyard the
             // walk can't cross. Y snaps to the vehicle's ground. DEMO=3
@@ -4529,10 +6190,8 @@ void Engine::UpdateVehicles(float dt) {
             // and the nearest ring vehicle may be the car (wheelies are
             // bike-only in the feel layer).
             if (Transform* jt = m_entities.GetTransform(m_jimmyId)) {
-                static const int s_demoModeSel =
-                    std::atoi(std::getenv("OPENBULLY_VEHICLE_DEMO"));
                 EntityID veh{};
-                if (s_demoModeSel == 3) {
+                if (s_demoModeSel == 3 || s_demoModeSel == 4) {
                     for (const EntityID& id : m_vehicleIds) {
                         if (!id.IsValid() || !m_entities.IsAlive(id)) continue;
                         const VehicleComponent* c = m_entities.GetVehicle(id);
@@ -4663,12 +6322,168 @@ void Engine::UpdateVehicles(float dt) {
                     m_input.SetButton(Button::Forward, !fast);
                     m_input.SetButton(Button::Back,    fast);
                 }
+            } else if (s_demoMode == 4) {
+                // Track 46 trick chain (DEMO=4). The rooftop deck is only
+                // ~10 u across and the closed orbit at cruise speed slides
+                // off the rim (the Track 33 script does the same — see its
+                // log), so the script is a STATE MACHINE, not wall-clock
+                // windows: phases advance on OBSERVED events (speed reached,
+                // trick landed, crash) and simply pause while the bike is
+                // airborne; the void guard resets it onto the deck and the
+                // chain resumes. One full cycle:
+                //   P0 roll to 3 u/s
+                //   P1 W+S wheelie ~1.0 s
+                //   P2 W coast 0.4 s            -> wheelie #1 LANDS (x1)
+                //   P3 W+S wheelie ~1.0 s       (starts inside the window)
+                //   P4 W coast 0.4 s            -> wheelie #2 LANDS (x2)
+                //   P5 S-only stoppie           -> LANDS (x3)
+                //   P6 W + Space tap            -> hop LANDS (x4)
+                //   P7 W+S wheelie HELD         -> over-rotate -> CRASH
+                //                                  (eject + COMBO LOST)
+                //   P8 slow cruise (only if P7 timed out)
+                // Coast phases exist because identical W+S patterns across a
+                // phase boundary never release the pose — the wheelie would
+                // just continue and land once as one long trick.
+                // The P7 crash ejects the rider; the mount-walk gate below is
+                // widened for mode 4 so the demo re-mounts and repeats the
+                // whole cycle — continuous trick/crash coverage for the whole
+                // stability window.
+                static double s_prevMount = -1e9;
+                static int    s_phase     = 0;
+                static double s_phaseT    = 0.0;
+                static int    s_landedSnap[int(TrickType::Count)] = {};
+                if (m_mountTime != s_prevMount) {
+                    s_prevMount = m_mountTime;
+                    s_phase = 0;
+                    s_phaseT = 0.0;
+                    for (int& v : s_landedSnap) v = -1; // force re-snapshot
+                }
+                s_phaseT += dt;
+                const bool grounded = m_vehicle.wheelContacts > 0;
+                auto nextPhase = [&](int p) {
+                    s_phase  = p;
+                    s_phaseT = 0.0;
+                    for (int t = 0; t < int(TrickType::Count); ++t)
+                        s_landedSnap[t] = m_tricks.perType[t].landed;
+                };
+                auto landedSince = [&](TrickType t) {
+                    return m_tricks.perType[int(t)].landed >
+                           s_landedSnap[int(t)];
+                };
+                switch (s_phase) {
+                    case 0:
+                        if (m_vehicle.speedAlongFacing >= 3.0f || s_phaseT > 2.0)
+                            nextPhase(1);
+                        break;
+                    case 1:
+                        if (s_phaseT > 1.0) nextPhase(2);
+                        break;
+                    case 2:
+                        if (landedSince(TrickType::Wheelie) || s_phaseT > 0.8)
+                            nextPhase(3);
+                        break;
+                    case 3:
+                        if (s_phaseT > 1.0) nextPhase(4);
+                        break;
+                    case 4:
+                        if (landedSince(TrickType::Wheelie) || s_phaseT > 0.8)
+                            nextPhase(5);
+                        break;
+                    case 5:
+                        if (landedSince(TrickType::Stoppie) || s_phaseT > 1.2)
+                            nextPhase(6);
+                        break;
+                    case 6:
+                        if (landedSince(TrickType::BunnyHop) || s_phaseT > 2.5)
+                            nextPhase(7);
+                        break;
+                    case 7:
+                        // Held wheelie: progressive instability over-rotates
+                        // at ~3.1 s -> FeelImpact eject -> CRASH log. The
+                        // mounted block stops running on eject; the remount
+                        // resets s_phase to 0.
+                        if (m_vehicleFeel.crashed || s_phaseT > 6.0)
+                            nextPhase(8);
+                        break;
+                    default:
+                        break; // P8: cruise forever
+                }
+
+                const glm::vec3 center = m_vehicleDemoCenter;
+                if (const Transform* jt2 = m_entities.GetTransform(m_mountedVehicle)) {
+                    glm::vec3 toVeh = jt2->position - center;
+                    toVeh.y = 0.0f;
+                    const float dist = glm::length(toVeh);
+                    glm::vec3 goal;
+                    if (dist > 3.0f) goal = center;
+                    else {
+                        const glm::vec3 rad = dist > 0.1f ? toVeh / dist : glm::vec3(1, 0, 0);
+                        goal = center + glm::vec3(-rad.z, 0.0f, rad.x) * 3.0f;
+                    }
+                    glm::vec3 toGoal = goal - jt2->position;
+                    toGoal.y = 0.0f;
+                    const float targetYaw = std::atan2(toGoal.x, toGoal.z);
+                    float dyaw = targetYaw - m_vehicle.yaw;
+                    while (dyaw >  3.14159265f) dyaw -= 6.28318531f;
+                    while (dyaw < -3.14159265f) dyaw += 6.28318531f;
+                    // Edge probe: no ground 3 u ahead -> hard right along the
+                    // deck rim instead of launching off the drop.
+                    bool edgeAhead = false;
+                    if (m_collisionWorld) {
+                        const glm::vec3 probePos = jt2->position +
+                            glm::vec3(std::sin(m_vehicle.yaw), 0.0f,
+                                      std::cos(m_vehicle.yaw)) * 3.0f;
+                        Ray down;
+                        down.origin[0] = probePos.x;
+                        down.origin[1] = probePos.y + 2.0f;
+                        down.origin[2] = probePos.z;
+                        down.direction[0] = 0.0f;
+                        down.direction[1] = -1.0f;
+                        down.direction[2] = 0.0f;
+                        RayHit hit;
+                        edgeAhead = !m_collisionWorld->Raycast(down, hit);
+                    }
+                    float steer = glm::clamp(dyaw * 2.0f, -1.0f, 1.0f);
+                    if (edgeAhead) steer = 1.0f;
+                    m_input.SetButton(Button::Left,  steer < -0.15f);
+                    m_input.SetButton(Button::Right, steer >  0.15f);
+
+                    // Stunt inputs by phase. Back is ONLY held in the wheelie
+                    // phases (P1/P3) and the stoppie phase (P2): a held brake
+                    // anywhere else would read as a stoppie. Cruise caps at
+                    // 2.8 u/s (releasing throttle, never braking) to keep the
+                    // orbit inside the small deck.
+                    bool fwd = false, back = false, up = false;
+                    switch (s_phase) {
+                        case 0: fwd = true; break;
+                        case 1: case 3: case 7:
+                            fwd = true; back = true; break;
+                        case 2: case 4: fwd = true; break;
+                        case 5: back = true; break;
+                        case 6:
+                            fwd = true;
+                            // Tap only when the trick slot is idle (the
+                            // stoppie's release decay may still be active)
+                            // and the bike is rolling fast enough to hop.
+                            up = grounded &&
+                                 m_tricks.active == TrickType::None &&
+                                 std::fabs(m_vehicle.speedAlongFacing) > 1.5f;
+                            break;
+                        default:
+                            fwd = m_vehicle.speedAlongFacing <= 2.8f;
+                            break;
+                    }
+                    m_input.SetButton(Button::Forward, fwd);
+                    m_input.SetButton(Button::Back,    back);
+                    m_input.SetButton(Button::Up,      up);
+                    m_input.SetButton(Button::Sprint,  false);
+                }
             }
         }
     }
 
     if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive() &&
-        !m_journalOpen) // Track 40: journal is modal
+        !m_journalOpen && !m_cutscenePlaying) // Track 40/48: modal owners of E
         TryToggleVehicleMount();
 
     // Idle bob/spin is NOT applied to vehicles (they stay parked).
@@ -4759,8 +6574,11 @@ void Engine::UpdateMountedVehiclePhysics(float dt, VehicleComponent* vc,
     // Track 46: bunny hop — Space edge while rolling and grounded hops the
     // body upward; the suspension then launches it and the trick scores on
     // the airtime until the wheels re-contact (StepTricks via UpdateTrickSc).
+    // Gated on an idle trick slot so the impulse and the TRICK: BUNNY HOP
+    // start always agree (a hop tap during an active wheelie is ignored).
     if (m_vehicle.wheelContacts > 0 &&
         std::fabs(m_vehicle.speedAlongFacing) > 1.5f &&
+        m_tricks.active == TrickType::None &&
         m_input.IsPressed(Button::Up)) {
         m_vehicle.velocity.y += kBunnyHopImpulse;
         Logger::Info("TRICK: bunny hop impulse (vy=%.1f)",
@@ -4862,10 +6680,6 @@ void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
     else if (m_vehicle.cosmeticPitch != 0.0f && !feel.crashed)
         m_vehicle.cosmeticPitch = 0.0f;
 
-    // Track 46: trick scoring — pose + body + raw-input snapshot in, events
-    // (logs, popups, stats, achievements) out.
-    UpdateTrickScoring(dt, feel, fo);
-
     // Crash: lay the body on its side; auto-right clears it after 3 s.
     if (feel.crashed)
         m_vehicle.roll = 80.0f * 3.14159265f / 180.0f;
@@ -4898,6 +6712,13 @@ void Engine::UpdateVehicleFeel(float dt, VehicleComponent* vc, Transform* vt,
     if (fo.stuntLogged)
         Logger::Info("VEHICLE: %s wheelie stunt accepted",
                      VehicleTypeName(vc->type));
+
+    // Track 46: trick scoring — pose + body + raw-input snapshot in, events
+    // (logs, popups, stats, achievements) out. Deliberately LAST: the wall
+    // impact block above may have promoted a crash (FeelImpact -> fo), and a
+    // crash must reach the trick state machine on the same frame it happens
+    // so the bail resets the combo in the same tick.
+    UpdateTrickScoring(dt, feel, fo);
 }
 
 // Track 46: stunt trick scoring. Runs once per mounted frame, right after
@@ -4994,7 +6815,7 @@ void Engine::UpdateDialogue(float dt) {
     // plays out (typewriter reveal, next hops, choice picks, end hook) —
     // without this the demo stuck forever on the first line's full reveal.
     static const bool s_demo = std::getenv("OPENBULLY_DIALOGUE_DEMO") != nullptr;
-    if (s_demo) {
+    if (s_demo && !m_cutscenePlaying) { // Track 48: the scene blocks demo talks
         if (!m_dialogue.IsActive()) {
             // Walk Jimmy (position-direct, plane-guarded like DriveNpcDemo)
             // toward the nearest NPC so the talk reaches 2.5u: ambient NPCs
@@ -5054,8 +6875,9 @@ void Engine::UpdateDialogue(float dt) {
 
     // Track 40: the quest journal is a modal overlay. Keep the typewriter
     // ticking so a conversation isn't left mid-line, but ignore E / arrow /
-    // choice input until the journal closes.
-    if (m_journalOpen) { m_dialogue.Update(dt); return; }
+    // choice input until the journal closes. Track 48: same while a cutscene
+    // plays (conversations cannot start or advance mid-scene).
+    if (m_journalOpen || m_cutscenePlaying) { m_dialogue.Update(dt); return; }
 
     if (m_dialogue.IsActive()) {
         const std::vector<DialogueChoice>* choices = m_dialogue.ActiveChoices();
@@ -5221,6 +7043,7 @@ void Engine::GrappleAttack(GrappleMove move) {
 // Per-frame combat input: G enters/ends the grapple, U/I/O are grapple moves
 // for the attacker and mash presses for a held human target.
 void Engine::HandleCombatInput() {
+    if (m_cutscenePlaying) return; // Track 48: no grapple input mid-cutscene
     if (!m_jimmyId.IsValid()) return;
     CombatComponent* jc = m_entities.GetCombat(m_jimmyId);
     if (!jc) return;
@@ -5476,10 +7299,31 @@ void Engine::UpdateQuestJournal() {
     }
 
     // --- input ----------------------------------------------------------------
+    // Track 46: OPENBULLY_JOURNAL_AT=<sec> opens the journal once at that
+    // time. The trick demo uses it to show the STYLE stats panel (drawn while
+    // the journal is open) in the late screenshots — OS-level key injection
+    // has no effect on SDL raw scancode state, so scripted verification goes
+    // through the engine like every other *_DEMO hook.
+    static const bool s_journalAt = std::getenv("OPENBULLY_JOURNAL_AT") != nullptr;
+    if (s_journalAt && !m_journalOpen) {
+        static const double s_journalAtTime =
+            std::atof(std::getenv("OPENBULLY_JOURNAL_AT"));
+        if (m_time >= s_journalAtTime) {
+            m_journalOpen = true;
+            m_journalScrollPx = 0.0f;
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_ShowCursor(SDL_ENABLE);
+            Logger::Info("Journal demo: opened at t=%.1f (OPENBULLY_JOURNAL_AT)",
+                         m_time);
+        }
+    }
     // Track 41: the schedule overlay and class session are modal — no journal
     // toggling while class UI is up.
+    // Track 45: the arcade view is modal too (J inside a cabinet is inert).
     if (m_input.WasKeyPressed(SDL_SCANCODE_J) &&
-        !m_scheduleOpen && !m_classSessionActive) {
+        !m_scheduleOpen && !m_classSessionActive &&
+        !m_cutscenePlaying && // Track 48: the scene owns the player
+        !m_arcade.IsActive()) {
         m_journalOpen = !m_journalOpen;
         m_journalScrollPx = 0.0f;
         // The journal takes the cursor: absolute mode lets a click be
@@ -5488,6 +7332,13 @@ void Engine::UpdateQuestJournal() {
         SDL_ShowCursor(m_journalOpen ? SDL_ENABLE : SDL_DISABLE);
         m_journalLmbDown = false;
         Logger::Info("Journal: %s", m_journalOpen ? "opened" : "closed");
+    }
+    // Track 47: TAB flips between the missions page and the photo album.
+    if (m_journalOpen && m_input.WasKeyPressed(SDL_SCANCODE_TAB)) {
+        m_journalPhotoPage = !m_journalPhotoPage;
+        m_journalScrollPx = 0.0f;
+        Logger::Info("Journal: %s page",
+                     m_journalPhotoPage ? "photo album" : "missions");
     }
     if (m_journalOpen) {
         const int count = int(m_journalMissions.size());
@@ -5552,6 +7403,24 @@ void Engine::UpdateQuestJournal() {
         m_journalSelected = int(m_journalMissions.size()) - 1;
     if (m_journalSelected < 0) m_journalSelected = 0;
 
+    // Track 47: photo album rows for the journal's album page (oldest first,
+    // newest at the bottom; the panel clips overflow). '*' marks photos that
+    // counted toward a mission objective.
+    m_photoAlbumRows.clear();
+    {
+        const size_t albumN = m_photos.Album().size();
+        const size_t start = albumN > 60 ? albumN - 60 : 0;
+        for (size_t i = start; i < albumN; ++i) {
+            const Photo::PhotoRecord& r = m_photos.Album()[i];
+            char row[128];
+            std::snprintf(row, sizeof(row), "#%-3zu %-18s @ %02d:%02d%s",
+                          i + 1, r.subject.c_str(),
+                          (r.clockMinutes / 60) % 24, r.clockMinutes % 60,
+                          r.missionId.empty() ? "" : "  *");
+            m_photoAlbumRows.emplace_back(row);
+        }
+    }
+
     // --- transition log: activation / objective completion -------------------
     // Diff the previous frame's (state, currentObjective) per mission and log
     // every transition. The feed renders in the journal's details pane.
@@ -5588,10 +7457,762 @@ void Engine::UpdateQuestJournal() {
 }
 
 // Track 40: draw the journal overlay on view 10, above every other UI element.
+// Track 47: while the album page is TAB-toggled on, the photo album replaces
+// the mission list.
 void Engine::DrawQuestJournal() {
     if (!m_journalOpen || !m_ui.IsInitialized()) return;
+    if (m_journalPhotoPage) {
+        char head[96];
+        std::snprintf(head, sizeof(head),
+                      "%zu photo(s) taken  ('*' = counted for a mission)",
+                      m_photos.Album().size());
+        m_ui.DrawPhotoAlbum(m_photoAlbumRows, head);
+        return;
+    }
     m_ui.DrawQuestJournal(m_journalMissions, m_journalSelected,
                           m_journalScrollPx);
+
+    // Track 46: trick stats + achievements. The journal doubles as the stats
+    // screen; the panel sits on the journal's full-screen dim layer so no new
+    // UIRenderer type is needed. Bottom-left so it clears the mission list
+    // and the minimap.
+    const uint32_t tGold = 0xff50d2ffu; // #FFD250 (ABGR: alpha|blue|green|red)
+    const uint32_t tDim  = 0xffa8a8b0u;
+    const uint32_t tOk   = 0xff70dd70u;
+    const float sx = 20.0f;
+    const float pw = 316.0f;
+    const float rowH = 15.0f;
+    const float top = float(m_screenHeight) - 208.0f;
+    m_ui.DrawRect(sx, top, pw, 196.0f, 0xff0a0a0eu);
+    m_ui.DrawRect(sx, top, pw, 2.0f, tGold);
+
+    char line[96];
+    float y = top + 12.0f;
+    auto row = [&](const char* text, uint32_t color) {
+        m_ui.DrawText(sx + 12.0f, y, text, color);
+        y += rowH;
+    };
+    row("STYLE - BIKE TRICKS", tGold);
+    std::snprintf(line, sizeof(line), "SCORE          %d", m_tricks.totalScore);
+    row(line, 0xffffffffu);
+    std::snprintf(line, sizeof(line), "COMBO BEST     x%d", m_tricks.bestMult);
+    row(line, 0xffffffffu);
+    for (TrickType t = TrickType::Wheelie; t != TrickType::Count;
+         t = TrickType(int(t) + 1)) {
+        const TrickTypeStats& st = m_tricks.perType[int(t)];
+        std::snprintf(line, sizeof(line), "%-9s %d   best %.1fs   pts %d",
+                      TrickName(t), st.landed, st.longestTime, st.totalPoints);
+        row(line, 0xffffffffu);
+    }
+    row("ACHIEVEMENTS", tGold);
+    const int nAch = TrickAchievementCount();
+    for (int i = 0; i < nAch; ++i) {
+        const TrickAchievement& a = GetTrickAchievements()[i];
+        char goal[64];
+        if (a.count > 0) {
+            int totalLanded = 0;
+            for (const TrickTypeStats& st : m_tricks.perType)
+                totalLanded += st.landed;
+            const int have = a.type == TrickType::None
+                                 ? totalLanded
+                                 : m_tricks.perType[int(a.type)].landed;
+            std::snprintf(goal, sizeof(goal), "%s %s %d/%d",
+                          a.unlocked ? "[x]" : "[ ]",
+                          a.name, have, a.count);
+        } else if (a.comboMult > 0) {
+            std::snprintf(goal, sizeof(goal), "%s %s x%d/%d",
+                          a.unlocked ? "[x]" : "[ ]",
+                          a.name, m_tricks.bestMult, a.comboMult);
+        } else {
+            std::snprintf(goal, sizeof(goal), "%s %s %d/%d",
+                          a.unlocked ? "[x]" : "[ ]",
+                          a.name, m_tricks.totalScore, a.score);
+        }
+        row(goal, a.unlocked ? tOk : tDim);
+    }
+}
+
+// --- Track 41: class system ---------------------------------------------------
+
+// Loads data/classes/classes.json. Positions use the same ref map as missions
+// ("spawn" / "anchor_center" / "anchor_min" / "anchor_max"); same probing
+// convention (CWD first, source tree fallback).
+bool Engine::InitClasses() {
+    Logger::Info("Classes: init begin"); // Track 41 probe (crash bisect)
+    std::unordered_map<std::string, glm::vec3> refs;
+    refs["spawn"] = m_jimmySpawn;
+    if (!m_worldMeshes.empty()) {
+        const WorldMesh* anchor = &m_worldMeshes.front();
+        for (const WorldMesh& wm : m_worldMeshes)
+            if (wm.gpu.vertexCount > anchor->gpu.vertexCount) anchor = &wm;
+        refs["anchor_center"] = 0.5f * (glm::make_vec3(anchor->boundsMin) +
+                                          glm::make_vec3(anchor->boundsMax));
+        refs["anchor_min"] = glm::make_vec3(anchor->boundsMin);
+        refs["anchor_max"] = glm::make_vec3(anchor->boundsMax);
+    }
+
+    const char* paths[] = {
+        "data/classes/classes.json",
+        "../data/classes/classes.json",
+    };
+    bool loaded = false;
+    for (const char* p : paths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            loaded = m_classes.LoadFromJson(p, refs);
+            break;
+        }
+    }
+    if (!loaded) {
+        Logger::Warning("Classes: classes.json not found or empty "
+                        "(class system idle)");
+        return false;
+    }
+    Logger::Info("Classes: %zu definition(s) registered", m_classes.Count());
+    return true;
+}
+
+// Per-frame class logic: C toggles the schedule overlay, prompt detection
+// runs against Jimmy's position + the game clock, and the session minigame
+// advances. Runs before UpdateDialogue so UpdateClassAttend can arbitrate a
+// same-frame E press.
+void Engine::UpdateClasses(float dt) {
+    // Track 44: while a real minigame is on screen there is no prompt,
+    // schedule toggle or attendance input (its keys were already stripped
+    // by UpdateMinigames).
+    if (m_minigames.IsActive()) {
+        m_classPromptIdx = -1;
+        m_classAttendPending = false;
+        return;
+    }
+    // Track 45: the arcade view is modal for the class UI too (C / prompt /
+    // attend are all unreachable from inside a cabinet screen).
+    if (m_arcade.IsActive()) {
+        m_classPromptIdx = -1;
+        m_classAttendPending = false;
+        return;
+    }
+    const int dayIndex = m_gameDay % 7;
+    const int minuteNow = std::max(0, int(m_gameTimeMinutes));
+
+    // --- C: schedule overlay (modal, no cursor needed) ---------------------
+    if (!m_classSessionActive && !m_journalOpen &&
+        m_input.WasKeyPressed(SDL_SCANCODE_C)) {
+        m_scheduleOpen = !m_scheduleOpen;
+        Logger::Info("Schedule: %s", m_scheduleOpen ? "opened" : "closed");
+    }
+
+    // --- class session ------------------------------------------------------
+    if (m_classSessionActive) {
+        m_classPromptIdx = -1;
+        m_classPromptDist = 0.0f;
+
+        if (m_sessionResult != 0) {
+            // Banner dwell, then close the room.
+            m_sessionResolveTimer -= dt;
+            if (m_sessionResolveTimer <= 0.0f) {
+                m_classSessionActive = false;
+                m_classSessionIdx = -1;
+                m_sessionResult = 0;
+                Logger::Info("Classes: session overlay closed");
+            }
+        } else {
+            m_sessionTime += dt;
+            m_sessionSweep += m_sessionSweepDir * kClassSweepSpeed * dt;
+            if (m_sessionSweep > 1.0f) { m_sessionSweep = 1.0f; m_sessionSweepDir = -1.0f; }
+            if (m_sessionSweep < 0.0f) { m_sessionSweep = 0.0f; m_sessionSweepDir = 1.0f; }
+
+            // E inside the band = correct beat; outside = slip.
+            if (m_input.WasKeyPressed(SDL_SCANCODE_E)) {
+                const bool inside = m_sessionSweep >= m_sessionBandLo &&
+                                    m_sessionSweep <= m_sessionBandHi;
+                if (inside) ++m_sessionHits;
+                else ++m_sessionMisses;
+                Logger::Info("Class session: %s (correct %d/%d, slips %d/%d)",
+                             inside ? "CORRECT" : "MISSED BAND",
+                             m_sessionHits, 3, m_sessionMisses, 3);
+                // Re-roll the band so the next press is not free.
+                const float w = kClassBandWidth;
+                const float a = 0.08f + nextRandom01() * (0.92f - w);
+                m_sessionBandLo = a;
+                m_sessionBandHi = std::min(1.0f, a + w);
+                if (m_sessionHits >= 3)  EndClassSession(true);
+                else if (m_sessionMisses >= 3) EndClassSession(false);
+            }
+            if (m_sessionResult == 0 && m_sessionTime >= kClassSessionFail)
+                EndClassSession(false); // ran out the clock
+
+            // OPENBULLY_CLASS_DEMO=1: auto-focus inside the band so a headless
+            // run passes the session without OS-level key injection.
+            static const bool s_classDemo =
+                std::getenv("OPENBULLY_CLASS_DEMO") != nullptr;
+            if (s_classDemo && m_sessionResult == 0 &&
+                m_sessionSweep >= m_sessionBandLo &&
+                m_sessionSweep <= m_sessionBandHi) {
+                ++m_sessionHits;
+                Logger::Info("Class demo: auto-focus (correct %d/3)", m_sessionHits);
+                const float w = kClassBandWidth;
+                const float a = 0.08f + nextRandom01() * (0.92f - w);
+                m_sessionBandLo = a;
+                m_sessionBandHi = std::min(1.0f, a + w);
+                if (m_sessionHits >= 3) EndClassSession(true);
+            }
+        }
+        return; // no prompt while the room is open
+    }
+
+    // OPENBULLY_CLASS_DEMO=1: scripted class day for headless verification
+    // (same philosophy as the dialogue demo; OS key injection is unreliable).
+    // Runs BEFORE the prompt gates so gameplay state cannot starve the demo.
+    //   Phase A: walk Jimmy (position-direct) to the nearest class whose
+    //            window is live right now and attend once.
+    //   Phase B: ~1.5 s after the pass, open the schedule overlay for ~3 s
+    //            so screenshots prove completion bookkeeping.
+    static const bool s_classDemoWalk =
+        std::getenv("OPENBULLY_CLASS_DEMO") != nullptr;
+    if (s_classDemoWalk) {
+        static bool   s_attended    = false;
+        static bool   s_schedOpen   = false;
+        static bool   s_schedClosed = false;
+        static double s_passAt      = -1.0;
+        static double s_closedAt    = -1.0;
+        static int    s_lastDone    = 0;
+
+        const int totalDone = m_classes.TotalCompletions();
+        if (totalDone > s_lastDone) {
+            s_lastDone = totalDone;
+            s_passAt = m_time;
+        }
+        // The session banner dwells 2.5 s after the pass before the room
+        // closes; anchor the schedule window on that close so the overlay
+        // does not open and close inside the same frame. Latch once.
+        if (!m_classSessionActive && s_passAt > 0.0 && s_closedAt < 0.0)
+            s_closedAt = m_time;
+
+        // Phase B: schedule screenshot window (3.5 s after the room closes).
+        if (!s_schedOpen && !s_schedClosed && s_closedAt > 0.0 &&
+            m_time > s_closedAt + 0.5) {
+            m_scheduleOpen = true;
+            s_schedOpen = true;
+            Logger::Info("Class demo: schedule overlay opened (progression proof)");
+        }
+        if (s_schedOpen && !s_schedClosed && m_time > s_closedAt + 4.0) {
+            m_scheduleOpen = false;
+            s_schedOpen = false;
+            s_schedClosed = true;
+            Logger::Info("Class demo: schedule overlay closed");
+        }
+
+        // Phase A: attend the live-window class (once per run). The walk
+        // itself is Track 18's proof; this demo teleports (position-direct,
+        // like the ranged-demo target spawn) so verification is deterministic
+        // under any frame rate, including the 1-2 fps debug builds where a
+        // real walk races the game clock (60x) and misses the window.
+        if (s_attended || m_classSessionActive || m_scheduleOpen ||
+            !m_jimmyActive || !m_jimmyId.IsValid()) return;
+        const Transform* jtp = m_entities.GetTransform(m_jimmyId);
+        const glm::vec3 jp = jtp ? jtp->position : glm::vec3(0.0f);
+        const int idx = m_classes.ScheduledIndexNearest(jp, dayIndex, minuteNow);
+        if (idx < 0) {
+            // Log once per game-minute while the demo waits for a window.
+            static int s_lastWaitMinute = -1;
+            if (minuteNow != s_lastWaitMinute) {
+                s_lastWaitMinute = minuteNow;
+                Logger::Info("Class demo: waiting for a live window (day %d, %02d:%02d)",
+                             dayIndex, minuteNow / 60, minuteNow % 60);
+            }
+            return;
+        }
+        const ClassData* c = m_classes.Get(size_t(idx));
+        if (!c) return;
+        Transform* pt = m_entities.GetTransform(m_jimmyId);
+        if (!pt) return;
+        if (PhysicsComponent* pp = m_entities.GetPhysics(m_jimmyId))
+            pp->velocity.y = 0.0f;
+        pt->position = c->position;
+        Logger::Info("Class demo: attending '%s' at game time %02d:%02d",
+                     c->displayName.c_str(),
+                     GetGameTime().hour, GetGameTime().minute);
+        s_attended = true;
+        StartClassSession(*c);
+        return; // demo drives the class flow; skip the interactive prompt path
+    }
+
+    // --- schedule overlay: show the world, still detect the prompt ---------
+    if (m_scheduleOpen) {
+        m_classPromptIdx = -1;
+    } else {
+        m_classPromptIdx = -1;
+        m_classPromptDist = 0.0f;
+        if (!m_jimmyActive || !m_jimmyId.IsValid() || m_classes.Count() == 0) return;
+        const Transform* jt = m_entities.GetTransform(m_jimmyId);
+        if (!jt) return;
+        if (m_dialogue.IsActive() || m_grappleTarget.IsValid()) return;
+        if (m_mountedVehicle.IsValid()) return; // dismount first
+        if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+            pc && pc->state != DefenseState::Normal) return;
+        if (const Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId);
+            mc && mc->state != Melee::CombatState::Idle) return;
+
+        const ClassData* c = nullptr;
+        float dist = 0.0f;
+        const int idx = m_classes.AvailableIndex(jt->position, dayIndex,
+                                                    minuteNow, &c, &dist);
+        if (idx >= 0 && c) {
+            m_classPromptIdx = int(idx);
+            m_classPromptDist = dist;
+        }
+    }
+
+    // --- E on the prompt: defer so dialogue keeps same-frame priority ----
+    if (m_classPromptIdx >= 0 && m_input.WasKeyPressed(SDL_SCANCODE_E))
+        m_classAttendPending = true;
+}
+
+// Deferred attend: E was pressed on a prompt this frame; only start the
+// session when dialogue did not take the press.
+void Engine::UpdateClassAttend() {
+    if (!m_classAttendPending) return;
+    m_classAttendPending = false;
+    if (m_classSessionActive || m_dialogue.IsActive() || m_journalOpen ||
+        m_scheduleOpen || m_classPromptIdx < 0) return;
+    const ClassData* c = m_classes.Get(size_t(m_classPromptIdx));
+    if (!c) return;
+    StartClassSession(*c);
+}
+
+// =========================================================================
+// Track 45: arcade cabinets (Nut Shots / Monkey Fling)
+// =========================================================================
+
+// Init-time cabinet placement: the same ground-verified ring strategy the
+// vehicle spawner uses, centered on Jimmy's spawn (or the free camera).
+void Engine::SpawnArcadeCabinets() {
+    m_arcade.SetAudio(m_audio.get());
+    m_arcade.SetDemo(std::getenv("OPENBULLY_ARCADE_DEMO") != nullptr);
+    m_arcade.SpawnCabinets(m_entities, m_collisionWorld.get(),
+                           m_jimmyActive ? m_jimmySpawn : m_camera.GetPosition());
+}
+
+// World-side arcade tick: refresh the near-cabinet prompt, arbitrate the E
+// press (dialogue / class attend keep first claim — this runs after both),
+// and drive the OPENBULLY_ARCADE_DEMO walk-to-cabinet script.
+void Engine::UpdateArcade(float dt) {
+    // Demo rotation tracking must observe the open state every frame — the
+    // early return below (the cabinet owns the input while open) would
+    // otherwise never see the open->closed transition and the demo would
+    // re-enter the same cabinet forever.
+    static const bool s_demo = std::getenv("OPENBULLY_ARCADE_DEMO") != nullptr;
+    static int  s_demoCab     = 0;
+    static bool s_demoWasOpen = false;
+    if (s_demo) {
+        // Rotate to the next cabinet after each exit (the manager demo exits
+        // from the round-over banner).
+        const bool open = m_arcade.IsActive();
+        if (s_demoWasOpen && !open)
+            s_demoCab = (s_demoCab + 1) % std::max(1, m_arcade.CabinetCount());
+        s_demoWasOpen = open;
+    }
+
+    if (m_arcade.IsActive()) return;               // the cabinet owns the input
+    if (m_mountedVehicle.IsValid()) return;        // ride first, play after
+
+    glm::vec3 playerPos = m_camera.GetPosition();
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId))
+            playerPos = jt->position;
+    }
+    m_arcade.UpdateProximity(playerPos);
+
+    // Demo walk: position-direct (same pattern as the dialogue/class demos)
+    // toward the current cabinet, then insert a coin when in range.
+    if (s_demo && m_jimmyActive && m_jimmyId.IsValid()) {
+        static double s_lastTry  = 0.0;
+        static bool  s_cashGiven = false;
+        PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+        if (pc && !s_cashGiven) {              // headless wallets start empty
+            s_cashGiven = true;
+            pc->money = std::max(pc->money, 5);
+            Logger::Info("Arcade demo: seeded $%d", pc->money);
+        }
+        if (Transform* pt = m_entities.GetTransform(m_jimmyId)) {
+            const glm::vec3 target = m_arcade.CabinetPosition(s_demoCab);
+            glm::vec3 to = target - pt->position;
+            to.y = 0.0f;
+            const float d = glm::length(to);
+            if (d > 1.6f) {
+                if (PhysicsComponent* pp = m_entities.GetPhysics(m_jimmyId))
+                    pp->velocity.y = 0.0f;
+                pt->position += (to / d) * (3.0f * dt);
+                pt->position.y = target.y;     // cabinets sit on the floor
+            } else if (m_time - s_lastTry > 1.0) {
+                s_lastTry = m_time;
+                if (pc && m_arcade.TryEnterCabinet(s_demoCab, pc->money))
+                    Logger::Info("Arcade demo: entered cabinet %d", s_demoCab);
+            }
+        }
+        return;                                // the demo owns entry
+    }
+
+    // Real-input entry: E on the near-cabinet prompt (UpdateProximity above
+    // already validated the range).
+    if (!m_arcade.NearCabinet() ||
+        !m_input.WasKeyPressed(SDL_SCANCODE_E)) return;
+    if (m_dialogue.IsActive() || m_journalOpen || m_scheduleOpen ||
+        m_classSessionActive || m_minigames.IsActive())
+        return;
+    if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+        if (m_arcade.TryEnterCabinet(m_arcade.NearIndex(), pc->money))
+            Logger::Info("Arcade: %s", m_arcade.Prompt());
+    }
+}
+
+// Enters the (placeholder) class minigame. Jimmy is frozen while the
+// session runs; NPC AI keeps ticking in the background.
+void Engine::StartClassSession(const ClassData& c) {
+    // Track 44: subjects with an implemented minigame get the real activity;
+    // never two activities at once (framework busy -> skip the legacy room;
+    // reserved subjects -> Track 41 placeholder sweep stays the fallback).
+    if (m_minigames.IsActive()) return;
+    if (StartClassMinigame(c)) return;
+    m_classSessionActive = true;
+    m_classSessionIdx = int(m_classes.IndexOf(c.id));
+    m_sessionHits = 0;
+    m_sessionMisses = 0;
+    m_sessionTime = 0.0f;
+    m_sessionResult = 0;
+    m_sessionResolveTimer = 0.0f;
+    m_sessionSweep = 0.0f;
+    m_sessionSweepDir = 1.0f;
+    const float w = kClassBandWidth;
+    const float a = 0.08f + nextRandom01() * (0.92f - w);
+    m_sessionBandLo = a;
+    m_sessionBandHi = std::min(1.0f, a + w);
+    Logger::Info("Class: session started '%s' (%s) — %zu beat(s)",
+                 c.displayName.c_str(), c.id.c_str(), c.objectives.size());
+}
+
+// Resolves a session: pass -> completion + rewards; fail -> retry bookkeeping.
+// Both stay on screen as a banner for kSessionResolveDwell seconds.
+static constexpr float kClassResolveDwell = 2.5f;
+void Engine::EndClassSession(bool passed) {
+    m_sessionResult = passed ? 1 : 2;
+    m_sessionResolveTimer = kClassResolveDwell;
+    const ClassData* c = m_classSessionIdx >= 0
+        ? m_classes.Get(size_t(m_classSessionIdx)) : nullptr;
+    if (passed) {
+        if (c && m_classSessionIdx >= 0) {
+            m_classes.MarkComplete(size_t(m_classSessionIdx));
+            ApplyClassRewards(*c);
+        }
+        AppendJournalLog("CLASS PASSED: " +
+                         (c ? c->displayName : "?"));
+    } else {
+        if (c && m_classSessionIdx >= 0)
+            m_classes.MarkFailed(size_t(m_classSessionIdx));
+        AppendJournalLog("CLASS FAILED: " +
+                         (c ? c->displayName : "?") + " (retry available)");
+    }
+    Logger::Info("Class: session %s (%s)", passed ? "PASSED" : "FAILED",
+                 c ? c->displayName.c_str() : "?");
+}
+
+// Applies a class's reward list. Weapon grants need a free slot; slingshot
+// ammo needs an owned slingshot. Unknown kinds are ignored loudly.
+void Engine::ApplyClassRewards(const ClassData& c) {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return;
+    std::string summary;
+    for (const ClassReward& r : c.rewards) {
+        switch (r.kind) {
+            case RewardKind::MaxHealth:
+                pc->health.max += std::max(0, r.amount);
+                pc->health.current += std::max(0, r.amount); // instant full heal
+                if (pc->health.current > pc->health.max) pc->health.current = pc->health.max;
+                Logger::Info("Reward: max health +%d (now %d/%d)",
+                             r.amount, pc->health.current, pc->health.max);
+                if (!summary.empty()) summary += ", ";
+                summary += "Max Health +" + std::to_string(r.amount);
+                break;
+            case RewardKind::Money: {
+                const int before = pc->money;
+                pc->money += std::max(0, r.amount);
+                Logger::Info("Reward: money +%d (now %d, was %d)",
+                             pc->money - before, pc->money, before);
+                if (!summary.empty()) summary += ", ";
+                summary += "$" + std::to_string(r.amount);
+                break;
+            }
+            case RewardKind::Weapon: {
+                const int wid = r.weaponId;
+                if (wid < 0 || wid > 6) {
+                    Logger::Warning("Reward: unknown weapon_id %d", wid);
+                    break;
+                }
+                int freeSlot = -1;
+                for (int i = 0; i < 5; ++i)
+                    if (pc->slots[i].type == WeaponType::Unarmed) { freeSlot = i; break; }
+                if (freeSlot < 0) {
+                    Logger::Warning("Reward: inventory full, '%s' not granted",
+                                    GetWeaponDataById(wid).name);
+                    break;
+                }
+                const WeaponData& wd = GetWeaponDataById(wid);
+                pc->slots[freeSlot].type = wd.type;
+                pc->slots[freeSlot].weaponId = wid;
+                pc->slots[freeSlot].durability = wd.durability;
+                pc->slots[freeSlot].ammo = std::max(0, r.amount);
+                if (pc->equippedSlot < 0) pc->equippedSlot = freeSlot;
+                Logger::Info("Reward: '%s' granted -> slot %d (ammo %d)",
+                             wd.name, freeSlot, r.amount);
+                if (!summary.empty()) summary += ", ";
+                summary += std::string(wd.name) + " x" + std::to_string(std::max(0, r.amount));
+                break;
+            }
+            case RewardKind::Ammo: {
+                int slotIdx = -1;
+                if (pc->equippedSlot >= 0 &&
+                    pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile)
+                    slotIdx = pc->equippedSlot;
+                else for (int s = 0; s < 5; ++s)
+                    if (pc->slots[s].type == WeaponType::RangedProjectile) { slotIdx = s; break; }
+                if (slotIdx < 0) {
+                    Logger::Warning("Reward: no slingshot owned, ammo +%d not granted",
+                                    r.amount);
+                    break;
+                }
+                InventorySlot& slot = pc->slots[slotIdx];
+                const int before = slot.ammo;
+                slot.ammo = std::min(SlingshotCapacity(), slot.ammo + std::max(0, r.amount));
+                Logger::Info("Reward: ammo +%d (slot %d, %d -> %d)",
+                             slot.ammo - before, slotIdx, before, slot.ammo);
+                if (!summary.empty()) summary += ", ";
+                summary += "+" + std::to_string(slot.ammo - before) + " rocks";
+                break;
+            }
+            case RewardKind::AmmoCap: {
+                const int before = m_slingshotCapBonus;
+                m_slingshotCapBonus = std::min(kClassMaxCapBonus,
+                                                m_slingshotCapBonus + std::max(0, r.amount));
+                Logger::Info("Reward: slingshot capacity +%d (now %d)",
+                             m_slingshotCapBonus - before, SlingshotCapacity());
+                if (!summary.empty()) summary += ", ";
+                summary += "Slingshot Cap +" + std::to_string(m_slingshotCapBonus - before);
+                break;
+            }
+            case RewardKind::Respect:
+                m_classes.AddRespect(std::max(0, r.amount));
+                Logger::Info("Reward: respect +%d (now %d)", r.amount,
+                             m_classes.Respect());
+                if (!summary.empty()) summary += ", ";
+                summary += "Respect +" + std::to_string(r.amount);
+                break;
+            default:
+                Logger::Warning("Reward: unknown kind %d", int(r.kind));
+                break;
+        }
+    }
+    Logger::Info("Class '%s': rewards -> %s",
+                 c.displayName.c_str(), summary.empty() ? "(none)" : summary.c_str());
+}
+
+// Draws the prompt, schedule overlay and session screen on view 10.
+void Engine::DrawClassOverlays() {
+    if (!m_ui.IsInitialized()) return;
+
+    if (m_classSessionActive) {
+        const ClassData* c = m_classSessionIdx >= 0
+            ? m_classes.Get(size_t(m_classSessionIdx)) : nullptr;
+        ClassSessionView v;
+        v.className = c ? c->displayName : "Class";
+        v.location = c ? (c->building + " - " + c->room) : std::string();
+        v.marker = m_sessionSweep;
+        v.bandLo = m_sessionBandLo;
+        v.bandHi = m_sessionBandHi;
+        v.hits = m_sessionHits;
+        v.misses = m_sessionMisses;
+        v.hitGoal = 3;
+        v.missGoal = 3;
+        if (c) v.objectives = c->objectives;
+        v.objectivesDone = m_sessionHits;
+        v.result = m_sessionResult;
+        if (m_sessionResult == 1 && c) {
+            std::string rewards;
+            for (const ClassReward& r : c->rewards) {
+                if (!rewards.empty()) rewards += ", ";
+                if (r.kind == RewardKind::Weapon)
+                    rewards += std::string(GetWeaponDataById(r.weaponId).name) +
+                               " x" + std::to_string(std::max(0, r.amount));
+                else
+                    rewards += std::string(RewardKindName(r.kind)) + " +" + std::to_string(r.amount);
+            }
+            v.rewardSummary = rewards;
+        }
+        m_ui.DrawClassSession(v);
+        return;
+    }
+
+    if (m_scheduleOpen) {
+        std::vector<ClassScheduleEntry> entries;
+        const int dayIndex = m_gameDay % 7;
+        const int minuteNow = std::max(0, int(m_gameTimeMinutes));
+        for (size_t i = 0; i < m_classes.Count(); ++i) {
+            const ClassData& c = *m_classes.Get(i);
+            ClassScheduleEntry e;
+            e.name = c.displayName;
+            e.location = c.building + " - " + c.room;
+            e.days = c.DaysText();
+            e.time = c.TimeText();
+            e.completions = m_classes.Completions(i);
+            e.sessionsRequired = c.sessionsRequired;
+            e.fullyComplete = e.completions >= c.sessionsRequired;
+            e.availableNow = c.DayActive(dayIndex) && c.TimeActive(minuteNow);
+            entries.push_back(std::move(e));
+        }
+        static const char* kDayNames[7] = { "Monday", "Tuesday", "Wednesday",
+                                            "Thursday", "Friday", "Saturday",
+                                            "Sunday" };
+        char header[96];
+        std::snprintf(header, sizeof(header), "Day %d - %s  %02d:%02d",
+                      m_gameDay + 1, kDayNames[dayIndex],
+                      GetGameTime().hour, GetGameTime().minute);
+
+        std::string nextLine;
+        int lead = -1;
+        const ClassData* next = m_classes.NextUpcoming(dayIndex, minuteNow, &lead);
+        // Nearest live session (the prompt) outranks the next upcoming one.
+        const int availIdx = m_classes.AvailableIndex(
+            m_jimmyId.IsValid() ? (m_entities.GetTransform(m_jimmyId)
+                                        ? m_entities.GetTransform(m_jimmyId)->position
+                                        : glm::vec3(0.0f)) : glm::vec3(0.0f),
+            dayIndex, minuteNow);
+        if (availIdx >= 0) {
+            const ClassData* live = m_classes.Get(size_t(availIdx));
+            if (live) nextLine = "NOW: " + live->displayName +
+                                 " - " + live->room + " (ends " + live->TimeText() + ")";
+        } else if (next) {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "NEXT: %s - %s in %dh %02dm",
+                          next->displayName.c_str(), next->TimeText().c_str(),
+                          lead / 60, lead % 60);
+            nextLine = buf;
+        } else {
+            nextLine = "No more classes scheduled";
+        }
+
+        char info[96];
+        std::snprintf(info, sizeof(info), "Respect %d    Classes passed %d",
+                      m_classes.Respect(), m_classes.TotalCompletions());
+        m_ui.DrawClassSchedule(entries, header, nextLine, info);
+        return;
+    }
+
+    if (m_classPromptIdx >= 0) {
+        const ClassData* c = m_classes.Get(size_t(m_classPromptIdx));
+        if (c) m_ui.DrawClassPrompt(c->displayName.c_str());
+    }
+}
+
+// --- Track 44: minigame framework ----------------------------------------------
+
+// Subject -> minigame mapping. Reserved subjects (Rhythm / TargetPractice /
+// MemoryMatch) still map to their intended type; CreateMinigame refuses them
+// for now, so StartMinigame fails and the caller falls back to the Track 41
+// placeholder sweep until those games ship.
+bool Engine::StartClassMinigame(const ClassData& c) {
+    using MT = Minigames::MinigameType;
+    MT type;
+    switch (c.type) {
+        case ClassType::English:   type = MT::WordScramble;    break;
+        case ClassType::Math:      type = MT::MathQuiz;        break;
+        case ClassType::Gym:       type = MT::ButtonMash;      break;
+        case ClassType::Music:     type = MT::Rhythm;          break;
+        case ClassType::Chemistry: type = MT::TargetPractice;  break;
+        case ClassType::Biology:   type = MT::MemoryMatch;     break;
+        default:
+            return false; // Art/Shop/Photography/Geography: placeholder
+    }
+    if (!m_minigames.StartMinigame(type)) return false; // busy or reserved
+    m_minigameClassIdx = int(m_classes.IndexOf(c.id));
+    Logger::Info("Class '%s': %s started (%s)",
+                 c.displayName.c_str(), Minigames::MinigameTypeName(type),
+                 Minigames::MinigameTypeSubject(type));
+    return true;
+}
+
+// Per-frame minigame tick. Captures the isolated key set straight after
+// Input::Poll (demo-injected presses included), then clears those scancodes
+// from the shared snapshot for the rest of the frame — gameplay consumers
+// (melee Q/E, grapple G/U/I/O, weather W, schedule T, journal J, minimap M,
+// reload R, slots 1-4, dialogue digits/arrows) cannot see them. Then the
+// manager phase machine advances (Intro -> Playing -> Result).
+void Engine::UpdateMinigames(float dt) {
+    if (!m_minigames.IsActive()) return;
+
+    m_minigameInput.CaptureFrom(m_input);
+    StripMinigameKeys();
+
+    m_minigames.Update(dt, m_minigameInput, /*allowEsc=*/true);
+
+    // Drop the class binding once the overlay closed for good (the player
+    // continued out of the Result banner).
+    if (!m_minigames.IsActive())
+        m_minigameClassIdx = -1;
+}
+
+// Clears every scancode the minigame framework consumes from the shared
+// snapshot (WasKeyPressed edges go false) after the capture above. F5/F9
+// stay live on purpose: saving mid-activity is harmless and still useful.
+void Engine::StripMinigameKeys() {
+    for (int sc = SDL_SCANCODE_A; sc <= SDL_SCANCODE_Z; ++sc)
+        m_input.SetRawKey(SDL_Scancode(sc), false);
+    for (int sc = SDL_SCANCODE_1; sc <= SDL_SCANCODE_9; ++sc)
+        m_input.SetRawKey(SDL_Scancode(sc), false);
+    m_input.SetRawKey(SDL_SCANCODE_0, false);
+    m_input.SetRawKey(SDL_SCANCODE_SPACE, false);
+    m_input.SetRawKey(SDL_SCANCODE_ESCAPE, false);
+    m_input.SetRawKey(SDL_SCANCODE_BACKSPACE, false);
+    m_input.SetRawKey(SDL_SCANCODE_RETURN, false);
+    m_input.SetRawKey(SDL_SCANCODE_UP, false);
+    m_input.SetRawKey(SDL_SCANCODE_DOWN, false);
+}
+
+// Full-screen minigame overlay, drawn topmost (above the class overlays;
+// the manager renders the activity and its own result banner).
+void Engine::DrawMinigameOverlay() {
+    if (m_minigames.IsActive())
+        m_minigames.Draw(m_ui, float(m_screenWidth), float(m_screenHeight));
+}
+
+// Result path for class-backed activities — mirrors EndClassSession's
+// bookkeeping (completion + rewards + journal). Fires once per finished
+// attempt, so an internal R-retry simply refreshes the outcome; the class
+// is only closed out with the final attempt the player continues from.
+void Engine::OnMinigameResult(const Minigames::MinigameResult& r) {
+    const ClassData* c = m_minigameClassIdx >= 0
+        ? m_classes.Get(size_t(m_minigameClassIdx)) : nullptr;
+    const std::string who = c ? c->displayName
+        : std::string(Minigames::MinigameTypeName(r.type));
+    if (r.forfeited) {
+        if (c && m_minigameClassIdx >= 0)
+            m_classes.MarkFailed(size_t(m_minigameClassIdx));
+        AppendJournalLog("CLASS FORFEITED: " + who + " (retry available)");
+        Logger::Info("Minigame: forfeited %s", who.c_str());
+    } else if (r.passed) {
+        if (c && m_minigameClassIdx >= 0) {
+            m_classes.MarkComplete(size_t(m_minigameClassIdx));
+            ApplyClassRewards(*c);
+        }
+        AppendJournalLog("CLASS PASSED: " + who);
+        Logger::Info("Minigame: PASSED %s (score %d, %.1fs)",
+                     who.c_str(), r.score, r.timeTaken);
+    } else {
+        if (c && m_minigameClassIdx >= 0)
+            m_classes.MarkFailed(size_t(m_minigameClassIdx));
+        AppendJournalLog("CLASS FAILED: " + who + " (retry available)");
+        Logger::Info("Minigame: FAILED %s (score %d)", who.c_str(), r.score);
+    }
 }
 
 // Track 20 (UI): refresh the plain-data HUD snapshot from live game state.
@@ -5602,6 +8223,15 @@ void Engine::UpdateHUD(float dt) {
     // Game clock: advanced by UpdateGameTime (Track 29, 60x real time);
     // this snapshot only mirrors the accumulator for the HUD.
     m_hudState.clockMinutes = m_clockMinutes;
+
+    // Track 43: wanted system HUD fields (flash, cops banner, hide indicator
+    // and the bust cut). Engine-side state; the player wanted level itself is
+    // mirrored below from PlayerController.
+    m_hudState.wantedFlash = m_wanted.flashTimer;
+    m_hudState.copsActive  = !m_copIds.empty();
+    m_hudState.hidden      = m_wanted.hidden;
+    m_hudState.bustFade    = m_wanted.bustFade;
+    m_hudState.busted      = m_wanted.bustPhase != 0;
 
     // Player vitals + minimap anchor.
     if (m_jimmyActive && m_jimmyId.IsValid()) {
@@ -5693,7 +8323,12 @@ void Engine::UpdateHUD(float dt) {
     }
 
     // Track 37: active mission objective marker (gold star on the minimap).
+    // Track 47: photo progress readout defaults off; set below when the
+    // active mission's current objective is a PHOTOGRAPH_TARGET.
     m_hudState.objectiveActive = false;
+    m_hudState.photoMissionActive = false;
+    m_hudState.photoCount  = 0;
+    m_hudState.photoNeeded = 0;
     if (const Mission* m = m_missions.ActiveMission()) {
         if (m->currentObjective < m->objectives.size()) {
             const Objective& obj = m->objectives[m->currentObjective];
@@ -5702,6 +8337,1115 @@ void Engine::UpdateHUD(float dt) {
                 m_hudState.objectiveX = obj.targetPosition.x;
                 m_hudState.objectiveZ = obj.targetPosition.z;
             }
+            // Track 47: photo mission progress readout (HUD line). Uses the
+            // photo-specific lookup: several missions can be active at once.
+            if (const Mission* pm = m_missions.ActivePhotoMission()) {
+                const Objective& pobj = pm->objectives[pm->currentObjective];
+                m_hudState.photoMissionActive = true;
+                m_hudState.photoCount  = pobj.photoCount;
+                m_hudState.photoNeeded = pobj.photoNeeded;
+            }
+        }
+    }
+
+    // Track 42: faction stats rows, overall aggregate + interaction readout.
+    UpdateFactionHUD();
+
+    // --- Track 49: boss bar + QTE prompt + banner snapshot ------------------
+    {
+        m_hudState.bossActive = false;
+        m_hudState.bossDefeated = false;
+        m_hudState.bossName[0] = '\0';
+        m_hudState.bossTitle[0] = '\0';
+        m_hudState.bossHealth = 0.0f;
+        m_hudState.bossPhase = 1;
+        m_hudState.qteActive = false;
+        m_hudState.qteKey = ' ';
+        m_hudState.qteFrac = 0.0f;
+        m_hudState.qteResult = 0;
+        m_hudState.qteResultFrac = 0.0f;
+        m_hudState.banner[0] = '\0';
+        m_hudState.bannerKind = 0;
+        m_hudState.bannerFrac = 0.0f;
+
+        if (m_boss.entity.IsValid() && m_entities.IsAlive(m_boss.entity)) {
+            if (const AIComponent* ai = m_entities.GetAI(m_boss.entity)) {
+                if (const BossComponent* bc = m_entities.GetBoss(m_boss.entity)) {
+                    const BossDefinition& def = GetBossDefinition(bc->type);
+                    m_hudState.bossDefeated = (ai->state == AIState::Ko);
+                    m_hudState.bossActive = !m_hudState.bossDefeated;
+                    std::snprintf(m_hudState.bossName,
+                                  sizeof(m_hudState.bossName), "%s", def.name);
+                    std::snprintf(m_hudState.bossTitle,
+                                  sizeof(m_hudState.bossTitle), "%s", def.title);
+                    m_hudState.bossHealth = def.maxHealth > 0
+                        ? std::clamp(float(ai->health.current) /
+                                         float(def.maxHealth), 0.0f, 1.0f)
+                        : 0.0f;
+                    m_hudState.bossPhase = int(bc->phase);
+                    if (bc->qteState == QteState::Waiting) {
+                        m_hudState.qteActive = true;
+                        m_hudState.qteKey = BossQteKeyChar(bc->qteKey);
+                        m_hudState.qteFrac = bc->qteWindow > 0.0f
+                            ? std::clamp(bc->qteTimer / bc->qteWindow,
+                                         0.0f, 1.0f)
+                            : 0.0f;
+                    } else if (bc->resultTimer > 0.0f) {
+                        m_hudState.qteResult =
+                            bc->qteState == QteState::Success ? 1 : 2;
+                        m_hudState.qteResultFrac = std::clamp(
+                            bc->resultTimer / kQteResultFlash, 0.0f, 1.0f);
+                    }
+                }
+            }
+        }
+        if (m_bossBannerTimer > 0.0f && m_bossBanner[0]) {
+            std::snprintf(m_hudState.banner, sizeof(m_hudState.banner), "%s",
+                          m_bossBanner);
+            m_hudState.bannerKind = m_bossBannerKind;
+            m_hudState.bannerFrac = m_bossBannerDur > 0.0f
+                ? std::clamp(m_bossBannerTimer / m_bossBannerDur, 0.0f, 1.0f)
+                : 0.0f;
+        }
+    }
+}
+
+// =========================================================================
+// Track 49: boss fights (faction leaders: phases, specials, QTEs, HUD)
+//
+// A boss NPC carries an AIComponent (grapples, projectiles, melee, minimap
+// and missions keep working unchanged) PLUS a BossComponent. UpdateNpcs
+// routes every boss entity into UpdateBossEntity, a dedicated FSM layered on
+// the regular chase/attack/melee plumbing:
+//
+//   phases   100-66% P1 basic pattern; 66-33% P2 faster + 2nd move;
+//            33-0% P3 enraged (2x cadence, 3rd move, finisher).
+//   specials per-boss 2-3 move table (charge / stink bomb / reinforcements /
+//            sand throw / ground slam / grab / flurry), phase-gated, each a
+//            windup -> active -> recover machine.
+//   QTEs     one live prompt at a time: a random key inside a shrinking
+//            window. Win -> boss damage; miss -> player damage. Fires on
+//            phase transitions (shockwave), boss grabs (break free) and
+//            player block-counters (punish).
+//   victory  boss at 0 HP -> victory cutscene + boss_duel mission complete.
+//   defeat   player at 0 HP while engaged -> checkpoint respawn + boss reset.
+// =========================================================================
+
+// Phase-gated special pick: expand the boss's move table by phase, drop
+// range-inappropriate entries, then round-robin through what remains.
+static BossSpecial PickBossSpecial(BossComponent& bc, const BossDefinition& def,
+                                   float dist) {
+    const int phase = int(bc.phase);
+    int count = 1;
+    if (phase >= int(def.unlockSecondPhase)) ++count;
+    if (phase >= int(def.unlockThirdPhase))  ++count;
+    BossSpecial cand[3];
+    int cc = 0;
+    for (int i = 0; i < count && cc < 3; ++i) {
+        const BossSpecial s = def.specials[i];
+        if (s == BossSpecial::None) continue;
+        const bool ranged = (s == BossSpecial::SandThrow ||
+                             s == BossSpecial::StinkBomb);
+        const bool close  = (s == BossSpecial::Charge ||
+                             s == BossSpecial::GroundSlam ||
+                             s == BossSpecial::Grab ||
+                             s == BossSpecial::Flurry);
+        if (ranged && dist < 4.0f) continue;  // too close to lob
+        if (close  && dist > 3.0f) continue;  // too far to lunge
+        cand[cc++] = s;
+    }
+    if (cc == 0) return BossSpecial::None;
+    const int pick = int(bc.specialSlot++) % cc;
+    return cand[pick];
+}
+
+// Spawns a boss NPC: same body as a Track 16 NPC (skinned rig, AI, melee,
+// collision) plus the BossComponent and its definition's vitals. Registers
+// the fight runtime so the HUD bar and QTE prompts follow this entity.
+bool Engine::SpawnBoss(BossType type, const glm::vec3& pos) {
+    if (m_npcModels.empty()) {
+        Logger::Warning("SpawnBoss: no NPC models loaded");
+        return false;
+    }
+    const BossDefinition& def = GetBossDefinition(type);
+
+    // Ground snap so the boss stands on the surface, like SpawnNpcs.
+    glm::vec3 spawn = pos;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = spawn.x; down.origin[1] = spawn.y + 10.0f;
+        down.origin[2] = spawn.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+        down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) spawn.y = hit.point[1];
+    }
+
+    // Lazily build a rig for the boss's model (first model = leader look),
+    // mirroring the SpawnNpcs lazy-rig path.
+    const size_t modelIdx = 0;
+    NpcModel& model = m_npcModels[modelIdx];
+    uint32_t rigIndex = model.rigIndex;
+    if (rigIndex == 0xFFFFFFFF && !m_sharedClips.empty() &&
+        !model.sourcePath.empty()) {
+        const NifLoadResult nif = LoadNifFile(model.sourcePath);
+        if (nif.ok) rigIndex = CreateRig(nif);
+        model.rigIndex = rigIndex;
+    }
+    if (rigIndex != 0xFFFFFFFF) rigIndex = CloneRig(rigIndex);
+
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = spawn;
+    t.scale = glm::vec3(model.bodyScale * 1.08f); // leaders stand a bit taller
+    m_entities.AddTransform(e, t);
+
+    MeshComponent mc;
+    mc.isBox = false;
+    mc.isNpc = true;
+    mc.npcModelIndex = uint32_t(modelIdx);
+    m_entities.AddMesh(e, mc);
+
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+    cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+    cc.layerMask = 2u;
+    m_entities.AddCollision(e, cc);
+
+    PhysicsComponent pc;
+    pc.gravity = -9.8f;
+    m_entities.AddPhysics(e, pc);
+
+    AIComponent ai;
+    ai.homePos = spawn;
+    ai.facingYaw = 0.0f;
+    ai.lastPos = spawn;
+    ai.state = AIState::Idle;
+    ai.health.current = def.maxHealth;
+    ai.health.max     = def.maxHealth;
+    ai.moveSpeed      = def.walkSpeed;
+    ai.sightRadius    = 16.0f;   // bosses engage from further out
+    ai.attackRange    = 2.0f;
+    ai.attackCooldown = def.attackCooldown;
+    ai.fleeHealthFrac = -1.0f;   // never flees (UpdateNpcs gate < fraction)
+    ai.role           = AIRole::Prefect; // authorities chase the player
+    m_entities.AddAI(e, ai);
+
+    m_entities.AddMeleeCombat(e);
+    if (rigIndex != 0xFFFFFFFF) {
+        AnimationComponent ac;
+        ac.rigIndex = rigIndex;
+        ac.playing = true;
+        ac.wasMoving = false;
+        m_entities.AddAnimation(e, ac);
+        AnimRig& rig = m_animRigs[rigIndex];
+        if (rig.idleClip >= 0) rig.controller.Play(rig.idleClip, true, 0.0f);
+    }
+
+    BossComponent bc;
+    bc.type = type;
+    bc.phase = BossPhase::One;
+    bc.maxHealth = def.maxHealth;
+    bc.specialTimer = def.specialCooldown; // first special after the opener
+    bc.specialCd = def.specialCooldown;
+    m_entities.AddBoss(e, bc);
+
+    m_boss.entity = e;
+    m_boss.type = type;
+    m_boss.spawnPos = spawn;
+    m_boss.victory = false;
+    m_boss.retryCount = 0;
+    m_bossCronies.clear();
+    Logger::Info("BOSS spawned: %s (%s) HP %d at (%.1f, %.1f, %.1f) entity %u",
+                 def.name, def.title, def.maxHealth, spawn.x, spawn.y,
+                 spawn.z, e.index);
+    return true;
+}
+
+// Ground-constrained move step shared by the boss FSM (same ground snap +
+// wall sphere as the Track 27 wander walk). Always writes outPos; callers
+// compare against pos to detect a blocked step.
+void Engine::StepMoveGround(const glm::vec3& pos, const glm::vec3& dir,
+                            float speed, float dt, glm::vec3& outPos) {
+    outPos = pos;
+    glm::vec3 newPos = pos + dir * (speed * dt);
+    float groundY = pos.y;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = newPos.x; down.origin[1] = newPos.y + 4.0f;
+        down.origin[2] = newPos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+        down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) {
+            if (std::fabs(hit.point[1] - pos.y) < 3.0f)
+                groundY = hit.point[1]; // same-plane guard
+        }
+        const float in[3] = { newPos.x, newPos.y + 0.5f, newPos.z };
+        float out[3];
+        if (m_collisionWorld->ResolveSphere(in, 0.5f, out))
+            newPos = glm::vec3(out[0], newPos.y, out[2]);
+    }
+    outPos = glm::vec3(newPos.x, groundY, newPos.z);
+}
+
+// --- QTE -----------------------------------------------------------------
+
+// Opens one QTE prompt (never stacks; unless `force`, honors the cooldown).
+void Engine::StartBossQTE(BossComponent& bc, float window, bool force) {
+    if (bc.qteState == QteState::Waiting) return;
+    if (!force && bc.qteCooldown > 0.0f) return;
+    const int n = int(sizeof(kQteKeys) / sizeof(kQteKeys[0]));
+    bc.qteKey    = kQteKeys[int(nextRandom01() * float(n)) % n];
+    bc.qteWindow = window;
+    bc.qteTimer  = window;
+    bc.qteState  = QteState::Waiting;
+    ++bc.qteCount;
+    Logger::Info("QTE: PRESS %c within %.2fs (prompt #%d)",
+                 BossQteKeyChar(bc.qteKey), window, bc.qteCount);
+}
+
+// Per-frame prompt: raw-key edges resolve the press; expiry fails it.
+void Engine::UpdateBossQTE(EntityID id, BossComponent& bc, float dt) {
+    if (bc.qteCooldown > 0.0f) bc.qteCooldown -= dt;
+    if (bc.resultTimer > 0.0f) bc.resultTimer -= dt;
+    if (bc.qteState != QteState::Waiting) return;
+
+    bc.qteTimer -= dt;
+    if (m_input.WasKeyPressed(SDL_Scancode(bc.qteKey))) {
+        ResolveBossQTE(id, bc, true, "pressed in time");
+        return;
+    }
+    if (bc.qteTimer <= 0.0f)
+        ResolveBossQTE(id, bc, false, "window expired");
+}
+
+// Applies the QTE outcome: success damages the boss, failure hurts Jimmy.
+void Engine::ResolveBossQTE(EntityID id, BossComponent& bc, bool success,
+                            const char* cause) {
+    bc.qteState    = success ? QteState::Success : QteState::Failed;
+    bc.resultTimer = kQteResultFlash;
+    bc.qteCooldown = kQteCooldown;
+    if (success) {
+        ++bc.qteWins;
+        const Transform* bt = m_entities.GetTransform(id);
+        Logger::Info("QTE: SUCCESS (%s) - boss takes %d", cause, kQteDamageToBoss);
+        if (bt) DamageNpc(id, m_jimmyId, kQteDamageToBoss, bt->position, 0.35f);
+    } else {
+        Logger::Info("QTE: FAILED (%s) - player takes %d", cause,
+                     kQteDamageToPlayer);
+        DamagePlayer(kQteDamageToPlayer, "QTE fail");
+    }
+}
+
+// --- specials -------------------------------------------------------------
+
+// Kicks off a special: locks the boss into the windup stage and telegraphs.
+void Engine::StartBossSpecial(EntityID id, BossComponent& bc,
+                              BossSpecial kind) {
+    if (bc.special.kind != BossSpecial::None) return;
+    bc.special.kind  = kind;
+    bc.special.stage = 1;
+    bc.special.timer = 0.55f;   // windup telegraph (s)
+    bc.special.fired = false;
+    bc.special.flurryLeft = (kind == BossSpecial::Flurry) ? 3 : 0;
+    Logger::Info("BOSS %s: %s WINDUP", BossTypeName(bc.type),
+                 BossSpecialName(kind));
+    (void)id;
+}
+
+// Advances the active special's windup -> active -> recover machine and
+// applies its payload (dash contact, lobbed zone, crony spawn, spray...).
+void Engine::UpdateBossSpecial(EntityID id, BossComponent& bc, AIComponent& ai,
+                               Transform& t, const glm::vec3& playerPos,
+                               bool havePlayer, float dt) {
+    const BossDefinition& def = GetBossDefinition(bc.type);
+    BossSpecialRun& sp = bc.special;
+    const glm::vec3 pos = t.position;
+    const float dist = havePlayer
+        ? glm::length(glm::vec2(playerPos.x - pos.x, playerPos.z - pos.z))
+        : 1e9f;
+
+    // Face the player through every stage (attacks come from the facing).
+    if (havePlayer && dist > 0.01f) {
+        const float want = std::atan2(playerPos.x - pos.x, playerPos.z - pos.z);
+        float d = want - ai.facingYaw;
+        while (d >  3.14159265f) d -= 6.28318531f;
+        while (d < -3.14159265f) d += 6.28318531f;
+        ai.facingYaw += d * std::min(1.0f, ai.turnSpeed * 1.5f * dt);
+        t.rotation.y = ai.facingYaw;
+    }
+
+    sp.timer -= dt;
+    switch (sp.stage) {
+    case 1: // windup: lean back (the flinch lean shares rotation.x - fine)
+        t.rotation.x = -0.18f;
+        if (sp.timer <= 0.0f) {
+            t.rotation.x = 0.0f;
+            sp.stage = 2;
+            switch (sp.kind) {
+            case BossSpecial::Charge:     sp.timer = 0.85f; break;
+            case BossSpecial::GroundSlam: sp.timer = 0.45f; break;
+            case BossSpecial::Flurry:     sp.timer = 3.2f;  break;
+            case BossSpecial::StinkBomb: {
+                // Lob at the player's feet: lingering ticking zone.
+                const glm::vec3 tgt = havePlayer
+                    ? playerPos : pos + glm::vec3(4.0f, 0.0f, 0.0f);
+                SpawnBossZone(tgt, 6.0f, 2.4f, 3);
+                sp.fired = true;
+                sp.timer = 0.35f;
+                break; }
+            case BossSpecial::SandThrow: {
+                if (havePlayer) {
+                    const glm::vec3 from = pos + glm::vec3(0.0f, 1.1f, 0.0f);
+                    glm::vec3 dir = playerPos - from;
+                    dir.y = 0.0f;
+                    const float len = glm::length(dir);
+                    if (len > 1e-3f) {
+                        dir = (dir / len) * 11.0f + glm::vec3(0.0f, 1.6f, 0.0f);
+                        SpawnProjectile(from + dir * 0.05f, dir, 6, id, 2.0f);
+                    }
+                    sp.fired = true;
+                }
+                sp.timer = 0.4f;
+                break; }
+            case BossSpecial::Reinforce: {
+                // Top the crew back up to 2. DEFERRED: entity creation inside
+                // the AI loop would reallocate the component arrays (see the
+                // SpawnBossZone note); FlushBossSpawns runs after UpdateNpcs.
+                int toSpawn = 2 - int(m_bossCronies.size());
+                for (int i = 0; i < toSpawn; ++i) {
+                    const float a = float(i) * 1.5708f + 0.8f;
+                    m_pendingCronies.push_back(
+                        { pos + glm::vec3(std::cos(a) * 2.0f, 0.0f,
+                                          std::sin(a) * 2.0f) });
+                }
+                if (toSpawn > 0)
+                    Logger::Info("BOSS %s: called %d reinforcement(s)",
+                                 BossTypeName(bc.type), toSpawn);
+                sp.fired = true;
+                sp.timer = 0.4f;
+                break; }
+            case BossSpecial::Grab: {
+                // Close-range grab -> break-free QTE (dodge by spacing).
+                if (dist <= 2.3f) {
+                    StartBossQTE(bc, 1.7f, /*force=*/true);
+                    sp.fired = true;
+                    Logger::Info("BOSS %s: GRAB attempt (break free!)",
+                                 BossTypeName(bc.type));
+                }
+                sp.timer = 0.35f;
+                break; }
+            default:
+                sp.stage = 3; sp.timer = 0.3f; break;
+            }
+            Logger::Info("BOSS %s: %s ACTIVE", BossTypeName(bc.type),
+                         BossSpecialName(sp.kind));
+        }
+        break;
+
+    case 2: // active payload
+        switch (sp.kind) {
+        case BossSpecial::Charge: {
+            if (havePlayer) {
+                glm::vec3 dir = playerPos - pos;
+                dir.y = 0.0f;
+                const float len = glm::length(dir);
+                if (len > 1e-3f) {
+                    glm::vec3 np;
+                    StepMoveGround(pos, dir / len, def.chargeSpeed, dt, np);
+                    if (glm::distance(np, pos) > 1e-4f) t.position = np;
+                }
+                if (!sp.fired && dist < 1.7f) {
+                    sp.fired = true;
+                    const int dmg = int(def.chargeDamage + 0.5f);
+                    DamagePlayer(dmg, "boss charge");
+                    Logger::Info("BOSS %s: charge HIT for %d",
+                                 BossTypeName(bc.type), dmg);
+                }
+            }
+            break; }
+        case BossSpecial::GroundSlam: {
+            // AoE once at the moment of impact; a short shockwave zone lingers.
+            if (havePlayer && !sp.fired && dist <= 2.6f) {
+                sp.fired = true;
+                const int dmg = int(def.chargeDamage * 0.9f + 0.5f);
+                DamagePlayer(dmg, "ground slam");
+                SpawnBossZone(pos, 2.0f, 2.6f, 2);
+                Logger::Info("BOSS %s: slam HIT for %d",
+                             BossTypeName(bc.type), dmg);
+            }
+            break; }
+        case BossSpecial::Flurry: {
+            // Feed swings through the regular NPC attack path (progressed in
+            // UpdateBossEntity) until the window closes.
+            if (sp.flurryLeft > 0 && havePlayer && dist <= 2.4f) {
+                Melee::CombatComponent* mc = m_entities.GetMeleeCombat(id);
+                if (mc && mc->state == Melee::CombatState::Idle) {
+                    const float yaw = std::atan2(playerPos.x - pos.x,
+                                                 playerPos.z - pos.z);
+                    StartNpcAttack(id, Melee::AttackType::HeavyPunch, yaw);
+                    --sp.flurryLeft;
+                }
+            }
+            break; }
+        default: break;
+        }
+        if (sp.timer <= 0.0f) { sp.stage = 3; sp.timer = 0.7f; }
+        break;
+
+    case 3: // recover
+    default:
+        if (sp.timer <= 0.0f) {
+            sp.kind = BossSpecial::None;
+            sp.stage = 0;
+            bc.specialTimer = bc.specialCd; // phase-scaled by the phase check
+            ai.attackCdTimer = std::min(ai.attackCdTimer,
+                                        def.attackCooldown * bc.enrageMult);
+        }
+        break;
+    }
+}
+
+// Johnny-style crony: a plain hostile NPC beside the boss.
+EntityID Engine::SpawnBossReinforcement(const glm::vec3& pos) {
+    if (m_npcModels.empty()) return EntityID{};
+    glm::vec3 spawn = pos;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = spawn.x; down.origin[1] = spawn.y + 10.0f;
+        down.origin[2] = spawn.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+        down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) spawn.y = hit.point[1];
+    }
+    const size_t modelIdx = 1 % m_npcModels.size();
+    NpcModel& model = m_npcModels[modelIdx];
+    uint32_t rigIndex = model.rigIndex;
+    if (rigIndex == 0xFFFFFFFF && !m_sharedClips.empty() &&
+        !model.sourcePath.empty()) {
+        const NifLoadResult nif = LoadNifFile(model.sourcePath);
+        if (nif.ok) rigIndex = CreateRig(nif);
+        model.rigIndex = rigIndex;
+    }
+    if (rigIndex != 0xFFFFFFFF) rigIndex = CloneRig(rigIndex);
+
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = spawn;
+    t.scale = glm::vec3(model.bodyScale);
+    m_entities.AddTransform(e, t);
+    MeshComponent mc;
+    mc.isBox = false;
+    mc.isNpc = true;
+    mc.npcModelIndex = uint32_t(modelIdx);
+    m_entities.AddMesh(e, mc);
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+    cc.boundsMax = glm::vec3( 0.5f, 1.8f,  0.5f);
+    cc.layerMask = 2u;
+    m_entities.AddCollision(e, cc);
+    PhysicsComponent pc;
+    pc.gravity = -9.8f;
+    m_entities.AddPhysics(e, pc);
+    AIComponent ai;
+    ai.homePos = spawn;
+    ai.lastPos = spawn;
+    ai.state = AIState::Chase;
+    ai.targetEntity = m_jimmyId;
+    ai.health.current = 60;
+    ai.health.max = 60;
+    ai.moveSpeed = 2.0f;
+    ai.sightRadius = 20.0f;
+    ai.attackCooldown = 1.6f;
+    ai.role = AIRole::Civilian;
+    m_entities.AddAI(e, ai);
+    m_entities.AddMeleeCombat(e);
+    if (rigIndex != 0xFFFFFFFF) {
+        AnimationComponent ac;
+        ac.rigIndex = rigIndex;
+        ac.playing = true;
+        m_entities.AddAnimation(e, ac);
+        AnimRig& rig = m_animRigs[rigIndex];
+        if (rig.idleClip >= 0) rig.controller.Play(rig.idleClip, true, 0.0f);
+    }
+    Logger::Info("BOSS reinforcement spawned (entity %u)", e.index);
+    return e;
+}
+
+// --- zones (stink bombs / slam shockwaves) ---------------------------------
+
+// Flat test-box pad marking an AoE; ticks damage to the player inside.
+// Track 49: DEFERRED - called from UpdateBossSpecial (inside UpdateNpcs'
+// ForEachAI, where entity creation would realloc the dense arrays and dangle
+// the loop's references); the actual spawn happens in FlushBossSpawns.
+void Engine::SpawnBossZone(const glm::vec3& pos, float life, float radius,
+                           int damage) {
+    m_pendingZones.push_back({ pos, life, radius, damage });
+    Logger::Info("BOSS zone queued: r=%.1f dmg=%d life=%.1fs at (%.1f, %.1f)",
+                 radius, damage, life, pos.x, pos.z);
+}
+
+// Creates the entities queued by the boss FSM. Runs OUTSIDE the AI loop
+// (UpdateBosses, after UpdateNpcs) so component-array reallocation can
+// never invalidate the iteration.
+void Engine::FlushBossSpawns() {
+    for (const PendingZone& pz : m_pendingZones)
+        SpawnBossZoneNow(pz.pos, pz.life, pz.radius, pz.damage);
+    m_pendingZones.clear();
+    for (const PendingCrony& pc : m_pendingCronies) {
+        EntityID c = SpawnBossReinforcement(pc.pos);
+        if (c.IsValid()) m_bossCronies.push_back(c);
+    }
+    if (!m_pendingCronies.empty())
+        Logger::Info("BOSS: %zu reinforcement(s) spawned", m_pendingCronies.size());
+    m_pendingCronies.clear();
+}
+
+// The real zone spawn (flush context only).
+void Engine::SpawnBossZoneNow(const glm::vec3& pos, float life, float radius,
+                              int damage) {
+    if (!m_testBoxValid) return;
+    glm::vec3 spawn = pos;
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = spawn.x; down.origin[1] = spawn.y + 6.0f;
+        down.origin[2] = spawn.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f;
+        down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) spawn.y = hit.point[1];
+    }
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = spawn + glm::vec3(0.0f, 0.06f, 0.0f);
+    t.scale = glm::vec3(radius * 1.6f, 0.12f, radius * 1.6f);
+    m_entities.AddTransform(e, t);
+    MeshComponent mc;
+    mc.isBox = true;
+    m_entities.AddMesh(e, mc);
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+    cc.layerMask = 4u;
+    m_entities.AddCollision(e, cc);
+
+    BossZone z;
+    z.id = e;
+    z.pos = spawn;
+    z.life = life;
+    z.radius = radius;
+    z.damage = damage;
+    z.tick = 0.0f; // first tick on entry
+    m_bossZones.push_back(z);
+    Logger::Info("BOSS zone: r=%.1f dmg=%d life=%.1fs at (%.1f, %.1f)",
+                 radius, damage, life, spawn.x, spawn.z);
+}
+
+void Engine::UpdateBossZones(float dt) {
+    if (m_bossZones.empty()) return;
+    const Transform* jt = (m_jimmyActive && m_jimmyId.IsValid())
+        ? m_entities.GetTransform(m_jimmyId) : nullptr;
+    for (size_t i = 0; i < m_bossZones.size();) {
+        BossZone& z = m_bossZones[i];
+        z.life -= dt;
+        if (z.life <= 0.0f || !m_entities.IsAlive(z.id)) {
+            if (z.id.IsValid() && m_entities.IsAlive(z.id))
+                m_entities.Destroy(z.id);
+            m_bossZones.erase(m_bossZones.begin() + long(i));
+            continue;
+        }
+        z.tick -= dt;
+        if (jt && z.tick <= 0.0f) {
+            const glm::vec3 d = jt->position - z.pos;
+            if (glm::length(glm::vec2(d.x, d.z)) <= z.radius) {
+                z.tick = 0.8f;
+                DamagePlayer(z.damage, "boss zone");
+            }
+        }
+        ++i;
+    }
+}
+
+// --- boss FSM ---------------------------------------------------------------
+
+// Per-frame boss brain: QTEs and phase bookkeeping first, then specials, then
+// the melee-locked wait, then the chase/attack pattern. Replaces the regular
+// Track 27 states for this entity (routed from UpdateNpcs).
+void Engine::UpdateBossEntity(EntityID id, Transform& t, AIComponent& ai,
+                              float dt) {
+    BossComponent* bc = m_entities.GetBoss(id);
+    if (!bc) return; // not a boss: regular AI handles it
+    const BossDefinition& def = GetBossDefinition(bc->type);
+
+    auto faceYaw = [&](float want) {
+        float d = want - ai.facingYaw;
+        while (d >  3.14159265f) d -= 6.28318531f;
+        while (d < -3.14159265f) d += 6.28318531f;
+        ai.facingYaw += d * std::min(1.0f, ai.turnSpeed * dt);
+        t.rotation.y = ai.facingYaw;
+    };
+
+    // --- QTE + cooldowns (run even while rooted) ---------------------------
+    UpdateBossQTE(id, *bc, dt);
+    if (bc->specialTimer > 0.0f) bc->specialTimer -= dt;
+    if (bc->phaseFlash > 0.0f)   bc->phaseFlash -= dt;
+
+    // --- player reference ---------------------------------------------------
+    glm::vec3 playerPos(0.0f);
+    bool havePlayer = false;
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+            playerPos = jt->position;
+            havePlayer = true;
+        }
+    }
+    const glm::vec3 pos = t.position;
+    const float dist = havePlayer
+        ? glm::length(glm::vec2(playerPos.x - pos.x, playerPos.z - pos.z))
+        : 1e9f;
+
+    // --- engagement ----------------------------------------------------------
+    if (!bc->engaged) {
+        // Sighted from 16u (or once damaged): face + banner, then hunt.
+        const bool seen = havePlayer && dist <= ai.sightRadius;
+        if (seen || ai.health.current < ai.health.max) {
+            bc->engaged = true;
+            ai.targetEntity = m_jimmyId;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%s - FIGHT!",
+                          GetBossDefinition(bc->type).name);
+            BossBanner(buf, 1, 2.2f);
+            Logger::Info("BOSS %s ENGAGED (dist %.1f)",
+                         GetBossDefinition(bc->type).name, dist);
+        } else {
+            UpdateEntityAnimation(id, false, dt); // idle until sighted
+            return;
+        }
+    }
+
+    // --- phases ---------------------------------------------------------------
+    const float frac = def.maxHealth > 0
+        ? float(ai.health.current) / float(def.maxHealth) : 0.0f;
+    const BossPhase want = frac > 0.66f ? BossPhase::One
+                         : frac > 0.33f ? BossPhase::Two
+                         : BossPhase::Three;
+    if (want != bc->phase) {
+        bc->phase = want;
+        bc->phaseFlash = 2.0f;
+        bc->enrageMult = want == BossPhase::Two ? kBossPhase2Mult
+                       : want == BossPhase::Three ? kBossPhase3Mult : 1.0f;
+        bc->specialCd = def.specialCooldown *
+            (want == BossPhase::Two ? kBossPhase2Cd
+             : want == BossPhase::Three ? kBossPhase3Cd : 1.0f);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s - PHASE %s!",
+                      GetBossDefinition(bc->type).name,
+                      want == BossPhase::Two ? "II" : "III");
+        BossBanner(buf, 2, 2.0f);
+        Logger::Info("BOSS %s -> PHASE %s (HP %.0f%%)",
+                     GetBossDefinition(bc->type).name,
+                     want == BossPhase::Two ? "II" : "III", frac * 100.0f);
+        // Phase-shock QTE: dodge the transition burst (success = no damage).
+        if (havePlayer && dist <= 6.0f)
+            StartBossQTE(*bc, bc->phase == BossPhase::Three
+                              ? kQteWindowPhase3 : kQteWindowBase,
+                         /*force=*/true);
+        else if (havePlayer)
+            DamagePlayer(8, "phase shockwave"); // out of position: eat it
+    }
+
+    // --- melee progress (stun/attack ticks run under everything) ------------
+    if (Melee::CombatComponent* mc = m_entities.GetMeleeCombat(id)) {
+        if (mc->state == Melee::CombatState::Attacking)
+            ProgressNpcAttack(id, mc, dt);
+    }
+
+    // --- active special owns the body ----------------------------------------
+    if (bc->special.kind != BossSpecial::None) {
+        UpdateBossSpecial(id, *bc, ai, t, playerPos, havePlayer, dt);
+        UpdateEntityAnimation(id, bc->special.kind == BossSpecial::Charge &&
+                                 bc->special.stage == 2, dt);
+        return;
+    }
+    // Stunned/knocked down: rooted until the melee tick restores Idle.
+    if (Melee::CombatComponent* mc = m_entities.GetMeleeCombat(id)) {
+        if (mc->state != Melee::CombatState::Idle) {
+            UpdateEntityAnimation(id, false, dt);
+            return;
+        }
+    }
+
+    // --- pursuit + basic pattern --------------------------------------------
+    ai.loseTimer = 0.0f; // bosses never give up
+    if (ai.attackCdTimer > 0.0f) ai.attackCdTimer -= dt;
+
+    // One-shot transition into CHASE (from any dormant state).
+    if (ai.state != AIState::Chase && ai.state != AIState::Attack) {
+        ai.state = AIState::Chase;
+        ai.targetEntity = m_jimmyId;
+        ai.stuckTimer = 0.0f; ai.sidestepTimer = 0.0f; ai.lastPos = pos;
+        Logger::Info("BOSS AI: entity %u -> CHASE (dist %.1f)", id.index, dist);
+    }
+
+    // Special trigger: cadence + range + not mid-swing.
+    if (havePlayer && bc->specialTimer <= 0.0f && dist <= def.specialRange &&
+        dist > 1.2f && ai.attackCdTimer <= 0.0f && bc->qteState != QteState::Waiting) {
+        const BossSpecial pick = PickBossSpecial(*bc, def, dist);
+        if (pick != BossSpecial::None) {
+            StartBossSpecial(id, *bc, pick);
+            UpdateEntityAnimation(id, false, dt);
+            return;
+        }
+    }
+
+    if (dist <= ai.attackRange) {
+        ai.state = AIState::Attack;
+        if (havePlayer) {
+            faceYaw(std::atan2(playerPos.x - pos.x, playerPos.z - pos.z));
+            if (ai.attackCdTimer <= 0.0f) {
+                // Phase-scaled move mix: P1 jabs, P2 heavies, P3 everything.
+                Melee::AttackType atk = Melee::AttackType::LightPunch;
+                const float r = nextRandom01();
+                if (bc->phase == BossPhase::Three)
+                    atk = r < 0.45f ? Melee::AttackType::HeavyPunch
+                        : r < 0.75f ? Melee::AttackType::HeavyKick
+                        : Melee::AttackType::LightPunch;
+                else if (bc->phase == BossPhase::Two)
+                    atk = r < 0.5f ? Melee::AttackType::HeavyPunch
+                        : Melee::AttackType::LightPunch;
+                StartNpcAttack(id, atk, ai.facingYaw);
+                ai.attackCdTimer = def.attackCooldown * bc->enrageMult;
+                Logger::Info("BOSS %s: %s swing (cd %.2fs)",
+                             GetBossDefinition(bc->type).name,
+                             Melee::GetAttackData(atk).clipName,
+                             ai.attackCdTimer);
+            }
+        }
+        UpdateEntityAnimation(id, false, dt);
+        return;
+    }
+
+    // CHASE: direct steer with the shared stuck/sidestep heuristic.
+    ai.state = AIState::Chase;
+    const float chaseSpeed = def.walkSpeed * 1.7f;
+    if (havePlayer) {
+        glm::vec3 dir = playerPos - pos;
+        dir.y = 0.0f;
+        const float len = glm::length(dir);
+        if (len > 1e-4f) {
+            dir /= len;
+            if (ai.sidestepTimer > 0.0f) {
+                ai.sidestepTimer -= dt;
+                dir = ai.sidestepDir;
+            } else {
+                const float expected = chaseSpeed * dt + 1e-5f;
+                const float moved = glm::length(pos - ai.lastPos);
+                ai.lastPos = pos;
+                if (moved < expected * 0.4f) ai.stuckTimer += dt;
+                else ai.stuckTimer = std::max(0.0f, ai.stuckTimer - dt * 2.0f);
+                if (ai.stuckTimer >= ai.stuckTime) {
+                    const float side = nextRandom01() < 0.5f ? -1.0f : 1.0f;
+                    ai.sidestepDir = glm::vec3(-dir.z, 0.0f, dir.x) * side;
+                    ai.sidestepTimer = 0.7f;
+                    ai.stuckTimer = 0.0f;
+                }
+            }
+            glm::vec3 np;
+            StepMoveGround(pos, dir, chaseSpeed, dt, np);
+            if (glm::distance(np, pos) > 1e-4f) t.position = np;
+            faceYaw(std::atan2(dir.x, dir.z));
+        }
+    }
+    UpdateEntityAnimation(id, true, dt);
+}
+
+// --- victory / defeat -------------------------------------------------------
+
+void Engine::BossBanner(const char* text, int kind, float dur) {
+    std::snprintf(m_bossBanner, sizeof(m_bossBanner), "%s", text ? text : "");
+    m_bossBannerKind = kind;
+    m_bossBannerTimer = dur;
+    m_bossBannerDur = dur;
+}
+
+// Boss at 0 HP: victory banner + cutscene + boss_duel mission completion.
+// Cronies scatter (they lost their leader).
+void Engine::OnBossDefeated(EntityID npc) {
+    if (m_boss.victory) return;
+    m_boss.victory = true;
+    m_boss.victoryAt = m_time;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s DEFEATED!",
+                  GetBossDefinition(m_boss.type).name);
+    BossBanner(buf, 3, 4.0f);
+    Logger::Info("BOSS VICTORY: %s down after %d retries, %d/%d QTEs won",
+                 GetBossDefinition(m_boss.type).name, m_boss.retryCount,
+                 m_entities.GetBoss(npc) ? m_entities.GetBoss(npc)->qteWins : 0,
+                 m_entities.GetBoss(npc) ? m_entities.GetBoss(npc)->qteCount : 0);
+
+    // Cronies: flee the scene.
+    const Transform* bt = m_entities.GetTransform(npc);
+    for (EntityID c : m_bossCronies) {
+        AIComponent* ai = m_entities.GetAI(c);
+        if (!ai || !bt) continue;
+        ai->state = AIState::Flee;
+        ai->threatPos = bt->position;
+        ai->targetEntity = EntityID{};
+    }
+    m_bossCronies.clear();
+
+    // Track 48 integration: play the authored victory scene (camera keys +
+    // subtitles). Missing data is non-fatal — the fallback orbit in
+    // UpdateBossCutsceneCamera covers the no-JSON case.
+    if (const Cutscene* cs = m_cutscenes.Find("boss_victory"))
+        StartCutscene(*cs);
+
+    // Mission hook: complete the boss_duel objectives (defeat + report).
+    for (uint32_t mi = 0; mi < m_missions.MissionCount(); ++mi) {
+        const Mission* mm = m_missions.GetMission(mi);
+        if (!mm || mm->id != "boss_duel") continue;
+        if (mm->state == MissionState::Inactive) m_missions.ActivateMission(mi);
+        for (size_t oi = mm->currentObjective;
+             oi < mm->objectives.size(); ++oi) {
+            if (mm->objectives[oi].complete) continue;
+            m_missions.CompleteObjective(mi, oi);
+        }
+        Logger::Info("BOSS VICTORY: mission 'boss_duel' completed");
+        break;
+    }
+}
+
+// Player down during the fight: respawn at the checkpoint with full health,
+// reset the boss to full HP at its spawn point, clear zones + QTE state.
+void Engine::OnPlayerDefeatedByBoss() {
+    m_boss.retryCount++;
+    BossBanner("DEFEATED - RETRYING", 4, 2.5f);
+    Logger::Info("BOSS DEFEAT: player down (retry #%d) - respawn at checkpoint",
+                 m_boss.retryCount);
+
+    // Player: checkpoint + full health + brief spawn protection.
+    if (m_jimmyId.IsValid()) {
+        if (PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+            pc->health.current = pc->health.max;
+            pc->state = DefenseState::Normal;
+            pc->invincibleTimer = 1.5f;
+        }
+        if (Transform* jt = m_entities.GetTransform(m_jimmyId))
+            jt->position = m_jimmySpawn + glm::vec3(0.0f, 2.0f, 0.0f);
+        if (Melee::CombatComponent* mc = m_entities.GetMeleeCombat(m_jimmyId)) {
+            mc->state = Melee::CombatState::Idle;
+            mc->stunTimer = 0.0f;
+            mc->ResetCombo();
+        }
+    }
+
+    // Zones + QTE reset.
+    for (const BossZone& z : m_bossZones)
+        if (z.id.IsValid() && m_entities.IsAlive(z.id)) m_entities.Destroy(z.id);
+    m_bossZones.clear();
+
+    // Boss: full reset (retry loop must be beatable from scratch).
+    if (m_boss.entity.IsValid() && m_entities.IsAlive(m_boss.entity)) {
+        if (AIComponent* ai = m_entities.GetAI(m_boss.entity)) {
+            const BossDefinition& def = GetBossDefinition(m_boss.type);
+            ai->health.current = def.maxHealth;
+            ai->state = AIState::Idle;
+            ai->targetEntity = EntityID{};
+            ai->stuckTimer = 0.0f; ai->sidestepTimer = 0.0f;
+            if (Transform* t = m_entities.GetTransform(m_boss.entity)) {
+                t->position = m_boss.spawnPos;
+                t->rotation.x = 0.0f;
+            }
+        }
+        if (Melee::CombatComponent* mc =
+                m_entities.GetMeleeCombat(m_boss.entity)) {
+            mc->state = Melee::CombatState::Idle;
+            mc->stunTimer = 0.0f;
+            mc->downTimer = 0.0f;
+        }
+        if (BossComponent* bc = m_entities.GetBoss(m_boss.entity)) {
+            bc->phase = BossPhase::One;
+            bc->enrageMult = 1.0f;
+            bc->special = BossSpecialRun{};
+            bc->specialTimer = GetBossDefinition(bc->type).specialCooldown;
+            bc->qteState = QteState::None;
+            bc->qteTimer = 0.0f;
+            bc->resultTimer = 0.0f;
+            bc->engaged = false;
+        }
+    }
+}
+
+// Victory cutscene camera: 3.5s slow orbit around the fallen boss.
+bool Engine::UpdateBossCutsceneCamera(float dt) {
+    if (!m_boss.victory || m_time - m_boss.victoryAt > 3.5) return false;
+    const Transform* bt = m_boss.entity.IsValid()
+        ? m_entities.GetTransform(m_boss.entity) : nullptr;
+    if (!bt) return false;
+    const double k = (m_time - m_boss.victoryAt) / 3.5;
+    const float ang = float(k) * 2.4f + 0.6f; // ~140 deg sweep
+    const float r = 4.5f - float(k) * 1.2f;   // slow push-in
+    const glm::vec3 center = bt->position + glm::vec3(0.0f, 1.2f, 0.0f);
+    const glm::vec3 eye = center + glm::vec3(std::sin(ang) * r, 1.6f,
+                                             std::cos(ang) * r);
+    m_camera.SetLookAt(glm::normalize(center - eye));
+    m_camera.SetPosition(eye);
+    return true;
+}
+
+// Per-frame bookkeeping that runs outside the boss entity's own AI: zone
+// ticks, banner expiry, stale-handle cleanup and the player-death retry.
+void Engine::UpdateBosses(float dt) {
+    // Deferred boss spawns (zones / cronies): entity creation happens here,
+    // safely outside UpdateNpcs' ForEachAI iteration.
+    FlushBossSpawns();
+    UpdateBossZones(dt);
+    if (m_bossBannerTimer > 0.0f) m_bossBannerTimer -= dt;
+
+    if (m_boss.entity.IsValid() && !m_entities.IsAlive(m_boss.entity))
+        m_boss.entity = EntityID{}; // destroyed elsewhere: drop the HUD ref
+
+    if (!m_boss.entity.IsValid() || m_boss.victory || !m_jimmyActive ||
+        !m_jimmyId.IsValid())
+        return;
+    BossComponent* bc = m_entities.GetBoss(m_boss.entity);
+    PlayerController* pc = m_entities.GetPlayer(m_jimmyId);
+    const Transform* bt = m_entities.GetTransform(m_boss.entity);
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!bc || !pc || !bt || !jt) return;
+    const float dist = glm::length(glm::vec2(bt->position.x - jt->position.x,
+                                             bt->position.z - jt->position.z));
+    if (bc->engaged && pc->health.current <= 0 && dist < 30.0f)
+        OnPlayerDefeatedByBoss();
+}
+
+// OPENBULLY_BOSS_DEMO=1: scripted headless verification of the whole fight
+// loop (no OS input needed). The demo clock pauses while a cutscene owns the
+// input, so the intro scene does not eat the schedule:
+//   t 0-6    walk (sprint) to the boss -> engagement banner must fire.
+//   t 6-14   hold block + swing on a 0.6s cadence; scripted -70 shocks at
+//            t=8 and t=11 force the phase II/III transitions (and their
+//            shockwave QTEs). Specials fire on their own cadence.
+//   t 14-16  scripted player death -> checkpoint respawn + boss reset.
+//   t 16+    chip 40 HP every 0.8s until the boss drops -> victory banner
+//            + cutscene + mission complete.
+// QTE answering: the first two prompts are pressed ~0.3s in (success path),
+// later ones are deliberately ignored (failure path + player damage).
+void Engine::DriveBossDemo(float dt) {
+    if (!m_jimmyActive || !m_boss.entity.IsValid() ||
+        !m_entities.IsAlive(m_boss.entity)) return;
+    const EntityID boss = m_boss.entity;
+    const Transform* bt = m_entities.GetTransform(boss);
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!bt || !jt) return;
+
+    // Demo clock: paused while a cutscene owns the input (the intro cutscene
+    // auto-plays on the spawn trigger and freezes the player for 13 s -
+    // burning the phase gates against m_time would skip the whole fight).
+    static double s_t = 0.0;
+    if (!m_cutscenePlaying) s_t += dt;
+    const double t = s_t;
+
+    // Clear scripted buttons unless a phase below claims them.
+    m_input.SetButton(Button::Forward, false);
+    m_input.SetButton(Button::Sprint, false);
+    m_input.SetButton(Button::Attack, false);
+    m_input.SetButton(Button::Block, false);
+
+    static bool s_died = false;
+    static bool s_answerArmed = false;
+    static double s_answerAt = -1e9;
+    static int s_promptSeen = 0;
+    static double s_lastSwing = -1e9;
+    static double s_shock2 = -1.0, s_shock3 = -1.0;
+    static double s_lastDmg = -1e9;
+
+    if (t < 6.0) {
+        // Walk to the boss: aim the follow camera at it and hold Forward.
+        // Stop the moment Jimmy leaves the ground - the spawn rooftop is
+        // small and the demo must never step off the edge (no recovery).
+        const float dx = bt->position.x - jt->position.x;
+        const float dz = bt->position.z - jt->position.z;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        const PhysicsComponent* jp = m_entities.GetPhysics(m_jimmyId);
+        const bool grounded = jp ? jp->onGround : true;
+        if (d > 2.4f && grounded) {
+            const float yaw = std::atan2(dx, dz);
+            const float pitch = m_camera.GetPitch();
+            const float cp = std::cos(pitch), sp = std::sin(pitch);
+            m_camera.SetLookAt(glm::vec3(std::sin(yaw) * cp, sp,
+                                         std::cos(yaw) * cp));
+            m_input.SetButton(Button::Forward, true);
+            m_input.SetButton(Button::Sprint, true);
+        }
+    } else if (t < 14.0) {
+        // Block hold + melee cadence + scripted phase shocks.
+        m_input.SetButton(Button::Block, true);
+        if (t - s_lastSwing >= 0.6) { s_lastSwing = t; m_input.SetButton(Button::Attack, true); }
+        if (t >= 8.0 && s_shock2 < 0.0) {
+            s_shock2 = t;
+            if (AIComponent* ai = m_entities.GetAI(boss)) {
+                if (ai->health.current > 0) {
+                    DamageNpc(boss, m_jimmyId, 70, bt->position, 0.15f);
+                    Logger::Info("BOSS demo: phase shock -70 (HP %d/%d)",
+                                 std::max(0, ai->health.current), ai->health.max);
+                }
+            }
+        }
+        if (t >= 11.0 && s_shock3 < 0.0) {
+            s_shock3 = t;
+            if (AIComponent* ai = m_entities.GetAI(boss)) {
+                if (ai->health.current > 0) {
+                    DamageNpc(boss, m_jimmyId, 70, bt->position, 0.15f);
+                    Logger::Info("BOSS demo: phase shock -70 (HP %d/%d)",
+                                 std::max(0, ai->health.current), ai->health.max);
+                }
+            }
+        }
+    } else if (t < 16.0) {
+        if (!s_died) {
+            s_died = true;
+            DamagePlayer(9999, "demo defeat");
+            // Track 49: drive the retry directly (UpdateBosses' live-play
+            // retry would also fire, but driving it here keeps the script
+            // deterministic and logs the reset before the chip phase).
+            OnPlayerDefeatedByBoss();
+            Logger::Info("BOSS demo: scripted player defeat -> retry path");
+        }
+    } else {
+        // Chip 20 HP every 0.8s: slow enough that enraged P3 specials fire
+        // (charge / grab QTEs) so the QTE-FAILURE path (ignored prompt ->
+        // TOO SLOW -> player damage) is exercised before the KO.
+        if (t - s_lastDmg >= 0.8) {
+            s_lastDmg = t;
+            if (AIComponent* ai = m_entities.GetAI(boss)) {
+                if (ai->health.current > 0)
+                    DamageNpc(boss, m_jimmyId, 20, bt->position, 0.15f);
+            }
+        }
+    }
+
+    // QTE answering (works in every phase above).
+    if (BossComponent* bc = m_entities.GetBoss(boss)) {
+        if (bc->qteState == QteState::Waiting) {
+            if (!s_answerArmed) {
+                s_answerArmed = true;
+                ++s_promptSeen;
+                s_answerAt = t + 0.3;
+                Logger::Info("BOSS demo: QTE #%d key '%c' -> %s",
+                             s_promptSeen, BossQteKeyChar(bc->qteKey),
+                             s_promptSeen <= 2 ? "press (success path)"
+                                               : "ignore (failure path)");
+            }
+            if (s_answerArmed && t >= s_answerAt) {
+                s_answerArmed = false;
+                if (s_promptSeen <= 2)
+                    m_input.SetRawKey(SDL_Scancode(bc->qteKey), true);
+                // else: deliberately no press -> window expires -> failure.
+            }
+        } else {
+            s_answerArmed = false;
         }
     }
 }
@@ -5716,6 +9460,11 @@ void Engine::UpdateGameTime(float dt) {
     if (step < 0.0)   step = 0.0;
     if (step > 120.0) step = 120.0;  // clamp hitches to 2 game-minutes
     m_gameTimeMinutes += step;
+    // Track 49: the boss demo pins the clock at noon - at 60x, a 55 s run
+    // would otherwise hit the 23:00 curfew mid-fight and BUST the player out
+    // of the scripted verification sequence.
+    if (std::getenv("OPENBULLY_BOSS_DEMO"))
+        m_gameTimeMinutes = 12.0 * 60.0;
     SyncGameClock();
 }
 
@@ -5860,6 +9609,9 @@ EntityID Engine::SpawnScheduledNpc(ScheduledNpc& sn, const ScheduleWindow& w) {
     ai.timer = 0.2f + unit() * 2.8f;
     ai.moveSpeed = 1.0f + unit() * 1.0f;
     ai.wanderRadius = 3.0f;
+    // Track 42: faction membership from the model index (deterministic
+    // clique round robin; prefects are overridden to Authority below).
+    ai.faction = FactionForModel(sn.modelIndex);
     ai.scheduleIndex = sn.scheduleIndex;
     // Window behavior override: idle pins the NPC at its post.
     ai.lockIdle = (w.behavior == ScheduleBehavior::Idle);
@@ -5902,6 +9654,7 @@ EntityID Engine::SpawnScheduledNpc(ScheduledNpc& sn, const ScheduleWindow& w) {
         if (isPrefect) {
             ai.role = AIRole::Prefect;
             ai.sightRadius = 14.0f; // authorities keep a wider watch
+            ai.faction = Faction::Authority; // Track 42: authorities
             if      (m_prefectIds[0].index == 0xFFFFFFFF) m_prefectIds[0] = e;
             else                                          m_prefectIds[1] = e;
             Logger::Info("NPC AI: entity %u designated PREFECT", e.index);
@@ -5909,6 +9662,15 @@ EntityID Engine::SpawnScheduledNpc(ScheduledNpc& sn, const ScheduleWindow& w) {
     }
     m_entities.AddAI(e, ai);
     m_entities.AddMeleeCombat(e);
+
+    // Track 47: scheduled NPCs are photo subjects under their schedule name
+    // (student / townie / prefect / teacher) so PHOTOGRAPH_TARGET objectives
+    // can require a specific crowd.
+    if (const NPCSchedule* psched =
+            m_schedules.GetSchedule(size_t(sn.scheduleIndex)))
+        RegisterPhotoTarget(e, psched->name, Photo::TargetKind::Person, 1.8f);
+    else
+        RegisterPhotoTarget(e, "Student", Photo::TargetKind::Person, 1.8f);
 
     if (rigIndex != 0xFFFFFFFF) {
         AnimationComponent ac;
@@ -6094,15 +9856,10 @@ void Engine::Render() {
         }
         // Free camera (Track 10): view matrix from camera. Projection stays
         // in the renderer; we fetch it once and build MVP per mesh here.
-        // Track 31: mounted vehicles widen the FOV (per-type); walking
-        // restores the 60-deg default. Rebuilt only on a change.
+        // Track 31: mounted vehicles widen the FOV (per-type); Track 47: photo
+        // mode narrows it by the zoom. Single source: CurrentFovDeg().
         {
-            float fovDeg = 60.0f;
-            if (m_mountedVehicle.IsValid()) {
-                if (const MeshComponent* vmc = m_entities.GetMesh(m_mountedVehicle))
-                    if (vmc->isVehicle && vmc->vehicleModelIndex < m_vehicleModels.size())
-                        fovDeg = m_vehicleModels[vmc->vehicleModelIndex].fovDeg;
-            }
+            const float fovDeg = CurrentFovDeg();
             if (fovDeg != m_lastFovDeg) {
                 m_renderer->SetProjectionFov(fovDeg);
                 m_lastFovDeg = fovDeg;
@@ -6296,6 +10053,33 @@ void Engine::Render() {
             }
         }
 
+        // Track 46: trick popup (top-center, below the melee damage popup)
+        // + combo readout / chain-window meter bottom-left. Colors are ABGR
+        // literals (alpha in the top byte; see UIRenderer::PackRGBA).
+        if (m_tricks.popupTimer > 0.0f && m_tricks.popupText[0]) {
+            const float w = m_ui.MeasureText(m_tricks.popupText);
+            const float scale = 2.0f; // chunky, same as the melee popup
+            const uint32_t trickGold = 0xff50d2ffu; // #FFD250
+            m_ui.DrawText(0.5f * (float(m_screenWidth) - w * scale),
+                          0.30f * float(m_screenHeight), m_tricks.popupText,
+                          m_tricks.popupTimer < 0.4f ? trickGold : white);
+        }
+        if (m_tricks.active != TrickType::None || m_tricks.pending > 0 ||
+            m_tricks.comboMult > 1) {
+            const uint32_t trickGold = 0xff50d2ffu;
+            const uint32_t trickDim = 0xff989898u;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "COMBO x%d", m_tricks.comboMult);
+            m_ui.DrawText(24.0f, float(m_screenHeight) - 70.0f, buf, white);
+            std::snprintf(buf, sizeof(buf), "BANKED %d   TOTAL %d",
+                          m_tricks.pending, m_tricks.totalScore);
+            m_ui.DrawText(24.0f, float(m_screenHeight) - 58.0f, buf, trickDim);
+            const float frac = std::min(m_tricks.window, kTrickComboWindow) /
+                               kTrickComboWindow;
+            m_ui.DrawRect(24.0f, float(m_screenHeight) - 50.0f, 120.0f * frac,
+                          6.0f, trickGold);
+        }
+
         // Track 30: dialogue box (bottom-center panel, typewriter text,
         // choice buttons while a choice menu is pending).
         if (m_dialogue.IsActive()) {
@@ -6313,6 +10097,18 @@ void Engine::Render() {
                                  m_dialogueChoiceSel);
         }
 
+        // Track 48: cinematic subtitles for the playing cutscene (below the
+        // modal overlays, above the HUD).
+        if (m_cutscenePlaying) {
+            if (const CutsceneLine* line = m_cutscenes.CurrentLine())
+                m_ui.DrawSubtitle(line->speaker.c_str(), line->text,
+                                  /*showSkipHint=*/true);
+        }
+
+        // Track 47: photo viewfinder (crosshair / zoom / bracket / flash)
+        // above the HUD, below the modal overlays.
+        DrawPhotoOverlayUI();
+
         // Track 40: quest journal overlay — drawn last, above every other
         // UI element (modal full-screen panel).
         DrawQuestJournal();
@@ -6321,6 +10117,30 @@ void Engine::Render() {
         // the journal so an open schedule is never double-dimmed by a stale
         // journal frame.
         DrawClassOverlays();
+
+        // Track 44: minigame overlay (class activity / demo) — topmost;
+        // it owns the whole screen while an attempt is live.
+        DrawMinigameOverlay();
+
+        // Track 45: arcade cabinet screen — above the minigame overlay so an
+        // open cabinet owns the whole display; the world prompt shows only
+        // while the view is closed (and dialogue is not speaking).
+        if (m_arcade.IsActive()) {
+            m_arcade.Render(m_ui, float(m_screenWidth), float(m_screenHeight));
+        } else if (m_arcade.NearCabinet() && !m_dialogue.IsActive() &&
+                   !m_cutscenePlaying) {
+            const char* prompt = m_arcade.Prompt();
+            const float pw = m_ui.MeasureText(prompt);
+            const float px = 0.5f * (float(m_screenWidth) - pw);
+            const float py = float(m_screenHeight) - 100.0f;
+            m_ui.DrawRect(px - 10.0f, py - 6.0f, pw + 20.0f, 22.0f,
+                          0xe0101018u);
+            m_ui.DrawText(px, py, prompt, 0xff70d2ffu); // #FFD270 gold
+        }
+
+        // Track 42: faction interaction readout + TAB stats screen (drawn
+        // last so the verification screenshot always captures it).
+        DrawFactionStats();
     }
 
     m_renderer->FlushScreenshot(); // flush pending screenshot before present
@@ -6651,10 +10471,14 @@ void Engine::UpdateWeapons(float dt) {
     // Track 30: E is the dialogue key; a conversation takes precedence.
     // Track 40: the quest journal is modal — no E pickup while it is open.
     // Track 41: class UI (prompt/schedule/session) takes E first.
+    // Track 45: the arcade view owns E (and the press that opens a cabinet
+    // must not also grab a pickup in the same frame).
     // Track 38: walking over a pickup also collects it (1.2u radius).
     EntityID best{};
     if (m_input.WasKeyPressed(SDL_SCANCODE_E) && !m_dialogue.IsActive() &&
         !m_journalOpen && !m_scheduleOpen && !m_classSessionActive &&
+        !m_cutscenePlaying && // Track 48: the cutscene owns E-free input
+        !m_arcade.IsActive() && !m_arcade.NearCabinet() && // Track 45
         m_classPromptIdx < 0) {
         float bestDist = 2.2f; // E-key pickup radius
         m_entities.ForEach([&](EntityID id, Transform& t,
@@ -6697,11 +10521,14 @@ void Engine::UpdateWeapons(float dt) {
     }
 
     // Slot selection: 1-5 (deferred during dialogue: 1-4 pick choices;
-    // deferred while the quest journal is open — Track 40 modality).
+    // deferred while the quest journal is open — Track 40 modality; also
+    // held while a cutscene plays — Track 48).
     static const SDL_Scancode kSlotKeys[5] = {
         SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4, SDL_SCANCODE_5,
     };
-    for (int i = 0; i < 5 && !m_dialogue.IsActive() && !m_journalOpen; ++i) {
+    for (int i = 0;
+         i < 5 && !m_dialogue.IsActive() && !m_journalOpen && !m_cutscenePlaying;
+         ++i) {
         if (m_input.WasKeyPressed(kSlotKeys[i])) {
             if (pc->slots[i].type == WeaponType::Unarmed) {
                 Logger::Info("Slot %d empty", i + 1);
@@ -6742,6 +10569,9 @@ void Engine::WeaponTryAttack(PlayerController* pc) {
     InventorySlot& slot = pc->slots[pc->equippedSlot];
     if (slot.type == WeaponType::Unarmed) return;
     const WeaponData& data = GetWeaponDataById(slot.weaponId);
+    // Track 47: the camera does not attack — its LMB is the shutter, handled
+    // by TakePhoto inside photo mode (and a no-op outside it).
+    if (data.type == WeaponType::Camera) return;
 
     const glm::vec3 fwd(std::sin(pc->facingYaw), 0.0f, std::cos(pc->facingYaw));
     int damage = data.damage;
@@ -7000,29 +10830,48 @@ void Engine::UpdateAmmoPickups(float dt) {
 
 // Track 39: RMB with the slingshot equipped toggles aim mode (crosshair;
 // movement stays free, camera stays player-controlled). R reloads manually.
+// Track 47: the camera claims RMB the same way — it toggles the photo
+// viewfinder instead (LMB becomes the shutter; see TakePhoto).
 void Engine::UpdateAimMode(float dt) {
     (void)dt;
     PlayerController* pc = m_jimmyId.IsValid()
         ? m_entities.GetPlayer(m_jimmyId) : nullptr;
-    if (!pc) { m_aiming = false; return; }
+    if (!pc) { m_aiming = false; m_photoMode = false; return; }
     const bool slingshotOut = pc->equippedSlot >= 0 &&
         pc->slots[pc->equippedSlot].type == WeaponType::RangedProjectile;
+    const bool cameraOut = pc->equippedSlot >= 0 &&
+        pc->slots[pc->equippedSlot].type == WeaponType::Camera;
     if (!slingshotOut) {
         if (m_aiming) Logger::Info("Aim mode off (slingshot unequipped)");
         m_aiming = false;
+    }
+    if (!cameraOut) {
+        if (m_photoMode) Logger::Info("Photo mode off (camera unequipped)");
+        m_photoMode = false;
+    }
+    if ((!slingshotOut && !cameraOut) || m_journalOpen) {
+        // Track 40: the quest journal is modal — aim/photo toggling and
+        // manual reload are player combat inputs, so hold them while it is
+        // open (buttons are already masked by the modal clear; raw keys like
+        // R need an explicit gate). States themselves are preserved so
+        // re-closing resumes mid-aim/mid-viewfinder.
         return;
     }
-    // Track 40: the quest journal is modal — aim toggling and manual reload
-    // are player combat inputs, so hold them while it is open (buttons are
-    // already masked by the modal clear; raw keys like R need an explicit
-    // gate). Aim state itself is preserved so re-closing resumes mid-aim.
-    if (m_journalOpen) return;
-    // RMB toggles aim. Block still works when unarmed, so the slingshot
-    // claims RMB while equipped.
+    // RMB toggles the equipped tool's mode. Block still works when unarmed,
+    // so slingshot/camera claim RMB while equipped.
     if (m_input.IsPressed(Button::Block)) {
-        m_aiming = !m_aiming;
-        Logger::Info("Aim mode %s", m_aiming ? "ON (crosshair, camera aim)" : "OFF");
+        if (cameraOut) {
+            m_photoMode = !m_photoMode;
+            if (m_photoMode) m_aiming = false;
+            Logger::Info("Photo mode %s (zoom %.1fx)",
+                         m_photoMode ? "ON (viewfinder)" : "OFF", m_photoZoom);
+        } else {
+            m_aiming = !m_aiming;
+            if (m_aiming) m_photoMode = false;
+            Logger::Info("Aim mode %s", m_aiming ? "ON (crosshair, camera aim)" : "OFF");
+        }
     }
+    if (!slingshotOut) return;
     // Manual reload: R.
     InventorySlot& slot = pc->slots[pc->equippedSlot];
     if (m_input.WasKeyPressed(SDL_SCANCODE_R) && slot.ammo < SlingshotCapacity()) {
@@ -7084,6 +10933,10 @@ void Engine::UpdateProjectiles(float dt) {
                 fxPos = glm::make_vec3(hit.point); fxKill = true; // rock shatters
                 Logger::Info("Projectile hit world at (%.1f, %.1f, %.1f)",
                              fxPos.x, fxPos.y, fxPos.z);
+                // Track 43: smashing property with a thrown rock is vandalism
+                // (+1 head) when an authority is close enough to see/hear it.
+                if (p.owner == m_jimmyId && p.damage > 0)
+                    VandalismCrime(fxPos);
                 kill = true;
             }
         }
@@ -7290,6 +11143,15 @@ SaveData Engine::CaptureSaveState() {
     data.classRespect       = m_classes.Respect();
     data.slingshotCapBonus  = m_slingshotCapBonus;
 
+    // --- Arcade (Track 45): high scores / plays / wins / achievement ---
+    m_arcade.WriteSave(data);
+
+    // --- Reputation (Track 42) ---
+    for (int i = 0; i < ReputationSave::kCount && i < kFactionCount; ++i)
+        data.reputation.respect[i] =
+            m_factions.Get(static_cast<Faction>(i));
+    data.reputation.completedMissions = m_factions.CompletedMissions();
+
     // --- World ---
     data.gameTimeMinutes = m_gameTimeMinutes;
     data.gameDay         = m_gameDay;
@@ -7373,6 +11235,21 @@ void Engine::ApplySaveState(const SaveData& data) {
     m_classes.AddRespect(data.classRespect - m_classes.Respect()); // absolute set
     m_slingshotCapBonus = std::clamp(data.slingshotCapBonus, 0, kClassMaxCapBonus);
 
+    // --- Restore arcade progression (Track 45); close any open cabinet view ---
+    if (m_arcade.IsActive()) {
+        m_arcade.ExitGame();
+        Logger::Info("Arcade: cabinet view closed by load");
+    }
+    m_arcade.ReadSave(data);
+
+    // --- Restore reputation (Track 42) ---
+    for (int i = 0; i < ReputationSave::kCount && i < kFactionCount; ++i)
+        m_factions.SetRespect(static_cast<Faction>(i),
+                              data.reputation.respect[i]);
+    m_factions.SetCompletedMissions(data.reputation.completedMissions);
+    Logger::Info("Reputation: restored faction scores, %d mission(s) done",
+                 m_factions.CompletedMissions());
+
     // --- Clear combat/grapple state ---
     m_grappleTarget = EntityID{};
     m_mountedVehicle = EntityID{};
@@ -7395,6 +11272,14 @@ void Engine::ApplySaveState(const SaveData& data) {
     // --- Clear AI event queue + fight history ---
     m_aiEvents.clear();
     m_fights.clear();
+
+    // Track 43: cops are runtime pursuers (never persisted); reset the whole
+    // wanted system state. The meter itself restores from the save (player).
+    DespawnCops();
+    m_copsPending = false;
+    m_copsStandDown = false;
+    m_wanted = WantedSystem{};
+    m_trespassZones.clear(); // rebuilt from the (new) spawn on next update
 
     // --- Clear and respawn scheduled NPCs ---
     for (auto& sn : m_scheduledNpcs) {
@@ -7432,6 +11317,9 @@ void Engine::ApplySaveState(const SaveData& data) {
 // Destroy all dynamic entities (NPCs, projectiles, pickups, vehicles)
 // that are not part of the static level geometry.
 void Engine::DestroyDynamicEntities() {
+    // Track 43: cops are dynamic pursuers.
+    DespawnCops();
+
     // Destroy scheduled NPCs.
     for (auto& sn : m_scheduledNpcs) {
         if (sn.entity.IsValid() && m_entities.IsAlive(sn.entity))
@@ -7527,6 +11415,428 @@ bool Engine::LoadGame(int slot) {
     ApplySaveState(data);
     Logger::Info("Game loaded from slot %d", slot);
     return true;
+}
+
+// =========================================================================
+// Track 47: photo challenge system
+// =========================================================================
+
+// Album load (saves/photo_album.json, persisted across runs) + a camera
+// pickup next to Jimmy so the item is collectible without the demo drive.
+bool Engine::InitPhotoSystem() {
+    // The album lives next to the save slots (same directory convention as
+    // SaveSystem::SlotPath: <base>/saves/...). Probe CWD then the source tree
+    // like every other data file; missing file = empty album.
+    const char* albumPaths[] = { "saves/photo_album.json",
+                                 "../saves/photo_album.json" };
+    for (const char* p : albumPaths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            m_photos.LoadAlbum(p);
+            break;
+        }
+    }
+    Logger::Info("Photo system: %zu target(s) registered at init",
+                 m_photos.Targets().size());
+
+    // Camera pickup near Jimmy (walk-over or E). No NIF in the extracted
+    // set, so it draws as a small box prop instead of a model.
+    if (!m_jimmyActive || !m_testBoxValid) return true;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return true;
+    glm::vec3 pos = jt->position + glm::vec3(-3.5f, 0.0f, 1.5f);
+    if (m_collisionWorld) {
+        Ray down;
+        down.origin[0] = pos.x; down.origin[1] = pos.y + 6.0f; down.origin[2] = pos.z;
+        down.direction[0] = 0.0f; down.direction[1] = -1.0f; down.direction[2] = 0.0f;
+        RayHit hit;
+        if (m_collisionWorld->Raycast(down, hit)) pos.y = hit.point[1];
+    }
+    EntityID e = m_entities.Create();
+    Transform t;
+    t.position = pos + glm::vec3(0.0f, 0.35f, 0.0f);
+    t.scale    = glm::vec3(0.22f);
+    m_entities.AddTransform(e, t);
+    MeshComponent mc;
+    mc.isBox = true;
+    m_entities.AddMesh(e, mc);
+    CollisionComponent cc;
+    cc.boundsMin = glm::vec3(-0.5f); cc.boundsMax = glm::vec3(0.5f);
+    cc.layerMask = 2u;
+    m_entities.AddCollision(e, cc);
+    WeaponComponent w;
+    w.type = WeaponType::Camera;
+    w.weaponId = kCameraWeaponId;
+    w.durability = 0;
+    w.ammo = 0;
+    m_entities.AddWeapon(e, w);
+    Logger::Info("Photo system: camera pickup spawned at (%.1f, %.1f, %.1f)",
+                 pos.x, pos.y, pos.z);
+    return true;
+}
+
+// Subjects are labeled at spawn: schedule name for scheduled NPCs (student /
+// townie / prefect / teacher), model file name for the legacy crowd.
+void Engine::RegisterPhotoTarget(EntityID npc, const std::string& label,
+                                 Photo::TargetKind kind, float height) {
+    m_photos.RegisterTarget(npc, label, kind, height);
+}
+
+// Drop subjects whose entity handle died (scheduled NPCs despawn through the
+// day cycle; KO'd corpses stay until cleanup but their handles stay valid).
+void Engine::PrunePhotoTargets() {
+    auto& targets = m_photos.Targets();
+    for (size_t i = 0; i < targets.size();) {
+        if (!m_entities.IsAlive(targets[i].entity)) {
+            targets.erase(targets.begin() + long(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+// Per-frame viewfinder upkeep: wheel zoom, projection cache (zoomed FOV) and
+// the highlighted-subject bracket the UI draws. Runs after the camera update
+// so the cached matrices match what Render will submit this frame.
+void Engine::UpdatePhotoMode(float dt) {
+    if (m_photoFlash  > 0.0f) m_photoFlash  -= dt;
+    if (m_photoPopupTimer > 0.0f) m_photoPopupTimer -= dt;
+    PrunePhotoTargets();
+    m_photoSubject.has = false;
+    if (!m_photoMode) return;
+
+    // Zoom: mouse wheel (forwarded by main.cpp before Input::Poll). The
+    // journal consumes the same delta when it is open, so the wheel only
+    // zooms while the journal is closed (journal keeps scroll priority).
+    if (m_journalWheelDelta != 0 && !m_journalOpen) {
+        m_photoZoom = glm::clamp(m_photoZoom + float(m_journalWheelDelta) * 0.25f,
+                                 kPhotoZoomMin, kPhotoZoomMax);
+        m_journalWheelDelta = 0;
+        Logger::Info("Photo zoom: %.2fx", m_photoZoom);
+    }
+
+    // Projection cache: build the same view*proj Render will use (zoomed
+    // FOV) so shutter validation and the bracket match the final image.
+    if (m_renderer) {
+        const float fov = CurrentFovDeg();
+        if (fov != m_lastFovDeg) {
+            m_renderer->SetProjectionFov(fov);
+            m_lastFovDeg = fov;
+        }
+        m_photoViewProj = m_renderer->GetProjection() * m_camera.GetViewMatrix();
+    }
+
+    // Highlight the best subject: shutter-valid ones win over merely visible
+    // ones; among equals the most centered, then the largest fill.
+    const float W = float(m_screenWidth), H = float(m_screenHeight);
+    if (W <= 0.0f || H <= 0.0f) return;
+    const glm::vec3 camPos = m_camera.GetPosition();
+    float bestScore = 1e9f;
+    bool  bestValid = false;
+    for (const Photo::PhotoTarget& tgt : m_photos.Targets()) {
+        const Transform* tt = m_entities.GetTransform(tgt.entity);
+        if (!tt) continue;
+        const Photo::AimAssessment a = m_photos.Assess(
+            tgt, tt->position, camPos, m_photoViewProj, W, H);
+        if (!a.inFrustum) continue;
+
+        float xMid = 0.0f, yMid = 0.0f;
+        Photo::PhotoSystem::ProjectPoint(tt->position + glm::vec3(0.0f, 0.5f * tgt.height, 0.0f),
+                            m_photoViewProj, W, H, &xMid, &yMid);
+        const float dx = (xMid - 0.5f * W) / W;
+        const float dy = (yMid - 0.5f * H) / H;
+        const float score = dx * dx + dy * dy;
+        if (bestValid && !a.Valid()) continue;         // valid beats invalid
+        if (!bestValid && a.Valid()) { /* upgrade below */ }
+        else if (score >= bestScore) continue;
+        bestScore  = score;
+        bestValid  = a.Valid();
+        m_photoSubject.has    = true;
+        m_photoSubject.valid  = a.Valid();
+        m_photoSubject.entity = tgt.entity;
+        // Bracket: width from the fill ratio (bodies are ~2.4x taller than
+        // wide), height from the projected feet..head span.
+        float xFeet = 0.0f, yFeet = 0.0f, xHead = 0.0f, yHead = 0.0f;
+        Photo::PhotoSystem::ProjectPoint(tt->position, m_photoViewProj, W, H, &xFeet, &yFeet);
+        Photo::PhotoSystem::ProjectPoint(tt->position + glm::vec3(0.0f, tgt.height, 0.0f),
+                            m_photoViewProj, W, H, &xHead, &yHead);
+        m_photoSubject.bh = std::fabs(yFeet - yHead);
+        m_photoSubject.bw = m_photoSubject.bh * 0.5f;
+        m_photoSubject.bx = xMid - 0.5f * m_photoSubject.bw;
+        m_photoSubject.by = yFeet - m_photoSubject.bh;
+        char lbl[96];
+        std::snprintf(lbl, sizeof(lbl), "%s  %.0fm%s", tgt.name.c_str(),
+                      a.dist, a.Valid() ? "" : "  (not framed)");
+        m_photoSubject.label = lbl;
+    }
+}
+
+// LMB in photo mode. Validates every subject, picks the best one, records
+// the album entry (metadata only) and advances photo missions. Returns true
+// when the shutter counted a subject toward an objective.
+bool Engine::TakePhoto() {
+    if (!m_photoMode) return false;
+
+    m_photoFlash = 0.12f; // viewfinder flash (UI)
+
+    const float W = float(m_screenWidth), H = float(m_screenHeight);
+    const glm::vec3 camPos = m_camera.GetPosition();
+
+    // Pick the shutter subject with the same scoring as the bracket.
+    const Photo::PhotoTarget* best = nullptr;
+    Photo::AimAssessment bestAssessment;
+    float bestScore = 1e9f;
+    bool  bestValid = false;
+    for (const Photo::PhotoTarget& tgt : m_photos.Targets()) {
+        const Transform* tt = m_entities.GetTransform(tgt.entity);
+        if (!tt) continue;
+        const Photo::AimAssessment a = m_photos.Assess(
+            tgt, tt->position, camPos, m_photoViewProj, W, H);
+        if (!a.inFrustum) continue;
+        // Track 47 debug: why did a visible subject fail the shutter?
+        Logger::Info("Photo check: '%s' dist=%.1f fill=%.2f frustum=%d range=%d framed=%d centered=%d",
+                     tgt.name.c_str(), a.dist, a.fill, int(a.inFrustum),
+                     int(a.inRange), int(a.framed), int(a.centered));
+        float xMid = 0.0f, yMid = 0.0f;
+        Photo::PhotoSystem::ProjectPoint(tt->position + glm::vec3(0.0f, 0.5f * tgt.height, 0.0f),
+                            m_photoViewProj, W, H, &xMid, &yMid);
+        const float dx = (xMid - 0.5f * W) / W;
+        const float dy = (yMid - 0.5f * H) / H;
+        const float score = dx * dx + dy * dy;
+        if (bestValid && !a.Valid()) continue;
+        if (!bestValid && !a.Valid() && best) continue; // keep first visible
+        if (bestValid == a.Valid() && score >= bestScore) continue;
+        bestScore = score;
+        bestValid = a.Valid();
+        best = &tgt;
+        bestAssessment = a;
+    }
+
+    Photo::PhotoRecord rec;
+    rec.clockMinutes = m_clockMinutes;
+    rec.frame        = int64_t(m_frameCount);
+    if (best) {
+        rec.subject     = best->name;
+        rec.entityIndex = best->entity.index;
+    } else {
+        rec.subject = "(no subject)";
+    }
+
+    // Which mission (if any) does this photo count toward?
+    std::string missionId;
+    if (best && bestValid) {
+        if (const Mission* am = m_missions.ActivePhotoMission()) {
+            const Objective& o = am->objectives[am->currentObjective];
+            if (o.photoTarget.empty() || o.photoTarget == best->name)
+                missionId = am->id;
+        }
+    }
+    rec.missionId = missionId;
+    m_photos.AddPhoto(rec);
+
+    // Persist the album next to the save slots (small file, one write/shot).
+    std::error_code fsErr;
+    std::filesystem::create_directories("saves", fsErr);
+    m_photos.SaveAlbum("saves/photo_album.json");
+
+    // Feedback + mission wiring.
+    if (best && bestValid) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "PHOTO TAKEN: %s", best->name.c_str());
+        m_photoPopup = buf;
+        m_photoPopupTimer = 2.0f;
+        m_missions.NotifyPhotoTaken(best->name);
+        Logger::Info("Photo #%zu: '%s' counted for mission '%s' (zoom %.1fx, %02d:%02d)",
+                     m_photos.Album().size(), best->name.c_str(),
+                     missionId.c_str(), m_photoZoom,
+                     (m_clockMinutes / 60) % 24, m_clockMinutes % 60);
+    } else {
+        m_photoPopup = best ? "PHOTO TAKEN (subject not framed)"
+                            : "PHOTO TAKEN (no subject in frame)";
+        m_photoPopupTimer = 2.0f;
+        Logger::Info("Photo #%zu: no valid subject (zoom %.1fx)",
+                     m_photos.Album().size(), m_photoZoom);
+    }
+    return !missionId.empty();
+}
+
+// FOV source of truth shared by Update (projection cache) and Render (the
+// actual renderer projection): photo zoom narrows the view like a lens.
+float Engine::CurrentFovDeg() const {
+    if (m_photoMode) return 60.0f / std::max(1.0f, m_photoZoom);
+    if (m_mountedVehicle.IsValid()) {
+        if (const MeshComponent* vmc = m_entities.GetMesh(m_mountedVehicle))
+            if (vmc->isVehicle &&
+                vmc->vehicleModelIndex < m_vehicleModels.size())
+                return m_vehicleModels[vmc->vehicleModelIndex].fovDeg;
+    }
+    return 60.0f;
+}
+
+// Viewfinder widgets (view 10). Drawn after the HUD, before the journal.
+void Engine::DrawPhotoOverlayUI() {
+    if (!m_photoMode || !m_ui.IsInitialized()) return;
+    PhotoOverlay o;
+    o.active   = true;
+    o.zoomPct  = int(m_photoZoom * 100.0f + 0.5f);
+    o.flash    = m_photoFlash > 0.0f;
+    o.popupText = m_photoPopup;
+    o.popupTimer = m_photoPopupTimer;
+    o.statusLine = "LMB: SHUTTER   RMB: EXIT   WHEEL: ZOOM";
+    if (m_photoSubject.has) {
+        o.hasBracket   = true;
+        o.bracketValid = m_photoSubject.valid;
+        o.bx = m_photoSubject.bx; o.by = m_photoSubject.by;
+        o.bw = m_photoSubject.bw; o.bh = m_photoSubject.bh;
+        o.bracketLabel = m_photoSubject.label;
+    }
+    m_ui.DrawPhotoOverlay(o);
+}
+
+// OPENBULLY_PHOTO_DEMO=1: scripted photography run for headless
+// verification. t=1.0 grants + equips the camera, t=1.5 activates the
+// photography mission, t=2.0 spawns 3 "Jock" subjects and opens the
+// viewfinder (3x zoom), then the shutter fires every 1.2s from t=4.0 — the
+// third valid photo completes the mission (same cadence style as
+// WEAPON/MISSION demos).
+void Engine::DrivePhotoDemo(float dt) {
+    (void)dt;
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc || !m_jimmyActive) return;
+
+    static bool s_gave = false;
+    if (!s_gave && m_time >= 1.0) {
+        s_gave = true;
+        for (int i = 0; i < 5; ++i) {
+            if (pc->slots[i].type != WeaponType::Unarmed) continue;
+            pc->slots[i].type = WeaponType::Camera;
+            pc->slots[i].weaponId = kCameraWeaponId;
+            pc->slots[i].durability = 0;
+            pc->equippedSlot = i;
+            Logger::Info("Photo demo: camera equipped (slot %d)", i);
+            break;
+        }
+    }
+    static bool s_activated = false;
+    if (!s_activated && m_time >= 1.5) {
+        s_activated = true;
+        for (size_t i = 0; i < m_missions.MissionCount(); ++i) {
+            const Mission* m = m_missions.GetMission(uint32_t(i));
+            if (m && m->id == "ch1_photography") {
+                m_missions.ActivateMission(uint32_t(i));
+                break;
+            }
+        }
+    }
+    static bool s_started = false;
+    if (!s_started && m_time >= 2.0) {
+        s_started = true;
+        SpawnPhotoDemoTargets();
+        m_photoMode = true;
+        m_photoZoom = 3.0f;
+        Logger::Info("Photo demo: viewfinder ON (zoom 3.0x)");
+    }
+
+    // Keep the view aimed at the subject group: the follow camera would
+    // otherwise keep orbiting Jimmy; the photo demo owns the camera while
+    // the viewfinder is up (same override idea as the ranged demo's clamp).
+    // The stage sits 16u ahead of Jimmy so the vehicle pickup ring (radius
+    // <= 6u around the spawn, one Police car pulled in to r=3 during
+    // verification) stays behind the camera and out of the sight line.
+    if (m_photoMode && !m_photoDemoTargets.empty()) {
+        glm::vec3 sum(0.0f);
+        int n = 0;
+        for (EntityID id : m_photoDemoTargets) {
+            if (const Transform* tt = m_entities.GetTransform(id)) {
+                sum += tt->position;
+                ++n;
+            }
+        }
+        if (n > 0) {
+            const glm::vec3 center = sum / float(n) + glm::vec3(0.0f, 1.1f, 0.0f);
+            const glm::vec3 camPos = center + glm::vec3(0.0f, 2.2f, -10.0f);
+            m_camera.SetPosition(camPos);
+            m_camera.SetLookAt(center - camPos);
+        }
+    }
+
+    // Shutter cadence: 3 photos complete the 3/3 objective. Stops once no
+    // active mission still has a live PHOTOGRAPH_TARGET (the album keeps
+    // exactly the three counted shots); the viewfinder stays up for the
+    // verification capture.
+    if (m_photoMode && m_time >= 4.0 && m_missions.ActivePhotoMission()) {
+        static double s_lastShot = -1e9;
+        if (m_time - s_lastShot >= 1.2) {
+            s_lastShot = m_time;
+            TakePhoto();
+        }
+    }
+
+    // Album reveal: after the 3rd photo completes the objective, open the
+    // journal on its photo-album page so the recurring screenshot captures
+    // the album UI with the three rows (verification proof).
+    if (m_time >= 9.0 && !m_journalOpen) {
+        m_journalOpen = true;
+        m_journalPhotoPage = true;
+        m_journalScrollPx = 0.0f;
+        m_photoMode = false; // viewfinder yields to the modal journal
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+        SDL_ShowCursor(SDL_ENABLE);
+        Logger::Info("Photo demo: journal opened on album page (%zu photo(s))",
+                     m_photos.Album().size());
+    }
+}
+
+// Spawns the demo's 3 photographable subjects ~5.5u ahead of Jimmy on his
+// ground plane (the ranged demo learned the spawn roof has no collision
+// beneath, so the group sits on Jimmy's own plane). Real NPC models when the
+// extracted set loaded, boxes otherwise; both photograph identically.
+void Engine::SpawnPhotoDemoTargets() {
+    m_photoDemoTargets.clear();
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+
+    static const glm::vec3 kOffsets[3] = {
+        { -2.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.4f }, { 2.0f, 0.0f, 0.0f },
+    };
+    const bool useNpc = !m_npcModels.empty();
+    for (int i = 0; i < 3; ++i) {
+        EntityID e = m_entities.Create();
+        Transform t;
+        // 16u ahead of Jimmy: clears the weapon/vehicle/NPC spawn clutter
+        // around the spawn point (vehicles ring at <= 6u) so the demo sight
+        // line photographs the jocks, not a parked Police car.
+        t.position = jt->position + kOffsets[i] + glm::vec3(0.0f, 0.0f, 16.0f);
+        m_entities.AddTransform(e, t);
+        if (useNpc) {
+            const uint32_t mi = uint32_t(i % m_npcModels.size());
+            t.scale = glm::vec3(m_npcModels[mi].bodyScale);
+            m_entities.AddTransform(e, t);
+            MeshComponent mc;
+            mc.isNpc = true;
+            mc.npcModelIndex = mi;
+            m_entities.AddMesh(e, mc);
+        } else {
+            t.scale = glm::vec3(0.8f, 1.8f, 0.8f);
+            m_entities.AddTransform(e, t);
+            MeshComponent mc;
+            mc.isBox = true;
+            m_entities.AddMesh(e, mc);
+        }
+        // Static subject: lockIdle keeps the AI out of the movement code.
+        AIComponent ai;
+        ai.state = AIState::Idle;
+        ai.lockIdle = true;
+        ai.homePos = t.position;
+        ai.health.current = 60;
+        m_entities.AddAI(e, ai);
+        m_entities.AddMeleeCombat(e);
+        RegisterPhotoTarget(e, "Jock", Photo::TargetKind::Person, 1.8f);
+        m_photoDemoTargets.push_back(e);
+        Logger::Info("Photo demo: subject %d spawned at (%.1f, %.1f, %.1f)",
+                     i, t.position.x, t.position.y, t.position.z);
+    }
 }
 
 } // namespace OpenBully

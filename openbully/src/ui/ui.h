@@ -50,8 +50,18 @@ struct HUDState {
     // Health (player HealthComponent).
     int health    = 100;
     int maxHealth = 100;
-    // Wanted level 0..5.
+    // Wanted level 0..5 (Track 43: 0 = clean, 5 = maximum heat).
     int wanted = 0;
+    // Track 43: seconds of red flash left after wanted increased (>0 = hot).
+    float wantedFlash = 0.0f;
+    // Track 43: cops are hunting (4+ heads), shown as a COPS! banner.
+    bool copsActive = false;
+    // Track 43: the player is tucked in a locker/trash can (wanted decays).
+    bool hidden = false;
+    // Track 43: 0..1 black-out overlay for the bust cut; >0 draws the fade.
+    float bustFade = 0.0f;
+    // Track 43: BUSTED! text while the bust fade is active.
+    bool busted = false;
     // Cash on hand (display only, debug-modified later).
     int money = 0;
     // Track 25: stamina pool (int-rounded for the bar) + combat state
@@ -106,6 +116,70 @@ struct HUDState {
     bool aiming = false;
     int  slingshotAmmo   = -1; // -1 = no slingshot equipped
     int  slingshotCap    = 30;
+
+    // Track 49: boss fight HUD — large health bar + name/phase at the top of
+    // the screen, a QTE button prompt under the bar, and a center-screen
+    // announce banner (engage / phase-up / victory / defeat).
+    bool  bossActive   = false;   // a live (non-KO'd) boss is present
+    bool  bossDefeated = false;   // KO'd boss: bar pinned at 0% + "DEFEATED"
+    char  bossName[24] = {};
+    char  bossTitle[28] = {};
+    float bossHealth   = 1.0f;    // 0..1 fraction
+    int   bossPhase    = 1;       // 1..3 (phase indicator)
+    // QTE prompt state (one live prompt at a time).
+    bool  qteActive    = false;   // prompt window open: press qteKey now
+    char  qteKey       = ' ';     // prompt glyph: 'W'/'A'/'S'/'D'/' '
+    float qteFrac      = 1.0f;    // window remaining, 1 -> 0
+    int   qteResult    = 0;       // 0 none, 1 success, 2 failed (flash only)
+    float qteResultFrac = 0.0f;   // result flash remaining, 1 -> 0
+    // Center-screen banner.
+    char  banner[64]  = {};
+    int   bannerKind = 0;         // 0 none, 1 engage, 2 phase, 3 victory, 4 defeat
+    float bannerFrac = 0.0f;      // remaining, 1 -> 0
+
+    // Track 47: photo mission progress (HUD line above the weapon slots). The
+    // Engine fills these from the active PHOTOGRAPH_TARGET objective; false
+    // = no photo objective in progress, so the line stays hidden.
+    bool photoMissionActive = false;
+    int  photoCount  = 0;
+    int  photoNeeded = 0;
+
+    // --- Track 42: faction reputation ---------------------------------------
+    // Interaction readout: the nearest NPC's faction (within gift reach).
+    bool factionBarVisible = false;
+    char factionName[16]   = {};
+    int  factionRespect    = 0;   // -100..100
+    int  factionStance     = 1;   // 0 hostile, 1 neutral, 2 friendly
+    // Stats screen (TAB): one row per faction + the aggregate.
+    static constexpr int kMaxFactionRows = 7;   // Faction::Count
+    struct FactionRow {
+        char name[16] = {};
+        int  respect  = 0;          // -100..100
+        int  stance   = 1;          // 0 hostile, 1 neutral, 2 friendly
+    };
+    FactionRow factionRows[kMaxFactionRows] = {};
+    bool statsVisible      = false;
+    int  overallRespect    = 0;   // mean + completed-mission bonus
+    int  completedMissions = 0;
+};
+
+// Track 47: photo viewfinder snapshot. The Engine projects the highlighted
+// subject to pixels before the draw (bracket rect), so this layer only sees
+// plain numbers/strings — no glm, no entity types.
+struct PhotoOverlay {
+    bool  active       = false;   // camera viewfinder is up
+    int   zoomPct      = 100;     // zoom readout (100..400)
+
+    bool  hasBracket   = false;   // a subject is highlighted
+    bool  bracketValid = false;   // true = shutter-ready (green), else yellow
+    float bx = 0.0f, by = 0.0f;   // bracket rect (pixels, origin top-left)
+    float bw = 0.0f, bh = 0.0f;
+    std::string bracketLabel;     // subject name + distance
+    std::string statusLine;       // hint / fail reason ("NO SUBJECT IN FRAME")
+
+    bool  flash      = false;     // shutter flash overlay on
+    std::string popupText;        // stagger feedback ("PHOTO TAKEN: Jock")
+    float popupTimer = 0.0f;      // > 0 draws the popup
 };
 
 // Track 41: one class row for the schedule overlay (plain data; the Engine
@@ -186,10 +260,30 @@ public:
     // (selectedChoice highlighted; -1 = no selection). An advance hint shows
     // while text remains ("E: NEXT").
     void DrawDialogueBox(const char* speaker,
-                         const std::string& text,
-                         bool showAdvanceHint,
-                         const std::vector<std::string>& choices,
-                         int selectedChoice);
+                          const std::string& text,
+                          bool showAdvanceHint,
+                          const std::vector<std::string>& choices,
+                          int selectedChoice);
+
+    // Track 48: cinematic subtitle bar. Bottom-center strip above the very
+    // bottom edge (below where DrawDialogueBox sits), semi-transparent
+    // backdrop, the speaker name on an accent chip and the word-wrapped
+    // subtitle text below it. showSkipHint draws "SPACE: SKIP" on the right.
+    void DrawSubtitle(const char* speaker, const std::string& text,
+                      bool showSkipHint);
+
+    // Track 47: photo viewfinder overlay — corner frame, zoomed crosshair,
+    // subject bracket (green = shutter-ready, yellow = not valid yet), zoom
+    // readout, status hint, shutter flash and stagger feedback. Drawn after
+    // the HUD and before the journal (the journal stays modal on top).
+    void DrawPhotoOverlay(const PhotoOverlay& o);
+
+    // Track 47: pause-menu photo album page (drawn instead of the mission
+    // list while the journal is on its album tab). `rows` are preformatted
+    // lines ("#1  Jock  @ 08:12"); only the rows that fit the panel are
+    // drawn, newest first, and `header` carries the count + hint.
+    void DrawPhotoAlbum(const std::vector<std::string>& rows,
+                        const std::string& header);
 
     // Track 40: quest journal overlay (J key). Centered ~70%-width panel,
     // semi-transparent dark backdrop over the whole screen, mission list

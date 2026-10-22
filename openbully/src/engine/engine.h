@@ -15,16 +15,23 @@
 #include "game/player.h"
 #include "game/weapon.h" // Track 26: WeaponType + WeaponData
 #include "game/classes.h" // Track 41: class system (ClassManager + ClassData)
+#include "../game/faction.h" // Track 42: faction respect (FactionSystem)
+#include "../minigame/minigame.h" // Track 44: minigame framework (MinigameManager)
 #include "../combat/combat.h" // Track 23: melee combat core
+#include "../game/boss.h" // Track 49: BossComponent / boss definitions
 #include "../mission/mission.h"
 #include "../dialogue/dialogue.h" // Track 30: DialogueManager
+#include "../cutscene/cutscene.h" // Track 48: CutsceneManager
 #include "../vehicles/vehicle.h" // Track 31: VehicleType + VehicleComponent
+#include "game/wanted.h" // Track 43: Wanted/Trouble meter system
+#include "../arcade/arcade.h"              // Track 45: arcade cabinets (mini-games)
 #include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
 #include "../vehicles/vehicle_physics.h" // Track 32: arcade vehicle physics
 #include "../vehicles/vehicle_feel.h"    // Track 33: handling feel (FeelState)
 #include "../weather/weather.h"            // Track 34: weather system
 #include "../game/tricks.h"               // Track 46: stunt tricks (scoring)
 #include "save_system.h" // Track 36: Save/Load system
+#include "../photo/photo.h" // Track 47: photo challenge system
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -99,6 +106,9 @@ public:
     bool IsScheduleOpen() const { return m_scheduleOpen; }
     // Track 41: live class session (placeholder minigame) active.
     bool IsClassSessionActive() const { return m_classSessionActive; }
+
+    // Track 44: a real minigame overlay is on screen (class activity or demo).
+    bool IsMinigameActive() const { return m_minigames.IsActive(); }
 
 private:
     void LogFrameTiming();
@@ -241,6 +251,7 @@ private:
     bool     m_vehiclePhysSeeded = false;        // body synced from the entity
     float    m_vehicleAccum = 0.0f;              // fixed-step accumulator (60 Hz)
     glm::vec3 m_vehicleDemoCenter{0.0f};         // DEMO=2 orbit center (track 32)
+    double    m_mountTime = -1.0;                // Track 46: mount clock (DEMO=4)
     FeelState m_vehicleFeel;                     // Track 33: handling/wheelie/crash state
     TrickSystem m_tricks;                        // Track 46: trick scoring/combos
 
@@ -294,6 +305,63 @@ private:
     void     UpdateGrapple(float dt);
     void     DriveGrappleDemo(); // OPENBULLY_GRAPPLE_DEMO scripted sequence
 
+    // --- Track 49: boss fights -------------------------------------------
+    // Boss NPCs carry BOTH an AIComponent (so grapples, projectiles, melee
+    // and the HUD minimap keep working unchanged) and a BossComponent
+    // (phases, specials, QTEs). UpdateNpcs routes every boss entity into
+    // UpdateBossEntity, a dedicated FSM: it never flees, never gives up,
+    // scales its melee cadence per phase and layers the special moves + QTE
+    // prompts on top of the regular chase/attack loop.
+    bool   SpawnBoss(BossType type, const glm::vec3& pos);   // env/mission spawn
+    void   UpdateBosses(float dt);                            // QTEs + zones + HUD sync
+    void   UpdateBossEntity(EntityID id, Transform& t,
+                            AIComponent& ai, float dt);       // per-frame boss FSM
+    void   StartBossSpecial(EntityID id, BossComponent& bc,
+                            BossSpecial kind);                // windup + log
+    void   UpdateBossSpecial(EntityID id, BossComponent& bc, AIComponent& ai,
+                             Transform& t, const glm::vec3& playerPos,
+                             bool havePlayer, float dt);
+    EntityID SpawnBossReinforcement(const glm::vec3& pos);    // Johnny cronies
+    void   StepMoveGround(const glm::vec3& pos, const glm::vec3& dir,
+                          float speed, float dt, glm::vec3& outPos);
+    // Area-of-effect stink-bomb / slam zones (ticking damage to the player).
+    // NOTE: entity creation is DEFERRED - UpdateBossSpecial runs inside
+    // UpdateNpcs' ForEachAI, where m_entities.Create() would reallocate the
+    // dense arrays and dangle the loop's Transform&.
+    struct BossZone {
+        EntityID id{};          // visual pad entity (test box)
+        glm::vec3 pos{0.0f};
+        float life   = 0.0f;    // remaining seconds
+        float radius = 2.0f;
+        int   damage = 3;       // per tick
+        float tick   = 0.0f;    // countdown between ticks
+    };
+    struct PendingZone { glm::vec3 pos; float life; float radius; int damage; };
+    std::vector<PendingZone> m_pendingZones;   // flushed after UpdateNpcs
+    struct PendingCrony { glm::vec3 pos; };
+    std::vector<PendingCrony> m_pendingCronies; // flushed after UpdateNpcs
+    void   SpawnBossZone(const glm::vec3& pos, float life, float radius,
+                         int damage);
+    void   SpawnBossZoneNow(const glm::vec3& pos, float life, float radius,
+                            int damage);              // flush context only
+    void   FlushBossSpawns();   // deferred zone/crony creation (AI-loop safe)
+    void   UpdateBossZones(float dt);
+    // --- QTE ----------------------------------------------------------------
+    void   StartBossQTE(BossComponent& bc, float window,
+                        bool force = false);   // pick + log a key
+    void   UpdateBossQTE(EntityID id, BossComponent& bc, float dt); // poll/expire
+    void   ResolveBossQTE(EntityID id, BossComponent& bc, bool success,
+                          const char* cause);
+    // --- victory / defeat -----------------------------------------------------
+    void   OnBossDefeated(EntityID npc);      // cutscene + mission complete
+    void   OnPlayerDefeatedByBoss();          // respawn checkpoint + retry
+    // Track 49: victory cutscene — 3.5s slow orbit around the fallen boss.
+    // Returns true while the cutscene owns the camera (Update() then skips
+    // the follow-cam update for the frame).
+    bool   UpdateBossCutsceneCamera(float dt);
+    void   BossBanner(const char* text, int kind, float dur); // HUD banner
+    void   DriveBossDemo(float dt);           // OPENBULLY_BOSS_DEMO script
+
     // Track 36: Save/Load helpers.
     // Captures the current runtime state into a SaveData struct.
     SaveData CaptureSaveState();
@@ -304,6 +372,9 @@ private:
     void RespawnDynamicEntities();
     // Destroy all dynamic entities (NPCs, projectiles, pickups, vehicles).
     void DestroyDynamicEntities();
+
+    // Track 42: mission completion -> faction respect reward (see InitMissions).
+    void ApplyMissionReward(const Mission* m);
 
     // Track 20: mission system. Loads data/missions/demo_missions.json,
     // registers trigger zones around the demo level, and drives the manager
@@ -328,6 +399,47 @@ private:
     std::vector<std::string> m_journalLog;              // rolling event feed
     std::vector<uint8_t> m_missionStatePrev;            // per-mission last state
     std::vector<size_t>  m_missionObjPrev;              // per-mission last obj idx
+
+    // --- Track 47: photo challenge system (camera item + viewfinder) -------
+    // The camera is inventory item kCameraWeaponId (weapon table); RMB with
+    // it equipped toggles the zoomed viewfinder, LMB fires the shutter.
+    // Subjects (NPCs / vehicles, labeled by schedule or model name) register
+    // at spawn; the shutter validates frustum + range + framing + centering,
+    // feeds MissionManager::NotifyPhotoTaken and appends a metadata album
+    // entry (subject + timestamp; no bitmap capture). The journal's album
+    // page (TAB) lists every entry from data/save photo_album.json.
+    bool  InitPhotoSystem();                 // album load + camera pickup
+    void  UpdatePhotoMode(float dt);         // zoom + projection + highlight
+    void  DrivePhotoDemo(float dt);          // OPENBULLY_PHOTO_DEMO script
+    void  SpawnPhotoDemoTargets();           // 3 guaranteed "Jock" subjects
+    bool  TakePhoto();                       // shutter (LMB in photo mode)
+    void  RegisterPhotoTarget(EntityID npc, const std::string& label,
+                              Photo::TargetKind kind, float height);
+    void  PrunePhotoTargets();               // drop despawned subjects
+    float CurrentFovDeg() const;             // 60 / vehicle FOV / zoomed
+    void  DrawPhotoOverlayUI();              // viewfinder widgets on view 10
+    Photo::PhotoSystem m_photos;             // subject registry + album
+    bool    m_photoMode   = false;           // viewfinder active (camera out)
+    float   m_photoZoom   = 1.0f;            // 1.0..kPhotoZoomMax (wheel)
+    float   m_photoFlash  = 0.0f;            // shutter flash timer
+    float   m_photoPopupTimer = 0.0f;        // stagger feedback timer
+    std::string m_photoPopup;                // last stagger feedback line
+    glm::mat4 m_photoViewProj{1.0f};         // cached view*proj (zoom FOV)
+    struct PhotoSubject {
+        bool        has     = false;          // something is highlighted
+        bool        valid   = false;          // shutter-ready (all checks pass)
+        EntityID    entity{};
+        std::string label;                    // subject + distance
+        float       bx = 0.0f, by = 0.0f;     // bracket rect (pixels)
+        float       bw = 0.0f, bh = 0.0f;
+    };
+    PhotoSubject m_photoSubject;             // highlighted target this frame
+    std::vector<std::string> m_photoAlbumRows; // journal album page lines
+    bool    m_journalPhotoPage = false;      // journal shows the album instead
+    std::vector<EntityID> m_photoDemoTargets; // OPENBULLY_PHOTO_DEMO props
+    static constexpr float kPhotoZoomMin = 1.0f;
+    static constexpr float kPhotoZoomMax = 4.0f;
+    static constexpr int   kCameraWeaponId = 7; // weapon.h kTable row
 
     // Track 41: class system. Classes load from data/classes/classes.json
     // (schedule + location + objectives + rewards). Prompt detection runs per
@@ -366,6 +478,39 @@ private:
     int   m_gameDay            = 0;     // day counter, 0 = Monday
     int   m_slingshotCapBonus  = 0;     // Track 41: SHOP reward
 
+    // Track 45: arcade cabinets (Nut Shots / Monkey Fling). Cabinets spawn in
+    // a ground-verified ring around Jimmy's spawn (vehicle-ring strategy); a
+    // near cabinet shows an "[E] PLAY <NAME> ($1)" prompt and E opens the
+    // full-screen cabinet view ($1 per play, no ESC refund). While the view
+    // is up the world freezes exactly like the class session (buttons cleared,
+    // mouse zeroed, ESC swallowed by ExitGame) and the cabinet screen renders
+    // on top. High scores/wins/achievement persist via SaveData; a new high
+    // score pays a $5 prize into PlayerController::money.
+    void SpawnArcadeCabinets();      // Init-time placement (after vehicles)
+    void UpdateArcade(float dt);     // world side: prompt + E entry (+demo)
+    ArcadeManager m_arcade;
+
+    // Track 44: minigame framework. StartClassSession maps the class subject
+    // (ClassType) to a MinigameType and opens the manager overlay; when the
+    // player continues the manager hands the result back through
+    // OnMinigameResult, which applies rewards + journals the grade. The
+    // placeholder sweep from Track 41 stays as the fallback for subjects with
+    // no implemented minigame yet (Art/Shop/Photography/Geography, and the
+    // three reserved ones: Rhythm/TargetPractice/MemoryMatch). While the
+    // overlay is up the Engine captures the minigame keys once per frame
+    // (MinigameInput::CaptureFrom) and then clears those scancodes from the
+    // shared snapshot, so gameplay raw-key consumers -- melee Q/E, grapple
+    // G/U/I/O, weather W, schedule T, journal J, minimap M, reload R, slots
+    // 1-4, dialogue choices -- stay dark: input separation both directions.
+    Minigames::MinigameManager m_minigames;
+    Minigames::MinigameInput   m_minigameInput; // keys captured this frame
+    int    m_minigameClassIdx = -1;  // class the active session belongs to
+    bool   StartClassMinigame(const ClassData& c); // subject -> type mapping
+    void   StripMinigameKeys();      // shared snapshot -> minigame-only keys
+    void   UpdateMinigames(float dt);
+    void   DrawMinigameOverlay();
+    void   OnMinigameResult(const Minigames::MinigameResult& r);
+
     // Track 30: dialogue system. Loads data/dialogue/demo_dialogue.json
     // (hand-authored Bully-flavored trees; .lur/XACT sources are deferred),
     // starts conversations with E near an NPC (2.5u, not in combat), drives
@@ -379,6 +524,38 @@ private:
     DialogueManager m_dialogue;
     EntityID        m_dialogueNpc{};    // NPC currently in conversation
     int             m_dialogueChoiceSel = 0; // arrow-key selection highlight
+
+    // Track 48: cutscene playback. Loads data/cutscenes/demo_cutscene.json
+    // (camera keyframes + actor actions + subtitle lines; retail .lur/XACT
+    // cutscene data stays out of scope). Playback: the scripted camera
+    // overrides the gameplay camera (keyframe interpolation, smoothstep
+    // eases, "cut" keys hold-then-pop), every gameplay button + mouse delta
+    // is frozen (Space / ESC skips), actor MOVE_TO tweens pose the entities
+    // and drive their walk cycle, and subtitle lines render as a bottom
+    // caption strip. Mission wiring, two ways: an authored "auto_mission"
+    // plays the cutscene when that mission activates (trigger zones count),
+    // and "on_end_mission" activates the next mission in the chain on end.
+    bool InitCutscenes();
+    void UpdateCutscenes(float dt);       // skip input + freeze + timeline tick
+    void ApplyCutscenePoses(float dt);    // scripted actor positions + physics
+    void UpdateCutsceneCamera(float dt);  // scripted camera (overrides follow cam)
+    void UpdateCutsceneAutoTriggers();    // mission activation -> play + demo loop
+    void StartCutscene(const Cutscene& cs);
+    void OnCutsceneEnded(bool skipped);   // fires via CutsceneManager::SetOnEnd
+    void ExecuteCutsceneAction(const CutsceneAction& a); // action event hook
+    bool IsCutsceneActor(EntityID id) const;
+    bool CutsceneActorMoving(EntityID id) const;  // for the walk/idle switcher
+    struct CutsceneActorBinding {
+        std::string name;                  // actor key from the cutscene data
+        EntityID    id;                    // resolved at play start (invalid = none)
+        glm::vec3   startPos{0.0f};        // MoveTo tween seed
+    };
+    CutsceneManager m_cutscenes;
+    bool            m_cutscenePlaying = false;
+    std::string     m_cutsceneId;                 // id of the playing cutscene
+    std::vector<CutsceneActorBinding> m_cutsceneActors;
+    std::unordered_map<std::string, bool> m_cutsceneAutoFired; // per auto_mission id
+    double          m_cutsceneDemoNextPlay = 1.0;  // OPENBULLY_CUTSCENE_DEMO cadence
 
     // Track 31: vehicles. Loads 4 drivable models from the extracted World.img
     // set (bike / car / moped / go-kart), spawns one of each around Jimmy,
@@ -406,6 +583,29 @@ private:
     EntityID FindNearestVehicle(const glm::vec3& pos, float maxDist) const;
     std::vector<VehicleModel> m_vehicleModels;
     std::vector<EntityID>     m_vehicleIds;
+
+    // Track 49: boss fight runtime. m_boss is the single active boss; a dead
+    // entity id clears the HUD + QTE state. m_bossCronies are Johnny's
+    // reinforcements (cleaned up as they KO). m_bossBanner drives the
+    // center-screen announce text (engage / phase / victory / defeat).
+    struct BossRuntime {
+        EntityID entity{};                 // invalid = no active boss
+        BossType type = BossType::Russell;
+        glm::vec3 spawnPos{0.0f};          // boss home (retry reset point)
+        bool  victory        = false;      // defeated: mission done, bar hidden
+        double victoryAt     = 0.0;        // engine time of the kill
+        int   retryCount     = 0;          // player deaths this fight
+    };
+    BossRuntime m_boss;
+    std::vector<BossZone> m_bossZones;
+    std::vector<EntityID> m_bossCronies;
+    char    m_bossBanner[64] = {};
+    int     m_bossBannerKind = 0;   // 0 none, 1 engage, 2 phase, 3 victory, 4 defeat
+    float   m_bossBannerTimer = 0.0f;
+    float   m_bossBannerDur   = 0.0f;
+    bool    m_bossSpawned = false;    // SpawnBoss already ran at init
+    float   m_lastGroundY = 0.0f;     // Track 49: Jimmy void-guard level
+
     EntityID  m_mountedVehicle{};                    // invalid = on foot
     glm::vec3 m_preMountCamPos{0.0f};                // camera restore point
     float     m_preMountPitch = 0.0f;
@@ -526,6 +726,30 @@ private:
     std::vector<FightInfo> m_fights;
     EntityID               m_prefectIds[2] = {{}, {}}; // authority NPCs
 
+    // Track 43: wanted (trouble) system. Cop entities spawned at 4+ heads,
+    // the shared system state (flash/fade/decay/curfew) and the restricted
+    // (trespass) zones built once at first update, relative to the spawn.
+    std::vector<EntityID> m_copIds;
+    WantedSystem          m_wanted;
+    bool                  m_copsPending   = false;  // materialize at top of frame
+    bool                  m_copsStandDown = false;  // despawn at top of frame
+    struct TrespassZone { std::string id; glm::vec3 bmin; glm::vec3 bmax; };
+    std::vector<TrespassZone> m_trespassZones;
+    void AddWanted(WantedCrime crime, const char* reason);   // single crime gate
+    void PlayerViolence(EntityID victim, const glm::vec3& pos); // combat hook
+    void VandalismCrime(const glm::vec3& pos);               // projectile hook
+    bool AnyAuthorityWitnessed(const glm::vec3& pos);
+    bool AnyAuthorityNear(float radius);
+    void UpdateWanted(float dt);   // decay + authority response + curfew
+    void ServiceCopRequests();     // top-of-frame spawn/despawn (safe mutation)
+    bool AnyAuthorityChasing();
+    void SetupTrespassZones();
+    void SpawnCops();
+    void DespawnCops();
+    void BeginBust();
+    void FinishBust();
+    void DriveWantedDemo(float dt); // OPENBULLY_WANTED_DEMO scripted drive
+
     // Track 29: NPC schedules. Each scheduled NPC slot pairs one NPC model
     // with one named schedule; UpdateSchedules spawns/despawns its entity as
     // the game clock crosses window boundaries (data/schedules/
@@ -583,6 +807,32 @@ private:
     MissionManager m_missions;         // missions + trigger zones
     GpuMesh        m_beaconMesh;       // unit cube for the objective marker
     bool           m_beaconValid = false;
+
+    // --- Track 42: faction respect ------------------------------------------
+    // m_factions holds one respect value per faction (clamped [-100,100]) +
+    // the completed-mission tally. Respect bands drive NPC perception:
+    // Hostile (< -50) attacks on sight, Friendly (> +50) never attacks and
+    // greets. TAB toggles the stats overlay; F gifts the nearest NPC.
+    FactionSystem m_factions;
+    bool   m_statsOpen       = false;  // TAB stats overlay
+    double m_factionCensusLast = -1e9; // per-second census timer (demo runs)
+    // Model-index -> faction mapping for spawned NPCs (deterministic round
+    // robin over the 6 student cliques; Authority comes from Prefects).
+    static Faction FactionForModel(uint32_t modelIndex);
+    // Faction of a live NPC entity (Authority for AIRole::Prefect).
+    Faction NpcFaction(EntityID id);
+    // Adds a respect delta and logs before/after (verification aid).
+    void ModifyRespect(Faction f, float delta, const char* reason);
+    // TAB/F key edges (stats overlay + gift).
+    void HandleFactionKeys();
+    // F key: gift to the nearest NPC within gift range (small respect boost).
+    void TryGiftToNpc();
+    // Flattens faction state into HUDState (stats rows, interaction readout).
+    void UpdateFactionHUD();
+    // TAB overlay: interaction readout + per-faction bars + overall respect.
+    void DrawFactionStats();
+    // OPENBULLY_FACTION_DEMO=1: scripted beat-down + stats-screen drive.
+    void DriveFactionDemo(float dt);
 
     // Track 21: audio. SDL2 device + procedural SFX + software mixer;
     // unique_ptr to keep AudioManager out of this header.

@@ -5,6 +5,7 @@
       "id": "ch1_welcome",
       "name": "Welcome to Bullworth",
       "description": "Mr. Hand has asked you to report to Bullworth Academy.",
+      "respect_reward": { "faction": "AUTHORITY", "amount": 15 },
       "objectives": [
         {
           "type": "GO_TO_LOCATION",
@@ -27,6 +28,7 @@
       "name": "This Is Your School",
       "description": "Meet your classmates and find your class schedule.",
       "start_after": "ch1_welcome",
+      "respect_reward": { "faction": "NERDS", "amount": 15 },
       "objectives": [
         {
           "type": "TALK_TO_NPC",
@@ -49,6 +51,7 @@
       "name": "Defend Yourself",
       "description": "Bullies are waiting. Stand your ground and report to the Headmaster.",
       "start_after": "ch1_this_is_your_school",
+      "respect_reward": { "faction": "BULLIES", "amount": 20 },
       "objectives": [
         {
           "type": "DEFEAT_NPC",
@@ -64,6 +67,66 @@
           "ref": "spawn",
           "offset": [0, 0, 1.0],
           "radius": 2.5,
+          "auto_complete_on_reach": true
+        }
+      ]
+    },
+    {
+      "id": "ch1_photography",
+      "name": "Photography 101",
+      "description": "Ms. Danvers wants shots of the jocks for the yearbook.",
+      "start_after": "ch1_defend_yourself",
+      "objectives": [
+        {
+          "type": "PHOTOGRAPH_TARGET",
+          "description": "Photograph 3 jocks bumpering in the yard",
+          "photo_target": "Jock",
+          "photo_count": 3
+        }
+      ]
+    },
+    {
+      "id": "ch1_trouble",
+      "name": "Trouble on the Roof",
+      "description": "The prefects are onto you. Stay clean and get clear.",
+      "start_after": "ch1_defend_yourself",
+      "objectives": [
+        {
+          "type": "AVOID_BUST",
+          "description": "Don't get busted (survive 20 seconds)",
+          "duration": 20,
+          "ref": "spawn",
+          "offset": [0, 0, 0],
+          "radius": 1.0
+        },
+        {
+          "type": "GO_TO_LOCATION",
+          "description": "Get clear: reach the far corner of the roof",
+          "ref": "spawn",
+          "offset": [-9.6, 0, 0.4],
+          "radius": 2.5
+        }
+      ]
+    },
+    {
+      "id": "boss_duel",
+      "name": "Yard Boss Duel",
+      "description": "The faction leader wants a piece of the new kid. Win the duel.",
+      "respect_reward": { "faction": "BULLIES", "amount": 25 },
+      "objectives": [
+        {
+          "type": "DEFEAT_NPC",
+          "description": "Defeat the boss (Track 49: phases + specials + QTEs)",
+          "ref": "spawn",
+          "offset": [7, 0, 0],
+          "radius": 3.5
+        },
+        {
+          "type": "CUSTOM",
+          "description": "Stand over the fallen leader",
+          "ref": "spawn",
+          "offset": [7, 0, 0],
+          "radius": 6.0,
           "auto_complete_on_reach": true
         }
       ]

@@ -184,10 +184,13 @@ bool GetVec3(const JValue& obj, const char* key, glm::vec3& out) {
 }
 
 ObjectiveType ParseObjectiveType(const std::string& s) {
-    if (s == "TALK_TO_NPC")   return ObjectiveType::TalkToNpc;
-    if (s == "DEFEAT_NPC")    return ObjectiveType::DefeatNpc;
-    if (s == "COLLECT_ITEM")  return ObjectiveType::CollectItem;
-    if (s == "CUSTOM")        return ObjectiveType::Custom;
+    if (s == "TALK_TO_NPC")       return ObjectiveType::TalkToNpc;
+    if (s == "DEFEAT_NPC")        return ObjectiveType::DefeatNpc;
+    if (s == "COLLECT_ITEM")      return ObjectiveType::CollectItem;
+    if (s == "PHOTOGRAPH_TARGET") return ObjectiveType::PhotographTarget;
+    if (s == "CUSTOM")            return ObjectiveType::Custom;
+    if (s == "AVOID_BUST" || s == "DONT_GET_BUSTED")
+        return ObjectiveType::AvoidBust; // Track 43
     return ObjectiveType::GoToLocation; // default / GO_TO_LOCATION
 }
 
@@ -206,8 +209,10 @@ const char* ObjectiveTypeName(ObjectiveType t) {
         case ObjectiveType::GoToLocation: return "GO_TO_LOCATION";
         case ObjectiveType::TalkToNpc:    return "TALK_TO_NPC";
         case ObjectiveType::DefeatNpc:    return "DEFEAT_NPC";
-        case ObjectiveType::CollectItem:  return "COLLECT_ITEM";
-        case ObjectiveType::Custom:       return "CUSTOM";
+        case ObjectiveType::CollectItem:      return "COLLECT_ITEM";
+        case ObjectiveType::PhotographTarget: return "PHOTOGRAPH_TARGET";
+        case ObjectiveType::Custom:           return "CUSTOM";
+        case ObjectiveType::AvoidBust:        return "AVOID_BUST"; // Track 43
     }
     return "?";
 }
@@ -310,6 +315,29 @@ bool MissionManager::LoadFromJson(
             if (const JValue* s = jm.Find("name"); s) m.name = s->str;
             if (const JValue* s = jm.Find("description"); s) m.description = s->str;
             if (const JValue* s = jm.Find("start_after"); s) m.startAfter = s->str;
+            // Track 42: faction respect reward on completion.
+            if (const JValue* rw = jm.Find("respect_reward"); rw &&
+                                                          rw->type == JValue::Type::Object) {
+                if (const JValue* s = rw->Find("faction"); s &&
+                    s->type == JValue::Type::String) {
+                    const Faction f = ParseFactionName(s->str);
+                    if (f != Faction::Count)
+                        m.respectFaction = static_cast<int>(f);
+                    else
+                        Logger::Warning("Missions: unknown respect_reward faction '%s'",
+                                        s->str.c_str());
+                }
+                double amt = 0.0;
+                if (GetNumber(*rw, "amount", amt) && amt != 0.0)
+                    m.respectReward = int(amt);
+                else
+                    m.respectReward = int(FactionTuning::kMission);
+                Logger::Info("Missions: respect_reward set (%+d %s)",
+                             m.respectReward,
+                             m.respectFaction >= 0
+                                 ? FactionName(static_cast<Faction>(m.respectFaction))
+                                 : "<invalid>");
+            }
             if (const JValue* objs = jm.Find("objectives"); objs &&
                                                           objs->type == JValue::Type::Array) {
                 for (const JValue& jo : objs->items) {
@@ -322,8 +350,21 @@ bool MissionManager::LoadFromJson(
                     double d = 0.0;
                     if (GetNumber(jo, "radius", d) && d > 0.0)
                         o.completionRadius = float(d);
+                    // Track 43: AVOID_BUST survival duration (seconds).
+                    if (GetNumber(jo, "duration", d) && d > 0.0)
+                        o.surviveTime = float(d);
                     if (const JValue* b = jo.Find("auto_complete_on_reach"); b)
                         o.completeOnReach = (b->type == JValue::Type::Bool && b->boolean);
+                    // Track 47: PHOTOGRAPH_TARGET counters (subject label +
+                    // how many valid photos the objective demands).
+                    if (const JValue* s2 = jo.Find("photo_target"); s2 &&
+                        s2->type == JValue::Type::String)
+                        o.photoTarget = s2->str;
+                    double need = 0.0;
+                    if (GetNumber(jo, "photo_count", need) && need >= 1.0)
+                        o.photoNeeded = int(need);
+                    if (o.type == ObjectiveType::PhotographTarget &&
+                        o.photoNeeded < 1) o.photoNeeded = 1;
                     m.objectives.push_back(o);
                 }
             }
@@ -373,9 +414,9 @@ bool MissionManager::LoadFromJson(
     return missionCount > 0 || zoneCount > 0;
 }
 
-void MissionManager::Update(const glm::vec3& playerPos) {
+void MissionManager::Update(const glm::vec3& playerPos, float dt) {
     UpdateTriggerZones(playerPos);
-    UpdateActiveMissions(playerPos);
+    UpdateActiveMissions(playerPos, dt);
 }
 
 void MissionManager::UpdateTriggerZones(const glm::vec3& playerPos) {
@@ -408,13 +449,13 @@ void MissionManager::UpdateTriggerZones(const glm::vec3& playerPos) {
     }
 }
 
-void MissionManager::UpdateActiveMissions(const glm::vec3& playerPos) {
+void MissionManager::UpdateActiveMissions(const glm::vec3& playerPos, float dt) {
     for (size_t i = 0; i < m_missions.size(); ++i) {
         Mission& m = m_missions[i];
         if (m.state != MissionState::Active) continue;
         if (m.currentObjective >= m.objectives.size()) continue;
 
-        CheckObjective(uint32_t(i), playerPos);
+        CheckObjective(uint32_t(i), playerPos, dt);
 
         // Activation chain: any mission that just completed starts the first
         // Inactive mission waiting on it (Bully-style mission flow). Note the
@@ -456,15 +497,47 @@ bool MissionManager::ReachedObjective(const Objective& o,
             return o.completeOnReach &&
                    glm::length(glm::vec2(playerPos.x - o.targetPosition.x,
                                           playerPos.z - o.targetPosition.z)) <=
-                          o.completionRadius;
+                           o.completionRadius;
+        case ObjectiveType::PhotographTarget:
+            // Never completes on reach: the shutter (NotifyPhotoTaken) is the
+            // only path, so the beacon/proximity check never fires.
+            return false;
+        case ObjectiveType::AvoidBust:
+            // Track 43: never completes on reach; the survival timer in
+            // CheckObjective is the only completion path.
+            return false;
     }
     return false;
 }
 
-void MissionManager::CheckObjective(uint32_t missionIndex, const glm::vec3& playerPos) {
+void MissionManager::CheckObjective(uint32_t missionIndex, const glm::vec3& playerPos,
+                                    float dt) {
     Mission& m = m_missions[missionIndex];
     if (m.currentObjective >= m.objectives.size()) return;
     Objective& o = m.objectives[m.currentObjective];
+
+    // Track 43: AVOID_BUST - survive `surviveTime` seconds of engine time
+    // with the objective current. Engine::Busted -> NotifyBust fails the
+    // mission the instant the player is caught.
+    if (o.type == ObjectiveType::AvoidBust) {
+        if (o.complete || dt <= 0.0f) return;
+        o.timer += dt;
+        if (o.surviveTime > 0.0f && o.timer < o.surviveTime) return;
+        o.complete = true;
+        Logger::Info("OBJECTIVE COMPLETE: %s (survived %.0f s, mission '%s', "
+                     "%zu/%zu)", o.description.c_str(), o.timer, m.id.c_str(),
+                     m.currentObjective + 1, m.objectives.size());
+        ++m.currentObjective;
+        if (m.currentObjective >= m.objectives.size()) {
+            CompleteMission(missionIndex);
+        } else {
+            const Objective& next = m.objectives[m.currentObjective];
+            Logger::Info("MISSION ADVANCED: '%s' — objective %zu/%zu: %s",
+                         m.name.c_str(), m.currentObjective + 1,
+                         m.objectives.size(), next.description.c_str());
+        }
+        return;
+    }
 
     // Proximity types complete on reach; DEFEAT/CUSTOM complete on reach only
     // when hand-authored content set auto_complete_on_reach.
@@ -502,6 +575,61 @@ bool MissionManager::NotifyNpcDefeated(EntityID npc) {
         return CompleteObjective(i, m.currentObjective);
     }
     return false;
+}
+
+// Track 43: the player was busted. Any active mission whose CURRENT
+// objective is AVOID_BUST ("don't get busted") fails immediately.
+int MissionManager::NotifyBust() {
+    int failed = 0;
+    for (size_t i = 0; i < m_missions.size(); ++i) {
+        Mission& m = m_missions[i];
+        if (m.state != MissionState::Active ||
+            m.currentObjective >= m.objectives.size()) continue;
+        if (m.objectives[m.currentObjective].type != ObjectiveType::AvoidBust)
+            continue;
+        m.state = MissionState::Failed;
+        Logger::Info("MISSION FAILED: '%s' (%s) — the player got busted "
+                     "(DON'T GET BUSTED)", m.name.c_str(), m.id.c_str());
+        ++failed;
+    }
+    return failed;
+}
+
+// Track 47: first mission whose current objective is a live PHOTOGRAPH_TARGET.
+const Mission* MissionManager::ActivePhotoMission() const {
+    for (const Mission& m : m_missions) {
+        if (m.state != MissionState::Active) continue;
+        if (m.currentObjective >= m.objectives.size()) continue;
+        const Objective& o = m.objectives[m.currentObjective];
+        if (o.type == ObjectiveType::PhotographTarget && !o.complete) return &m;
+    }
+    return nullptr;
+}
+
+// Track 47: a validated photo of `subject` was taken. Every active mission
+// whose current objective is a PHOTOGRAPH_TARGET for that subject advances
+// one count (empty photoTarget accepts any subject); hitting photoNeeded
+// completes the objective through the normal path so chaining, completion
+// logging and the journal transition feed all keep working.
+bool MissionManager::NotifyPhotoTaken(const std::string& subject) {
+    bool advanced = false;
+    for (size_t i = 0; i < m_missions.size(); ++i) {
+        Mission& m = m_missions[i];
+        if (m.state != MissionState::Active ||
+            m.currentObjective >= m.objectives.size())
+            continue;
+        Objective& o = m.objectives[m.currentObjective];
+        if (o.type != ObjectiveType::PhotographTarget || o.complete) continue;
+        if (!o.photoTarget.empty() && o.photoTarget != subject) continue;
+
+        ++o.photoCount;
+        advanced = true;
+        Logger::Info("PHOTO PROGRESS: %s %d/%d (mission '%s')",
+                     subject.c_str(), o.photoCount, o.photoNeeded, m.id.c_str());
+        if (o.photoCount >= o.photoNeeded)
+            CompleteObjective(uint32_t(i), m.currentObjective);
+    }
+    return advanced;
 }
 
 bool MissionManager::CompleteObjective(uint32_t missionIndex, size_t objectiveIndex) {
@@ -548,6 +676,8 @@ void MissionManager::CompleteMission(uint32_t missionIndex) {
     m.state = MissionState::Complete;
     Logger::Info("MISSION COMPLETE: '%s' (%s) — all %zu objective(s) done",
                  m.name.c_str(), m.id.c_str(), m.objectives.size());
+    // Track 42: faction respect reward (Engine applies it + journals it).
+    if (m_onComplete) m_onComplete(m);
 }
 
 // =========================================================================

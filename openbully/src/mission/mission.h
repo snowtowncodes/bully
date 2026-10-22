@@ -19,10 +19,12 @@
 
 #include "../entities/entity.h"
 #include "../engine/save_system.h" // Track 36: MissionSave / TriggerSave
+#include "../game/faction.h" // Track 42: Faction enum + ParseFactionName
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -35,7 +37,9 @@ enum class ObjectiveType : uint8_t {
     TalkToNpc,      // reach the NPC at targetPosition (proximity talk)
     DefeatNpc,      // completed externally via NotifyNpcDefeated()
     CollectItem,    // reach the item at targetPosition
-    Custom          // completed externally via CompleteObjective()
+    PhotographTarget, // Track 47: take N photos of a subject (NotifyPhotoTaken)
+    Custom,           // completed externally via CompleteObjective()
+    AvoidBust        // Track 43: survive `surviveTime` s; Busted() fails it
 };
 
 // Lifecycle of a mission.
@@ -54,6 +58,16 @@ struct Objective {
     float         completionRadius = 2.5f;
     bool          completeOnReach  = false; // proximity completes DEFEAT/CUSTOM too
     std::string   description;              // log/UI text
+    // Track 47: PHOTOGRAPH_TARGET counters. photoTarget matches the subject
+    // label the photo engine registered (empty = any valid photo counts).
+    std::string   photoTarget;
+    int           photoNeeded = 1;   // photos required to complete
+    int           photoCount  = 0;   // valid photos so far
+    // Track 43: AVOID_BUST timing. `surviveTime` is the required survival
+    // duration (seconds of engine time); `timer` accumulates while the
+    // objective is current and the wanted meter is untouched.
+    float         surviveTime     = 0.0f;
+    float         timer           = 0.0f;
     bool          complete = false;
 };
 
@@ -66,6 +80,12 @@ struct Mission {
     size_t               currentObjective = 0;
     MissionState         state = MissionState::Inactive;
     std::string          startAfter; // activation chain: complete this id first
+
+    // --- Track 42: faction respect reward -----------------------------------
+    // Granted once when the mission completes (JSON "respect_reward":
+    // { "faction": "NERDS", "amount": 20 }); respectFaction < 0 = none.
+    int  respectFaction = -1;              // Faction enum value
+    int  respectReward  = 20;              // delta applied to that faction
 };
 
 // World-space AABB that starts a mission when the player enters it (once).
@@ -102,12 +122,26 @@ public:
 
     // Fires trigger zones the player entered, checks the active mission's
     // current objective, and starts chained missions. Logs every transition.
-    void Update(const glm::vec3& playerPos);
+    // `dt` feeds the Track 43 AVOID_BUST survival timer (0 = no tick).
+    void Update(const glm::vec3& playerPos, float dt = 0.0f);
 
     // --- external completion (DEFEAT_NPC / CUSTOM) ------------------------------
 
     // Completes the active mission's current objective when it targets `npc`.
     bool NotifyNpcDefeated(EntityID npc);
+    // Track 43: fail every active mission whose current objective is
+    // AVOID_BUST ("don't get busted"). Called from Engine::FinishBust;
+    // returns the number of missions failed (0 = none applied).
+    int  NotifyBust();
+    // Track 47: a valid photo of `subject` was taken. Advances every active
+    // PHOTOGRAPH_TARGET objective whose subject matches (empty photoTarget
+    // accepts any). Returns true when at least one counter moved.
+    bool NotifyPhotoTaken(const std::string& subject);
+    // Track 47: first mission whose current objective is a live (incomplete)
+    // PHOTOGRAPH_TARGET, or nullptr. Unlike ActiveMission() this skips
+    // non-photo missions that are active at the same time (chained demo
+    // content keeps ch1_welcome active indefinitely).
+    const Mission* ActivePhotoMission() const;
     // Force-completes a specific objective (script hooks).
     bool CompleteObjective(uint32_t missionIndex, size_t objectiveIndex);
     // Activates an Inactive mission, resetting its objective cursor (script
@@ -137,15 +171,22 @@ public:
     // Restores trigger zone fired states from a save.
     void RestoreTriggers(const std::vector<TriggerSave>& saved);
 
+    // --- Track 42: completion hook ---------------------------------------------
+    // Fired exactly once when a mission completes (the Engine applies the
+    // mission's faction respect reward). Bound in Engine::InitMissions.
+    void SetOnComplete(std::function<void(const Mission&)> fn)
+        { m_onComplete = std::move(fn); }
+
 private:
     void UpdateTriggerZones(const glm::vec3& playerPos);
-    void UpdateActiveMissions(const glm::vec3& playerPos);
-    void CheckObjective(uint32_t missionIndex, const glm::vec3& playerPos);
+    void UpdateActiveMissions(const glm::vec3& playerPos, float dt);
+    void CheckObjective(uint32_t missionIndex, const glm::vec3& playerPos, float dt);
     void CompleteMission(uint32_t missionIndex);
     bool ReachedObjective(const Objective& o, const glm::vec3& playerPos) const;
 
     std::vector<Mission>     m_missions;
     std::vector<TriggerZone> m_triggers;
+    std::function<void(const Mission&)> m_onComplete; // Track 42
 };
 
 } // namespace OpenBully

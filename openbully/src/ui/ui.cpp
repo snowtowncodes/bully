@@ -501,24 +501,39 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
                  PackRGBA(255, 255, 255, 255));
     }
 
-    // --- Wanted stars: top-right, below minimap -----------------------------
+    // --- Track 43: wanted heads (top-right, below the minimap) ------------
+    // Five head icons; a filled one is one head of trouble. Gold normally,
+    // red while the level just climbed (hud.wantedFlash > 0), dim when clean.
     {
-        const float cell   = 3.0f * s;
-        const float starW  = 5.0f * cell;
-        const float gap    = 5.0f * s;
-        const float starY  = hudTopY;
+        const float headW = 8.0f * s;      // 10-row pixel-art head, 1 px per row
+        const float gap   = 5.0f * s;
+        const float headY = hudTopY - 1.0f * s;
+        const bool  flash = hud.wantedFlash > 0.0f;
+        // Column span of each of the 10 rows: a squarish head silhouette.
+        static const struct { int x0, w; } kHeadRows[10] = {
+            { 3, 2 }, { 2, 4 }, { 1, 6 }, { 1, 6 }, { 1, 6 },
+            { 1, 6 }, { 1, 6 }, { 1, 6 }, { 2, 4 }, { 3, 2 }
+        };
         for (int i = 0; i < 5; ++i) {
-            const float scx = right - (5.0f - float(i)) * (starW + gap) + starW * 0.5f;
-            const float scy = starY + starW * 0.5f;
-            static const int kRows[5] = { 1, 3, 5, 3, 1 };
-            const uint32_t rgba = i < hud.wanted
-                ? PackRGBA(255, 205, 60, 255)
-                : PackRGBA(90, 90, 95, 170);
-            for (int r = 0; r < 5; ++r) {
-                const float w = float(kRows[r]) * cell;
-                DrawRect(scx - w * 0.5f, scy - 2.5f * cell + float(r) * cell,
-                         w, cell, rgba);
+            const float x      = right - (5.0f - float(i)) * (headW + gap);
+            const bool  filled = i < hud.wanted;
+            const uint32_t face = filled
+                ? (flash ? PackRGBA(255, 70, 70, 255)  : PackRGBA(255, 190, 60, 255))
+                : (flash ? PackRGBA(150, 60, 60, 200)  : PackRGBA(90, 90, 95, 170));
+            const uint32_t eyes = PackRGBA(30, 25, 20, 255);
+            for (int r = 0; r < 10; ++r) {
+                DrawRect(x + float(kHeadRows[r].x0) * s, headY + float(r) * s,
+                         float(kHeadRows[r].w) * s, s, face);
             }
+            if (filled) {   // eyes make the filled icon read as a face
+                DrawRect(x + 2.0f * s, headY + 4.0f * s, s, s, eyes);
+                DrawRect(x + 5.0f * s, headY + 4.0f * s, s, s, eyes);
+            }
+        }
+        if (hud.copsActive) {
+            const std::string cops("COPS!");
+            DrawText(right - MeasureText(cops), headY + 13.0f * s,
+                     cops, PackRGBA(255, 90, 90, 255));
         }
     }
 
@@ -528,7 +543,8 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
         std::snprintf(buf, sizeof(buf), "%02d:%02d",
                       (hud.clockMinutes / 60) % 24, hud.clockMinutes % 60);
         const std::string clock(buf);
-        const float y = hudTopY + 15.0f * s + 8.0f * s;
+        const float y = hudTopY + 15.0f * s + 8.0f * s +
+                        (hud.copsActive ? 12.0f * s : 0.0f);
         DrawText(right - MeasureText(clock), y, clock, PackRGBA(255, 255, 255, 235));
 
         std::snprintf(buf, sizeof(buf), "$%d", hud.money);
@@ -564,6 +580,120 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
         }
     }
 
+    // --- Track 49: boss fight bar + QTE prompt + banner --------------------
+    if (hud.bossActive || hud.bossDefeated) {
+        const float barW = 520.0f * s;
+        const float barH = 22.0f * s;
+        const float bx   = W * 0.5f - barW * 0.5f;
+        const float by   = pad + 30.0f * s;
+
+        // Boss name centered above the bar.
+        {
+            const std::string name(hud.bossName);
+            DrawText(W * 0.5f - MeasureText(name) * 0.5f,
+                     by - kGlyphHeight * s - 3.0f * s, name,
+                     PackRGBA(255, 236, 205, 255));
+        }
+
+        // Bar: dark backing, black trough, red gradient fill (boss bars are
+        // red so they never read as the player's green health).
+        DrawRect(bx - 3.0f * s, by - 3.0f * s, barW + 6.0f * s, barH + 6.0f * s,
+                 PackRGBA(22, 16, 18, 220));
+        DrawRect(bx, by, barW, barH, PackRGBA(28, 8, 10, 220));
+        float bfrac = std::min(1.0f, std::max(0.0f, hud.bossHealth));
+        if (bfrac > 0.0f) {
+            // Drain hue: crimson -> deep red as the bar empties.
+            const uint8_t r = uint8_t(235.0f);
+            const uint8_t g = uint8_t(45.0f + 60.0f * bfrac);
+            const uint8_t b = uint8_t(55.0f);
+            DrawRect(bx + 1.0f * s, by + 1.0f * s,
+                     std::max(0.0f, (barW - 2.0f * s) * bfrac),
+                     barH - 2.0f * s, PackRGBA(r, g, b, 240));
+        }
+        // Phase thresholds (66% / 33%) as thin markers.
+        for (int tick = 1; tick <= 2; ++tick) {
+            const float tx = bx + barW * (1.0f - float(tick) / 3.0f);
+            DrawRect(tx - 1.0f, by + 1.0f * s, 2.0f, barH - 2.0f * s,
+                     PackRGBA(255, 255, 255, 90));
+        }
+        // Defeated overlay text sits on the empty trough.
+        if (hud.bossDefeated) {
+            const std::string dead("DEFEATED");
+            DrawText(W * 0.5f - MeasureText(dead) * 0.5f,
+                     by + 2.0f * s, dead, PackRGBA(255, 240, 120, 255));
+        }
+
+        // Subtitle (left) + phase indicator (right) under the bar.
+        {
+            const std::string title(hud.bossTitle);
+            DrawText(bx, by + barH + 3.0f * s, title, PackRGBA(196, 160, 96, 225));
+            const char* phaseTxt = "PHASE I";
+            if (hud.bossPhase >= 3)      phaseTxt = "PHASE III - ENRAGED";
+            else if (hud.bossPhase >= 2) phaseTxt = "PHASE II";
+            const std::string phase(phaseTxt);
+            DrawText(bx + barW - MeasureText(phase), by + barH + 3.0f * s, phase,
+                     hud.bossPhase >= 3 ? PackRGBA(255, 150, 90, 255)
+                                        : PackRGBA(225, 220, 200, 220));
+        }
+
+        // --- QTE prompt (button + shrinking window bar) --------------------
+        {
+            const float qy = by + barH + 14.0f * s + 10.0f * s;
+            if (hud.qteActive) {
+                char buf[48];
+                std::snprintf(buf, sizeof(buf), "PRESS [%c]!", hud.qteKey);
+                const std::string txt(buf);
+                const float tw = MeasureText(txt) + 16.0f * s;
+                const float th = kGlyphHeight + 12.0f * s;
+                const float qx = W * 0.5f - tw * 0.5f;
+                // Prompt box + shrinking border brackets (the ring closes in
+                // as the window drains, so the player can read the urgency).
+                DrawRect(qx - 4.0f * s, qy - 4.0f * s, tw + 8.0f * s,
+                         th + 8.0f * s, PackRGBA(20, 18, 22, 205));
+                const float k = std::min(1.0f, std::max(0.0f, hud.qteFrac));
+                const float padX = tw * (1.0f - k) * 0.5f;
+                const uint32_t hot = (hud.qteFrac < 0.35f)
+                    ? PackRGBA(255, 90, 80, 255) : PackRGBA(255, 220, 90, 255);
+                DrawText(qx + 8.0f * s, qy, txt, hot);
+                // Window bar directly beneath the prompt.
+                DrawRect(qx, qy + th + 6.0f * s, tw, 5.0f * s,
+                         PackRGBA(40, 40, 46, 220));
+                DrawRect(qx, qy + th + 6.0f * s, tw * k, 5.0f * s, hot);
+                // Tick marks so the remaining time is glanceable.
+                (void)padX;
+            } else if (hud.qteResult > 0) {
+                const bool win = (hud.qteResult == 1);
+                const char* txt = win ? "PERFECT!" : "TOO SLOW!";
+                const std::string s_(txt);
+                const uint32_t col = win ? PackRGBA(255, 230, 90, 255)
+                                         : PackRGBA(255, 90, 80, 255);
+                const float a = 1.0f * std::min(1.0f, hud.qteResultFrac / 0.4f);
+                DrawText(W * 0.5f - MeasureText(s_) * 0.5f, qy, s_,
+                         ScaleAlpha(col, a));
+            }
+        }
+    }
+
+    // --- Track 49: center-screen boss banner (engage/phase/victory/defeat) --
+    if (hud.bannerKind != 0 && hud.banner[0] != '\0') {
+        const std::string txt(hud.banner);
+        const float a = std::min(1.0f, std::max(0.15f, hud.bannerFrac / 0.4f));
+        uint32_t col;
+        switch (hud.bannerKind) {
+            case 1:  col = PackRGBA(255, 240, 200, 255); break;  // engage
+            case 2:  col = PackRGBA(255, 160, 70, 255);  break;  // phase up
+            case 3:  col = PackRGBA(120, 255, 150, 255); break;  // victory
+            case 4:  col = PackRGBA(255, 95, 85, 255);   break;  // defeat
+            default: col = PackRGBA(255, 255, 255, 255); break;
+        }
+        const float w = MeasureText(txt);
+        const float y = H * 0.18f;
+        DrawRect(W * 0.5f - w * 0.5f - 10.0f * s, y - 4.0f * s,
+                 w + 20.0f * s, kGlyphHeight + 8.0f * s,
+                 PackRGBA(16, 14, 18, 190));
+        DrawText(W * 0.5f - w * 0.5f, y, txt, ScaleAlpha(col, a));
+    }
+
     // --- Track 39: slingshot crosshair (aim mode) + ammo counter ------------
     if (hud.aiming) {
         const float cx = W * 0.5f, cy = H * 0.5f;
@@ -594,8 +724,10 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
             if (slot.valid) {
                 if (slot.ammo > 0)
                     std::snprintf(buf, sizeof(buf), "%d:%s %d", i + 1, slot.name, slot.ammo);
-                else
+                else if (slot.durability > 0)
                     std::snprintf(buf, sizeof(buf), "%d:%s %d", i + 1, slot.name, slot.durability);
+                else
+                    std::snprintf(buf, sizeof(buf), "%d:%s", i + 1, slot.name);
             } else {
                 std::snprintf(buf, sizeof(buf), "%d:-", i + 1);
             }
@@ -607,6 +739,188 @@ void UIRenderer::DrawHUD(const HUDState& hud) {
             DrawText(x, y, label, rgba);
             x += MeasureText(label) + 10.0f * s;
         }
+    }
+
+    // --- Track 47: photo mission progress (above the weapon slots) ---------
+    if (hud.photoMissionActive) {
+        char pbuf[32];
+        std::snprintf(pbuf, sizeof(pbuf), "PHOTOS %d/%d",
+                      hud.photoCount, hud.photoNeeded);
+        const std::string pt(pbuf);
+        DrawText(pad, H - pad - 20.0f * s - kGlyphHeight * s - 8.0f * s
+                      - kGlyphHeight * s - 4.0f * s,
+                 pt, PackRGBA(255, 235, 140, 245));
+    }
+
+    // --- Track 43: screen-edge red flash when the wanted level climbs ------
+    if (hud.wantedFlash > 0.0f) {
+        const float k = std::min(1.0f, hud.wantedFlash / 1.2f);
+        const uint32_t red = PackRGBA(255, 40, 40, uint8_t(255.0f * k * 0.7f));
+        const float th = 7.0f * s;
+        DrawRect(0.0f, 0.0f, W, th, red);
+        DrawRect(0.0f, H - th, W, th, red);
+        DrawRect(0.0f, 0.0f, th, H, red);
+        DrawRect(W - th, 0.0f, th, H, red);
+    }
+
+    // --- Track 43: hidden indicator (tucked away: the heat decays) ---------
+    if (hud.hidden) {
+        const std::string label("HIDDEN - HEAT DECAYS");
+        DrawText(pad, pad, label, PackRGBA(150, 210, 255, 235));
+    }
+
+    // --- Track 43: the bust cut (fade to black, BUSTED!, fade back in) ----
+    if (hud.bustFade > 0.0f) {
+        const uint8_t a = uint8_t(std::min(255.0, double(hud.bustFade) * 255.0));
+        DrawRect(0.0f, 0.0f, W, H, PackRGBA(0, 0, 0, a));
+        if (hud.busted && hud.bustFade > 0.15f) {
+            const std::string label("BUSTED!");
+            DrawText(W * 0.5f - MeasureText(label) * 0.5f, H * 0.5f, label,
+                     PackRGBA(255, 255, 255, 255));
+        }
+    }
+}
+
+// --- Track 47: photo viewfinder + album ----------------------------------------
+
+void UIRenderer::DrawPhotoOverlay(const PhotoOverlay& o) {
+    if (!m_initialized || !o.active || m_screenWidth == 0 ||
+        m_screenHeight == 0)
+        return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s   = std::min(1.5f, std::max(0.75f, H / 720.0f));
+    const float pad = 24.0f * s;
+
+    // Corner frame: four L-brackets around the viewfinder area (softer than
+    // a full border; Bully's viewfinder reads as a camera, not a scope).
+    const float fx = pad, fy = pad;
+    const float fw = W - 2.0f * pad, fh = H - 2.0f * pad;
+    const float cl = 26.0f * s, ct = 3.0f * s;
+    const uint32_t frame = PackRGBA(235, 235, 240, 200);
+    DrawRect(fx, fy, cl, ct, frame);
+    DrawRect(fx, fy, ct, cl, frame);
+    DrawRect(fx + fw - cl, fy, cl, ct, frame);
+    DrawRect(fx + fw - ct, fy, ct, cl, frame);
+    DrawRect(fx, fy + fh - ct, cl, ct, frame);
+    DrawRect(fx, fy + fh - cl, ct, cl, frame);
+    DrawRect(fx + fw - cl, fy + fh - ct, cl, ct, frame);
+    DrawRect(fx + fw - ct, fy + fh - cl, ct, cl, frame);
+
+    // Zoomed crosshair: longer than the slingshot's, with an open center so
+    // the bracket stays readable.
+    const float cx = W * 0.5f, cy = H * 0.5f;
+    const uint32_t cross = PackRGBA(255, 255, 255, 210);
+    DrawRect(cx - 16.0f * s, cy - 1.0f * s, 10.0f * s, 2.0f * s, cross);
+    DrawRect(cx + 6.0f * s,  cy - 1.0f * s, 10.0f * s, 2.0f * s, cross);
+    DrawRect(cx - 1.0f * s,  cy - 16.0f * s, 2.0f * s, 10.0f * s, cross);
+    DrawRect(cx - 1.0f * s,  cy + 6.0f * s, 2.0f * s, 10.0f * s, cross);
+
+    // Zoom indicator: readout under the top-right corner + tick bar.
+    {
+        char zbuf[16];
+        std::snprintf(zbuf, sizeof(zbuf), "ZOOM %d%%", o.zoomPct);
+        const std::string z(zbuf);
+        DrawText(W - pad - MeasureText(z), fy + 10.0f * s, z,
+                 PackRGBA(255, 230, 140, 235));
+        const float barW = 90.0f * s;
+        const float frac = std::min(1.0f, std::max(0.0f,
+                               (float(o.zoomPct) - 100.0f) / 300.0f));
+        DrawRect(W - pad - barW, fy + 10.0f * s + kGlyphHeight * s + 4.0f * s,
+                 barW, 3.0f * s, PackRGBA(60, 60, 66, 200));
+        DrawRect(W - pad - barW, fy + 10.0f * s + kGlyphHeight * s + 4.0f * s,
+                 barW * frac, 3.0f * s, PackRGBA(255, 230, 140, 235));
+    }
+
+    // Shutter hint + status line (bottom-center, inside the frame).
+    if (!o.statusLine.empty()) {
+        DrawText(cx - MeasureText(o.statusLine) * 0.5f,
+                 fy + fh - kGlyphHeight * s - 10.0f * s,
+                 o.statusLine, PackRGBA(210, 210, 220, 225));
+    }
+
+    // Subject bracket: corners (not a full box) around the projected subject
+    // AABB; green when the shutter would count it, yellow while it fails a
+    // check (range / framing / centering).
+    if (o.hasBracket) {
+        const uint32_t col = o.bracketValid
+            ? PackRGBA(80, 255, 120, 255)    // shutter-ready
+            : PackRGBA(255, 220, 80, 255);   // in frame, checks pending
+        const float bl = std::min(14.0f * s, o.bw * 0.4f);
+        const float bt = 2.0f * s;
+        // Top edge corners.
+        DrawRect(o.bx, o.by, bl, bt, col);
+        DrawRect(o.bx + o.bw - bl, o.by, bl, bt, col);
+        DrawRect(o.bx, o.by, bt, bl, col);
+        DrawRect(o.bx + o.bw - bt, o.by, bt, bl, col);
+        // Bottom edge corners.
+        DrawRect(o.bx, o.by + o.bh - bt, bl, bt, col);
+        DrawRect(o.bx + o.bw - bl, o.by + o.bh - bt, bl, bt, col);
+        DrawRect(o.bx, o.by + o.bh - bl, bt, bl, col);
+        DrawRect(o.bx + o.bw - bt, o.by + o.bh - bl, bt, bl, col);
+        if (!o.bracketLabel.empty())
+            DrawText(o.bx, o.by - kGlyphHeight * s - 4.0f * s,
+                     o.bracketLabel, col);
+    }
+
+    // Shutter flash: brief white pop across the whole viewfinder.
+    if (o.flash)
+        DrawRect(fx, fy, fw, fh, PackRGBA(255, 255, 255, 120));
+
+    // Stagger feedback ("PHOTO TAKEN: JOCK"), top-center under the frame.
+    if (o.popupTimer > 0.0f && !o.popupText.empty()) {
+        const float k = std::min(1.0f, o.popupTimer / 0.35f); // fade tail
+        const uint8_t a = uint8_t(255.0f * k);
+        DrawText(cx - MeasureText(o.popupText) * 0.5f, fy + 34.0f * s,
+                 o.popupText, PackRGBA(120, 255, 160, a));
+    }
+}
+
+void UIRenderer::DrawPhotoAlbum(const std::vector<std::string>& rows,
+                                const std::string& header) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+
+    // Reuse the quest journal panel geometry (70%-width, centered).
+    const float panW = std::min(920.0f * s, W * 0.7f);
+    const float panH = H * 0.72f;
+    const float panX = 0.5f * (W - panW);
+    const float panY = 0.5f * (H - panH);
+    DrawRect(0.0f, 0.0f, W, H, PackRGBA(6, 6, 10, 170)); // backdrop
+    DrawRect(panX, panY, panW, panH, PackRGBA(14, 14, 20, 235));
+    const uint32_t border = PackRGBA(190, 190, 200, 160);
+    const float bw = 2.0f * s;
+    DrawRect(panX, panY, panW, bw, border);
+    DrawRect(panX, panY + panH - bw, panW, bw, border);
+    DrawRect(panX, panY, bw, panH, border);
+    DrawRect(panX + panW - bw, panY, bw, panH, border);
+
+    const float padX = 22.0f * s;
+    float y = panY + 20.0f * s;
+
+    // Title + count/hint header.
+    const std::string title("PHOTO ALBUM");
+    DrawText(panX + padX, y, title, PackRGBA(255, 215, 90, 255));
+    y += kGlyphHeight * s + 8.0f * s;
+    if (!header.empty()) {
+        DrawText(panX + padX, y, header, PackRGBA(200, 200, 210, 235));
+        y += kGlyphHeight * s + 10.0f * s;
+    }
+    DrawRect(panX + padX, y, panW - 2.0f * padX, 1.5f * s,
+             PackRGBA(120, 120, 130, 170));
+    y += 10.0f * s;
+
+    // Rows, clipped to the panel (newest last in the vector -> drawn last
+    // at the bottom; overflow simply never renders).
+    const float rowStep = kGlyphHeight * s + 6.0f * s;
+    for (const std::string& r : rows) {
+        if (y + rowStep > panY + panH - 16.0f * s) break;
+        DrawText(panX + padX, y, r, PackRGBA(220, 225, 235, 240));
+        y += rowStep;
     }
 }
 
@@ -724,6 +1038,63 @@ void UIRenderer::DrawDialogueBox(const char* speaker,
     } else if (showAdvanceHint) {
         DrawText(bx + boxW - padX - MeasureText("E: NEXT"),
                  by + boxH - (kGlyphHeight + 8.0f) * s, "E: NEXT",
+                 PackRGBA(255, 220, 120, 220));
+    }
+}
+
+// Track 48: cinematic subtitle bar (cutscene dialogue). Bottom-center strip
+// under the dialogue-box area: the speaker name on an accent chip, the
+// subtitle word-wrapped beneath it, and a gold bottom rule so it reads as a
+// cinematic caption rather than a UI panel. The skip hint sits outside the
+// strip (bottom-right) so long lines never collide with it.
+void UIRenderer::DrawSubtitle(const char* speaker, const std::string& text,
+                              bool showSkipHint) {
+    if (!m_initialized || m_screenWidth == 0 || m_screenHeight == 0) return;
+    if (text.empty() && (speaker == nullptr || *speaker == '\0')) return;
+
+    const float W = float(m_screenWidth);
+    const float H = float(m_screenHeight);
+    const float s = std::min(1.5f, std::max(0.75f, H / 720.0f));
+
+    const float stripW = std::min(920.0f * s, W - 32.0f * s);
+    const float stripX = 0.5f * (W - stripW);
+    const float padX   = 22.0f * s;
+    const float padY   = 12.0f * s;
+
+    const std::string name(speaker ? speaker : "");
+    const bool haveName = !name.empty();
+    const float chipH = (kGlyphHeight + 10.0f) * s;
+    const float lineH = (kGlyphHeight + 5.0f) * s;
+
+    const std::vector<std::string> wrapped =
+        WrapDialogueText(*this, text, stripW - 2.0f * padX);
+    const int lines = std::max(1, int(wrapped.size()));
+    const float bodyH = padY * 2.0f + lines * lineH +
+                        (haveName ? chipH + 4.0f * s : 0.0f);
+
+    const float stripY = H - padY - bodyH;
+    // Backdrop + the thin gold bottom rule that marks it as a caption strip.
+    DrawRect(stripX, stripY, stripW, bodyH, PackRGBA(4, 6, 12, 190));
+    DrawRect(stripX, stripY + bodyH - 3.0f * s, stripW, 3.0f * s,
+             PackRGBA(210, 170, 90, 220));
+
+    const float textX = stripX + padX;
+    float y = stripY + padY;
+    if (haveName) {
+        const float nameW = MeasureText(name) + 12.0f * s;
+        DrawRect(textX - 6.0f * s, y - 3.0f * s, nameW, chipH,
+                 PackRGBA(150, 110, 40, 235));
+        DrawText(textX, y, name, PackRGBA(255, 246, 220, 255));
+        y += chipH + 4.0f * s;
+    }
+    for (const std::string& ln : wrapped) {
+        DrawText(textX, y, ln, PackRGBA(240, 240, 245, 255));
+        y += lineH;
+    }
+
+    if (showSkipHint) {
+        const char* hint = "SPACE: SKIP";
+        DrawText(W - padX - MeasureText(hint), H - padY - kGlyphHeight, hint,
                  PackRGBA(255, 220, 120, 220));
     }
 }

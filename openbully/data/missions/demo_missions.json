@@ -1,0 +1,89 @@
+{
+  "_comment": "Track 20 demo missions, hand-authored to mirror Bully's Chapter 1 flow ('Welcome to Bullworth' -> 'This Is Your School' -> 'Defend Yourself'). The retail game compiles mission logic to Lua 5.0 bytecode (.lur), which OpenBully does not parse; this JSON is loaded into MissionManager structs instead. Coordinates are offsets from Jimmy's runtime spawn point ('ref': 'spawn'), so the content stays valid wherever the level loads; Y is ignored by proximity checks. Jimmy spawns on the ASY_ABlock rooftop (bounds x[-748.6,-722.1], y~465, z[2.0,8.1]); every target below is verified INSIDE those bounds with >=1.5u edge margin so the scripted walk can never step off the roof.",
+  "missions": [
+    {
+      "id": "ch1_welcome",
+      "name": "Welcome to Bullworth",
+      "objectives": [
+        {
+          "type": "GO_TO_LOCATION",
+          "description": "Walk to the far corner of the roof",
+          "ref": "spawn",
+          "offset": [10.4, 0, -1.3],
+          "radius": 2.5
+        },
+        {
+          "type": "GO_TO_LOCATION",
+          "description": "Head back across the rooftop",
+          "ref": "spawn",
+          "offset": [-9.6, 0, 0.4],
+          "radius": 2.5
+        }
+      ]
+    },
+    {
+      "id": "ch1_this_is_your_school",
+      "name": "This Is Your School",
+      "start_after": "ch1_welcome",
+      "objectives": [
+        {
+          "type": "TALK_TO_NPC",
+          "description": "Talk to a student on the rooftop",
+          "ref": "spawn",
+          "offset": [4, 0, -1.5],
+          "radius": 3
+        },
+        {
+          "type": "COLLECT_ITEM",
+          "description": "Pick up your class schedule",
+          "ref": "spawn",
+          "offset": [-4, 0, -1.5],
+          "radius": 3
+        }
+      ]
+    },
+    {
+      "id": "ch1_defend_yourself",
+      "name": "Defend Yourself",
+      "start_after": "ch1_this_is_your_school",
+      "objectives": [
+        {
+          "type": "DEFEAT_NPC",
+          "description": "Stand your ground against the bully (demo: scripted fight)",
+          "ref": "spawn",
+          "offset": [0, 0, -1.0],
+          "radius": 2.5,
+          "auto_complete_on_reach": true
+        },
+        {
+          "type": "CUSTOM",
+          "description": "Report to the Headmaster's office (demo: scripted scene)",
+          "ref": "spawn",
+          "offset": [0, 0, 1.0],
+          "radius": 2.5,
+          "auto_complete_on_reach": true
+        }
+      ]
+    }
+  ],
+  "trigger_zones": [
+    {
+      "id": "tz_spawn",
+      "mission": "ch1_welcome",
+      "bounds": {
+        "ref": "spawn",
+        "min_offset": [-5, -3, -5],
+        "max_offset": [5, 4, 3]
+      }
+    },
+    {
+      "id": "tz_yard",
+      "mission": "ch1_welcome",
+      "bounds": {
+        "ref": "spawn",
+        "min_offset": [5, -3, -2],
+        "max_offset": [12, 4, 2.5]
+      }
+    }
+  ]
+}

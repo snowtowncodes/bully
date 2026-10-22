@@ -64,10 +64,12 @@ add_executable(openbully
     src/main.cpp
     src/engine/engine.cpp
     src/engine/resource_manager.cpp
+    src/mission/mission.cpp
     src/engine/formats/nif_loader.cpp
     src/engine/formats/nft_loader.cpp
     src/engine/formats/agr_loader.cpp
     src/animation/animation_controller.cpp
+    src/audio/audio.cpp
     src/entities/entity.cpp
     src/game/input.cpp
     src/game/camera.cpp
@@ -76,6 +78,7 @@ add_executable(openbully
     src/platform/logger.cpp
     src/rendering/mesh.cpp
     src/rendering/renderer.cpp
+    src/ui/ui.cpp
 )
 
 # NIF loader test harness (standalone, no SDL/bgfx dependency).
@@ -113,6 +116,27 @@ target_include_directories(collision_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# Track 21 audio self-test (no GPU; needs SDL audio + glm for the 3D API).
+add_executable(audio_test
+    src/tools/audio_test.cpp
+    src/audio/audio.cpp
+    src/platform/logger.cpp
+)
+target_include_directories(audio_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENBULLY_GLM_DIR}
+)
+target_link_libraries(audio_test PRIVATE
+    SDL2::SDL2
+    # audio_test defines main() (not SDL_main); keep console subsystem.
+    SDL2::SDL2main
+)
+if(WIN32 AND SDL2_DIR MATCHES "${CMAKE_CURRENT_SOURCE_DIR}/external")
+    # OPENBULLY_SDL2_SHIM_DIR is defined further down (main target block);
+    # this target is declared before it, so point at the shim path directly.
+    target_include_directories(audio_test PRIVATE "${CMAKE_BINARY_DIR}/sdl2-shim")
+endif()
+
 target_include_directories(openbully PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -143,7 +167,7 @@ set(OPENBULLY_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/shaders")
 set(OPENBULLY_SHADER_OUT_DIR "$<TARGET_FILE_DIR:openbully>/shaders")
 
 set(OPENBULLY_SHADER_TARGETS "")
-foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned)
+foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_ui fs_ui)
     # Direct3D11 (SM 5.0) - pinned Phase-2 backend on Windows
     if(SHADER_NAME MATCHES "^vs_")
         set(SHADER_TYPE vertex)
@@ -179,7 +203,7 @@ foreach(BACKEND IN ITEMS opengl vulkan)
         set(PROFILE_FS "spirv")
         set(PLATFORM "vulkan")
     endif()
-    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned)
+    foreach(SHADER_NAME IN ITEMS vs_triangle fs_triangle vs_mesh3d fs_mesh3d vs_mesh3d_skinned vs_ui fs_ui)
         if(SHADER_NAME MATCHES "^vs_")
             set(SHADER_TYPE vertex)
             set(SHADER_PROFILE ${PROFILE_VS})
@@ -213,6 +237,15 @@ if(WIN32 AND EXISTS "${OPENBULLY_SDL2_DIR}/lib/x64/SDL2.dll")
             "$<TARGET_FILE_DIR:openbully>/SDL2.dll"
         COMMENT "Copying SDL2.dll next to openbully.exe")
 endif()
+
+# Track 20: mission data next to the executable (runtime probes
+# data/missions/demo_missions.json first, then the source tree).
+add_custom_command(TARGET openbully POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:openbully>/data/missions"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/missions/demo_missions.json"
+        "$<TARGET_FILE_DIR:openbully>/data/missions/demo_missions.json"
+    COMMENT "Copying demo_missions.json next to openbully.exe")
 
 # Aggregate target for shader compilation: builds every per-shader stamp
 # produced by the custom commands above. openbully depends on it so shader

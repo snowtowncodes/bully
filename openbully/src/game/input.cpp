@@ -2,6 +2,8 @@
 
 #include "../platform/logger.h"
 
+#include <cstring>
+
 namespace OpenBully {
 
 namespace {
@@ -14,7 +16,8 @@ const SDL_Scancode kButtonScancodes[int(Button::Count)] = {
     SDL_SCANCODE_D,     // Right
     SDL_SCANCODE_SPACE, // Up
     SDL_SCANCODE_LCTRL, // Down
-    SDL_SCANCODE_LSHIFT // Sprint
+    SDL_SCANCODE_LSHIFT, // Sprint
+    SDL_SCANCODE_M       // Mute (Track 21)
 };
 
 } // namespace
@@ -33,6 +36,12 @@ void Input::Poll() {
         m_lastDown[i] = m_down[i];
         m_down[i]     = keys[kButtonScancodes[i]] != 0;
     }
+
+    // Track 20: raw snapshot for WasKeyPressed (debug keys). memcpy keeps
+    // the previous frame's state for the edge comparison.
+    std::memcpy(m_lastRawDown, m_rawDown, sizeof(m_rawDown));
+    for (int i = 0; i < SDL_NUM_SCANCODES; ++i)
+        m_rawDown[i] = keys[i] != 0;
 
     // Escape -> quit. Also accept SDL_QUIT (window close) via the event pump:
     // main.cpp owns the event loop, but events may not have been pumped yet

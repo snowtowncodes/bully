@@ -1,0 +1,917 @@
+[INFO] OpenBully v0.1.0 - Bootstrap Phase 2 (bgfx)
+[INFO] Window created: 1280x720
+[INFO] Initializing engine...
+[INFO] bgfx renderer: Direct3D 11
+[INFO] Renderer initialized
+[INFO] Audio device: 44100 Hz, 2 channels (stereo) (SDL driver: wasapi, buffer 1024 frames)
+[INFO] Audio: procedural SFX ready (footstep 3969 frames, click 3087, wind 264600 @ 44100 Hz)
+[INFO] GPU mesh uploaded: 3 verts, 3 indices
+[INFO] Texture index: 16434 names -> 4461 .nft dictionaries
+[INFO] GPU mesh uploaded: 694 verts, 1386 indices
+[INFO]   mesh extent: (-499.6,307.3,31.4)-(-489.3,315.7,35.3)
+[INFO]   collision box: (-499.6, 307.3, 31.4)-(-489.3, 315.7, 35.3)
+[INFO] GPU mesh uploaded: 1220 verts, 2262 indices
+[INFO]   mesh extent: (533.0,-419.9,3.3)-(539.8,-415.3,5.8)
+[INFO]   collision box: (533.0, -419.9, 3.3)-(539.8, -415.3, 5.8)
+[INFO] GPU mesh uploaded: 456 verts, 738 indices
+[INFO]   mesh extent: (59.1,16.7,-0.1)-(61.0,17.7,1.7)
+[INFO]   collision box: (59.1, 16.7, -0.1)-(61.0, 17.7, 1.7)
+[INFO] GPU mesh uploaded: 268 verts, 960 indices
+[INFO]   mesh extent: (-698.7,78.3,26.9)-(-697.7,79.4,27.9)
+[INFO]   collision box: (-698.7, 78.3, 26.9)-(-697.7, 79.4, 27.9)
+[INFO] GPU mesh uploaded: 260 verts, 960 indices
+[INFO]   mesh extent: (-700.7,74.6,26.8)-(-699.0,76.3,28.5)
+[INFO]   collision box: (-700.7, 74.6, 26.8)-(-699.0, 76.3, 28.5)
+[INFO] GPU mesh uploaded: 364 verts, 960 indices
+[INFO]   mesh extent: (-695.7,71.6,26.4)-(-693.2,74.1,28.8)
+[INFO]   collision box: (-695.7, 71.6, 26.4)-(-693.2, 74.1, 28.8)
+[INFO] GPU mesh uploaded: 182 verts, 249 indices
+[INFO]   mesh extent: (-699.9,72.2,26.8)-(-692.9,78.9,39.4)
+[INFO]   collision box: (-699.9, 72.2, 26.8)-(-692.9, 78.9, 39.4)
+[INFO] GPU mesh uploaded: 392 verts, 1077 indices
+[INFO]   mesh extent: (-700.1,70.7,26.7)-(-696.7,74.0,29.0)
+[INFO]   collision box: (-700.1, 70.7, 26.7)-(-696.7, 74.0, 29.0)
+[INFO] GPU mesh uploaded: 335 verts, 1035 indices
+[INFO]   mesh extent: (-694.2,76.8,27.2)-(-691.6,79.8,29.2)
+[INFO]   collision box: (-694.2, 76.8, 27.2)-(-691.6, 79.8, 29.2)
+[INFO] GPU mesh uploaded: 262 verts, 480 indices
+[INFO]   mesh extent: (-627.7,-293.6,6.4)-(-627.6,-293.5,6.8)
+[INFO]   collision box: (-627.7, -293.6, 6.4)-(-627.6, -293.5, 6.8)
+[INFO] GPU mesh uploaded: 120 verts, 180 indices
+[INFO]   mesh extent: (-2.8,-71.7,4.0)-(0.3,-66.2,5.5)
+[INFO]   collision box: (-2.8, -71.7, 4.0)-(0.3, -66.2, 5.5)
+[INFO] GPU mesh uploaded: 796 verts, 1224 indices
+[INFO]   mesh extent: (-615.9,-331.8,0.0)-(-582.0,-283.5,10.5)
+[INFO]   collision box: (-615.9, -331.8, 0.0)-(-582.0, -283.5, 10.5)
+[INFO] GPU mesh uploaded: 294 verts, 510 indices
+[INFO]   mesh extent: (523.4,-359.7,3.9)-(526.5,-352.0,7.3)
+[INFO]   collision box: (523.4, -359.7, 3.9)-(526.5, -352.0, 7.3)
+[INFO] GPU mesh uploaded: 1306 verts, 2235 indices
+[INFO]   mesh extent: (521.4,-326.6,2.9)-(529.7,-316.2,5.9)
+[INFO]   collision box: (521.4, -326.6, 2.9)-(529.7, -316.2, 5.9)
+[INFO] GPU mesh uploaded: 2665 verts, 4983 indices
+[INFO]   mesh extent: (512.4,-314.8,1.3)-(520.4,-294.7,12.7)
+[INFO]   collision box: (512.4, -314.8, 1.3)-(520.4, -294.7, 12.7)
+[INFO] GPU mesh uploaded: 403 verts, 624 indices
+[INFO]   mesh extent: (-15.8,-166.0,0.9)-(-13.7,-163.2,5.2)
+[INFO]   collision box: (-15.8, -166.0, 0.9)-(-13.7, -163.2, 5.2)
+[INFO] GPU mesh uploaded: 1348 verts, 4308 indices
+[INFO]   mesh extent: (-51.8,-46.4,1.2)-(-44.1,-33.0,2.7)
+[INFO]   collision box: (-51.8, -46.4, 1.2)-(-44.1, -33.0, 2.7)
+[INFO] GPU mesh uploaded: 1214 verts, 2364 indices
+[INFO]   mesh extent: (352.6,-241.1,2.4)-(354.5,-239.3,3.4)
+[INFO]   collision box: (352.6, -241.1, 2.4)-(354.5, -239.3, 3.4)
+[INFO] GPU mesh uploaded: 2723 verts, 6066 indices
+[INFO]   mesh extent: (-1.1,-2.6,0.2)-(1.1,2.5,1.4)
+[INFO]   collision box: (-1.1, -2.6, 0.2)-(1.1, 2.5, 1.4)
+[INFO] GPU mesh uploaded: 145 verts, 333 indices
+[INFO]   mesh extent: (2.4,2.8,-0.6)-(2.8,5.5,7.2)
+[INFO]   collision box: (2.4, 2.8, -0.6)-(2.8, 5.5, 7.2)
+[INFO] GPU mesh uploaded: 277 verts, 960 indices
+[INFO]   mesh extent: (5.0,3.8,-0.6)-(6.7,5.5,5.6)
+[INFO]   collision box: (5.0, 3.8, -0.6)-(6.7, 5.5, 5.6)
+[INFO] GPU mesh uploaded: 193 verts, 450 indices
+[INFO]   mesh extent: (-0.3,-0.4,-0.1)-(0.4,0.3,10.5)
+[INFO]   collision box: (-0.3, -0.4, -0.1)-(0.4, 0.3, 10.5)
+[INFO] GPU mesh uploaded: 266 verts, 714 indices
+[INFO]   mesh extent: (-0.1,-0.1,1.5)-(0.1,0.0,1.6)
+[INFO]   collision box: (-0.1, -0.1, 1.5)-(0.1, 0.0, 1.6)
+[INFO] GPU mesh uploaded: 384 verts, 948 indices
+[INFO]   mesh extent: (-0.1,-0.1,1.7)-(0.1,0.0,1.7)
+[INFO]   collision box: (-0.1, -0.1, 1.7)-(0.1, 0.0, 1.7)
+[INFO] GPU mesh uploaded: 175 verts, 708 indices
+[INFO]   mesh extent: (-0.2,-0.2,-0.2)-(0.2,0.2,0.2)
+[INFO]   collision box: (-0.2, -0.2, -0.2)-(0.2, 0.2, 0.2)
+[INFO] GPU mesh uploaded: 8078 verts, 13176 indices
+[INFO]   mesh extent: (-748.6,438.3,2.0)-(-722.1,464.9,8.1)
+[INFO]   collision box: (-748.6, 438.3, 2.0)-(-722.1, 464.9, 8.1)
+[INFO] GPU mesh uploaded: 164 verts, 246 indices
+[INFO]   mesh extent: (-742.4,438.5,-0.2)-(-728.4,464.3,8.1)
+[INFO]   collision box: (-742.4, 438.5, -0.2)-(-728.4, 464.3, 8.1)
+[INFO] GPU mesh uploaded: 642 verts, 1350 indices
+[INFO]   mesh extent: (-748.6,437.9,5.4)-(-722.0,464.6,7.3)
+[INFO]   collision box: (-748.6, 437.9, 5.4)-(-722.0, 464.6, 7.3)
+[INFO] GPU mesh uploaded: 1548 verts, 4368 indices
+[INFO]   mesh extent: (-742.2,444.6,2.0)-(-728.5,458.3,5.9)
+[INFO]   collision box: (-742.2, 444.6, 2.0)-(-728.5, 458.3, 5.9)
+[INFO] GPU mesh uploaded: 690 verts, 1800 indices
+[INFO]   mesh extent: (-735.7,429.5,4.8)-(-735.1,438.2,5.0)
+[INFO]   collision box: (-735.7, 429.5, 4.8)-(-735.1, 438.2, 5.0)
+[INFO] GPU mesh uploaded: 690 verts, 1800 indices
+[INFO]   mesh extent: (-735.7,429.5,4.8)-(-735.1,438.2,5.0)
+[INFO]   collision box: (-735.7, 429.5, 4.8)-(-735.1, 438.2, 5.0)
+[INFO] GPU mesh uploaded: 1840 verts, 4800 indices
+[INFO]   mesh extent: (-742.4,438.5,4.8)-(-728.3,464.5,5.0)
+[INFO]   collision box: (-742.4, 438.5, 4.8)-(-728.3, 464.5, 5.0)
+[INFO] World geometry: 32 loaded, 6 skipped (<100 verts), 0 failed, 5720 scanned
+[INFO] Textures: 29 cached, 0 failed, 180 textured / 2 placeholder submeshes
+[INFO] Audio: ambient wind loop started (264600-frame seamless loop)
+[INFO] Camera spawn (-735.4, 460.3, -7.5) anchored on ASY_ABlock.nif (radius 19.0) -> center (-735.4, 451.6, 5.1)
+[INFO] Collision world: 32 registered objects
+[INFO] GPU mesh uploaded: 24 verts, 36 indices
+[INFO] Entities: 32 static level entities registered
+[INFO] AGR: F_Adult.agr -> 6/6 animations decoded
+[INFO] AGR: F_BULLY.agr -> 7/7 animations decoded
+[INFO] AGR: F_Crazy.agr -> 22/22 animations decoded
+[INFO] AGR: F_Douts.agr -> 3/3 animations decoded
+[INFO] AGR: F_Girls.agr -> 36/36 animations decoded
+[INFO] AGR: F_Greas.agr -> 11/11 animations decoded
+[INFO] AGR: F_Jocks.agr -> 19/19 animations decoded
+[INFO] AGR: F_Nerds.agr -> 12/12 animations decoded
+[INFO] AGR: F_OldPeds.agr -> 8/8 animations decoded
+[INFO] AGR: F_Pref.agr -> 2/2 animations decoded
+[INFO] AGR: F_Preps.agr -> 15/15 animations decoded
+[INFO] AGR: 141 animations total
+[INFO] AGR clips: walk=#76 (travel 1.41m) idle=#0
+[INFO] Animation rig ready: walk=76 idle=0 (141 clips)
+[INFO] GPU skinned mesh uploaded: 2665 verts, 11706 indices
+[INFO] Jimmy spawned SKINNED: 'PLAYER.nif' (36 bones, walk=0 idle=1) at (-735.4, 466.9, 5.1)
+[INFO] GPU mesh uploaded: 779 verts, 1314 indices
+[INFO] GPU mesh uploaded: 156 verts, 288 indices
+[INFO] GPU mesh uploaded: 2239 verts, 3438 indices
+[INFO] GPU mesh uploaded: 1126 verts, 1452 indices
+[INFO] GPU mesh uploaded: 1120 verts, 1452 indices
+[INFO] GPU mesh uploaded: 470 verts, 714 indices
+[INFO] GPU mesh uploaded: 1681 verts, 4026 indices
+[INFO] GPU mesh uploaded: 1962 verts, 4461 indices
+[INFO] GPU mesh uploaded: 1952 verts, 4437 indices
+[INFO] GPU mesh uploaded: 1946 verts, 4419 indices
+[INFO] GPU mesh uploaded: 1962 verts, 4446 indices
+[INFO] GPU mesh uploaded: 1832 verts, 4302 indices
+[INFO] GPU mesh uploaded: 1946 verts, 4419 indices
+[INFO] GPU mesh uploaded: 1931 verts, 3243 indices
+[INFO] GPU mesh uploaded: 1918 verts, 3300 indices
+[INFO] GPU mesh uploaded: 1926 verts, 3204 indices
+[INFO] NPC models: 16 loaded, 0 failed (from 5720 scanned)
+[INFO] GPU skinned mesh uploaded: 2239 verts, 3438 indices
+[INFO] NPC 'CS_BALC1.nif': skinned rig 1 (46 bones)
+[INFO] GPU skinned mesh uploaded: 1126 verts, 1452 indices
+[INFO] NPC 'CS_BALC2.nif': skinned rig 3 (6 bones)
+[INFO] GPU skinned mesh uploaded: 1120 verts, 1452 indices
+[INFO] NPC 'CS_BALC3.nif': skinned rig 5 (6 bones)
+[INFO] GPU skinned mesh uploaded: 470 verts, 714 indices
+[INFO] NPC 'CS_BWSign.nif': skinned rig 7 (6 bones)
+[INFO] GPU skinned mesh uploaded: 1681 verts, 4026 indices
+[INFO] NPC 'CS_B_Bald.nif': skinned rig 9 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1962 verts, 4461 indices
+[INFO] NPC 'CS_B_Bhat1.nif': skinned rig 11 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1952 verts, 4437 indices
+[INFO] NPC 'CS_B_Bhat2.nif': skinned rig 13 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1946 verts, 4419 indices
+[INFO] NPC 'CS_B_Bhat3.nif': skinned rig 15 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1962 verts, 4446 indices
+[INFO] NPC 'CS_B_Bhat4.nif': skinned rig 17 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1832 verts, 4302 indices
+[INFO] NPC 'CS_B_Bhat5.nif': skinned rig 19 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1946 verts, 4419 indices
+[INFO] NPC 'CS_B_Bhat6.nif': skinned rig 21 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1931 verts, 3243 indices
+[INFO] NPC 'CS_B_Boots1.nif': skinned rig 23 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1918 verts, 3300 indices
+[INFO] NPC 'CS_B_Boots2.nif': skinned rig 25 (64 bones)
+[INFO] GPU skinned mesh uploaded: 1926 verts, 3204 indices
+[INFO] NPC 'CS_B_Boots3.nif': skinned rig 27 (64 bones)
+[INFO] NPCs: 18 spawned around (-735.4, 464.9, 5.1) from 16 models
+[INFO] Entities: 10 test boxes spawned around (-735.4, 451.6, 5.1)
+[INFO] Entities verify: CountNearby(layer2)=12 (expect 10), CountNearby(layer1)=5
+[INFO] Entities verify: QuerySphere hit=true idx=45 gen=1
+[INFO] Entities verify: destroyed idx=45 alive=false (expect false)
+[INFO] Entities verify: recycled idx=45 gen=2 (stale gen=1)
+[INFO] Entities verify: stale handle rejected=true
+[INFO] Missions: registered 'Welcome to Bullworth' (ch1_welcome) with 2 objective(s)
+[INFO] Missions: registered 'This Is Your School' (ch1_this_is_your_school) with 2 objective(s)
+[INFO] Missions: registered 'Defend Yourself' (ch1_defend_yourself) with 2 objective(s)
+[INFO] Missions: trigger 'tz_spawn' -> mission 'ch1_welcome' (-740,462,0)-(-730,469,8)
+[INFO] Missions: trigger 'tz_yard' -> mission 'ch1_welcome' (-730,462,3)-(-723,469,8)
+[INFO] Missions: loaded 3 mission(s), 2 trigger zone(s) from data/missions/demo_missions.json
+[INFO] Missions: 3 mission(s), 2 trigger zone(s) registered
+[INFO] GPU mesh uploaded: 24 verts, 36 indices
+[INFO] UIRenderer initialized (view 10, font atlas 384x8)
+[INFO] Engine initialized successfully
+[INFO] MISSION ACTIVATED: 'Welcome to Bullworth' (ch1_welcome) — objective 1/2: Walk to the far corner of the roof
+[INFO] Missions: trigger 'tz_yard' entered but 'ch1_welcome' already ACTIVE
+[INFO] Audio: footstep #1 @ (-729.5, 464.9, 4.3)
+[INFO] HUD demo: wanted -> 3
+[INFO] Frame timing: 4.42 ms avg (226.0 fps) | cam (-731.9, 469.7, 4.6) yaw 1.69 pitch -0.98
+[INFO] Jimmy: (-729.36, 464.92, 4.31) onGround=1
+[INFO] NPC AI: idle=15 wander=1 face=1 sample: (-731.2, 464.9, -11.9) -> target (-729.7, -13.3)
+[INFO] OBJECTIVE COMPLETE: Walk to the far corner of the roof (mission 'ch1_welcome', 1/2)
+[INFO] MISSION ADVANCED: 'Welcome to Bullworth' — objective 2/2: Head back across the rooftop
+[INFO] HUD demo: damage 10 -> health 90/100
+[INFO] Frame timing: 4.16 ms avg (240.1 fps) | cam (-729.5, 470.2, 4.2) yaw -1.49 pitch -1.12
+[INFO] Jimmy: (-731.59, 464.92, 4.40) onGround=1
+[INFO] NPC AI: idle=4 wander=12 face=1 sample: (-740.9, 464.9, 12.0) -> target (-741.2, 15.6)
+[INFO] HUD demo: damage 10 -> health 80/100
+[INFO] Frame timing: 4.17 ms avg (239.9 fps) | cam (-736.4, 469.8, 4.8) yaw -1.49 pitch -0.94
+[INFO] Jimmy: (-739.28, 464.92, 5.01) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-741.0, 464.9, 13.3) -> target (-741.2, 15.6)
+[INFO] Audio: footstep #8 @ (-741.0, 464.9, 5.1)
+[INFO] OBJECTIVE COMPLETE: Head back across the rooftop (mission 'ch1_welcome', 2/2)
+[INFO] MISSION COMPLETE: 'Welcome to Bullworth' (ch1_welcome) — all 2 objective(s) done
+[INFO] MISSION ACTIVATED: 'This Is Your School' (ch1_this_is_your_school) — chained after 'ch1_welcome'
+[INFO] HUD demo: damage 10 -> health 70/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-741.5, 470.3, 5.1) yaw 1.79 pitch -1.43
+[INFO] Jimmy: (-740.86, 464.92, 5.01) onGround=1
+[INFO] NPC AI: idle=7 wander=9 face=1 sample: (-741.1, 464.9, 14.7) -> target (-741.2, 15.6)
+[INFO] HUD demo: damage 10 -> health 60/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-737.0, 470.1, 4.4) yaw 1.72 pitch -1.14
+[INFO] Jimmy: (-735.09, 464.92, 4.13) onGround=1
+[INFO] NPC AI: idle=11 wander=5 face=1 sample: (-724.7, 464.9, 14.2) -> target (-725.0, 18.0)
+[INFO] OBJECTIVE COMPLETE: Talk to a student on the rooftop (mission 'ch1_this_is_your_school', 1/2)
+[INFO] MISSION ADVANCED: 'This Is Your School' — objective 2/2: Pick up your class schedule
+[INFO] OBJECTIVE COMPLETE: Pick up your class schedule (mission 'ch1_this_is_your_school', 2/2)
+[INFO] MISSION COMPLETE: 'This Is Your School' (ch1_this_is_your_school) — all 2 objective(s) done
+[INFO] MISSION ACTIVATED: 'Defend Yourself' (ch1_defend_yourself) — chained after 'ch1_this_is_your_school'
+[INFO] OBJECTIVE COMPLETE: Stand your ground against the bully (demo: scripted fight) (mission 'ch1_defend_yourself', 1/2)
+[INFO] MISSION ADVANCED: 'Defend Yourself' — objective 2/2: Report to the Headmaster's office (demo: scripted scene)
+[INFO] OBJECTIVE COMPLETE: Report to the Headmaster's office (demo: scripted scene) (mission 'ch1_defend_yourself', 2/2)
+[INFO] MISSION COMPLETE: 'Defend Yourself' (ch1_defend_yourself) — all 2 objective(s) done
+[INFO] HUD demo: damage 10 -> health 50/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-735.9, 470.4, 3.9) yaw -1.65 pitch -1.45
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=9 face=0 sample: (-724.8, 464.9, 15.8) -> target (-725.0, 18.0)
+[INFO] HUD demo: damage 10 -> health 40/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=10 face=0 sample: (-725.0, 464.9, 17.4) -> target (-725.0, 18.0)
+[INFO] HUD demo: damage 10 -> health 30/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=9 face=0 sample: (-728.1, 464.9, 19.9) -> target (-729.8, 20.8)
+[INFO] HUD demo: damage 10 -> health 20/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=11 face=0 sample: (-741.2, 464.9, 14.1) -> target (-741.2, 9.2)
+[INFO] HUD demo: damage 10 -> health 10/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=10 face=0 sample: (-741.2, 464.9, 12.7) -> target (-741.2, 9.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=9 face=0 sample: (-741.2, 464.9, 11.4) -> target (-741.2, 9.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=12 wander=5 face=0 sample: (-741.2, 464.9, 10.0) -> target (-741.2, 9.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=11 wander=6 face=0 sample: (-731.5, 464.9, 19.2) -> target (-733.1, 17.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=10 face=0 sample: (-740.8, 464.9, 9.6) -> target (-738.4, 10.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=8 face=0 sample: (-739.5, 464.9, 10.1) -> target (-738.4, 10.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=10 wander=7 face=0 sample: (-726.2, 464.9, 16.3) -> target (-723.5, 15.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=8 face=0 sample: (-724.6, 464.9, 16.0) -> target (-723.5, 15.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=10 face=0 sample: (-731.4, 464.9, 17.6) -> target (-729.3, 16.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=14 face=0 sample: (-738.3, 464.9, 11.2) -> target (-737.7, 12.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=11 wander=6 face=0 sample: (-725.3, 464.9, 14.5) -> target (-726.7, 13.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=13 wander=4 face=0 sample: (-726.5, 464.9, 13.4) -> target (-726.7, 13.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=10 wander=6 face=1 sample: (-737.9, 464.9, 12.2) -> target (-740.3, 15.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=11 face=1 sample: (-738.8, 464.9, 13.2) -> target (-740.3, 15.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=10 face=1 sample: (-739.6, 464.9, 14.3) -> target (-740.3, 15.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=8 face=1 sample: (-729.6, 464.9, 19.3) -> target (-729.5, 23.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (239.9 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=10 wander=6 face=1 sample: (-729.5, 464.9, 20.4) -> target (-729.5, 23.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-726.9, 464.9, 13.2) -> target (-730.4, 15.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-740.6, 464.9, 14.1) -> target (-743.2, 9.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.2, 464.9, 12.9) -> target (-743.2, 9.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-741.9, 464.9, 11.7) -> target (-743.2, 9.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-742.5, 464.9, 10.5) -> target (-743.2, 9.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-743.1, 464.9, 9.3) -> target (-743.2, 9.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-729.6, 464.9, 21.5) -> target (-730.0, 16.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (239.9 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-729.4, 464.9, 15.7) -> target (-724.5, 16.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-727.8, 464.9, 16.0) -> target (-724.5, 16.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-743.2, 464.9, 9.9) -> target (-743.9, 14.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-743.4, 464.9, 11.2) -> target (-743.9, 14.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-743.6, 464.9, 12.5) -> target (-743.9, 14.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=2 wander=13 face=2 sample: (-743.8, 464.9, 13.9) -> target (-743.9, 14.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-725.9, 464.9, 15.5) -> target (-727.4, 13.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-743.5, 464.9, 12.7) -> target (-742.9, 10.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-743.2, 464.9, 11.4) -> target (-742.9, 10.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-743.4, 464.9, -8.0) -> target (-743.2, -10.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-742.5, 464.9, 11.1) -> target (-739.5, 12.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.2, 464.9, 11.6) -> target (-739.5, 12.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-740.0, 464.9, 12.1) -> target (-739.5, 12.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-730.8, 464.9, 16.8) -> target (-730.0, 16.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-737.3, 464.9, -9.9) -> target (-736.6, -10.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-723.5, 464.9, 13.5) -> target (-725.8, 18.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-724.2, 464.9, 14.9) -> target (-725.8, 18.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-740.2, 464.9, 11.0) -> target (-741.2, 7.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-740.6, 464.9, 9.7) -> target (-741.2, 7.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.0, 464.9, 8.5) -> target (-741.2, 7.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-731.6, 464.9, 18.5) -> target (-734.1, 22.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-732.2, 464.9, 19.5) -> target (-734.1, 22.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-732.8, 464.9, 20.4) -> target (-734.1, 22.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-741.6, 464.9, 9.1) -> target (-742.9, 11.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-742.2, 464.9, 10.3) -> target (-742.9, 11.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=10 wander=5 face=2 sample: (-737.2, 464.9, 15.1) -> target (-737.1, 18.8)
+[INFO] Screenshot requested: phase6_verify (.tga)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-725.4, 464.9, 16.8) -> target (-724.6, 15.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-736.2, 464.9, -9.2) -> target (-735.6, -9.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (239.9 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-729.7, 464.3, 1.5) -> target (-728.2, 3.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-742.5, 464.9, 10.9) -> target (-741.6, 7.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-742.1, 464.9, 9.6) -> target (-741.6, 7.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-741.7, 464.9, 8.3) -> target (-741.6, 7.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-727.1, 464.9, 17.5) -> target (-727.6, 17.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-734.1, 464.9, 17.6) -> target (-734.2, 16.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-741.3, 464.9, 8.9) -> target (-738.6, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-740.8, 464.9, 10.1) -> target (-738.6, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-740.2, 464.9, 11.3) -> target (-738.6, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-739.7, 464.9, 12.6) -> target (-738.6, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-739.2, 464.9, 13.8) -> target (-738.6, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-728.4, 464.9, 15.9) -> target (-728.7, 15.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-730.0, 464.9, 20.4) -> target (-728.0, 22.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-728.6, 464.9, 15.2) -> target (-728.4, 14.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-738.5, 464.9, 13.9) -> target (-737.6, 9.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-738.2, 464.9, 12.6) -> target (-737.6, 9.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-738.0, 464.9, 11.3) -> target (-737.6, 9.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-737.7, 464.9, 10.0) -> target (-737.6, 9.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=12 face=2 sample: (-727.4, 464.9, 15.7) -> target (-724.8, 18.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-738.2, 464.9, 9.7) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-739.5, 464.9, 10.1) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-740.8, 464.9, 10.5) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-742.1, 464.9, 10.9) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-743.3, 464.9, 11.3) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=12 face=2 sample: (-744.6, 464.9, 11.7) -> target (-745.1, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-723.8, 464.9, 16.5) -> target (-722.4, 14.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-744.1, 464.9, 12.2) -> target (-738.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-742.9, 464.9, 12.9) -> target (-738.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-741.8, 464.9, 13.6) -> target (-738.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-740.6, 464.9, 14.3) -> target (-738.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=12 face=2 sample: (-739.4, 464.9, 15.0) -> target (-738.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-724.1, 464.9, 13.7) -> target (-728.9, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-739.0, 464.9, 14.8) -> target (-737.5, 10.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-738.6, 464.9, 13.5) -> target (-737.5, 10.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-738.2, 464.9, 12.3) -> target (-737.5, 10.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-737.8, 464.9, 11.0) -> target (-737.5, 10.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-732.1, 464.9, 22.5) -> target (-732.5, 22.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-728.2, 464.3, 1.5) -> target (-728.2, 3.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-737.2, 464.9, 11.0) -> target (-736.9, 11.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-728.8, 464.9, 14.7) -> target (-729.0, 17.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-728.9, 464.9, 16.3) -> target (-729.0, 17.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-732.6, 464.9, 21.0) -> target (-732.9, 19.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-738.1, 464.9, 11.7) -> target (-741.2, 13.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-739.2, 464.9, 12.4) -> target (-741.2, 13.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-740.4, 464.9, 13.1) -> target (-741.2, 13.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-728.5, 464.9, 16.2) -> target (-728.0, 14.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-733.8, 464.9, 15.3) -> target (-731.9, 15.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.9, 464.9, 13.2) -> target (-744.5, 12.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-743.2, 464.9, 12.9) -> target (-744.5, 12.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.19 ms avg (238.9 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-727.1, 464.9, 13.6) -> target (-726.8, 13.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-730.9, 464.9, 18.0) -> target (-730.3, 16.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-733.0, 464.9, 16.2) -> target (-733.8, 17.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-743.1, 464.9, 12.9) -> target (-739.7, 13.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-741.8, 464.9, 13.2) -> target (-739.7, 13.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-740.5, 464.9, 13.4) -> target (-739.7, 13.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-729.8, 464.9, 19.2) -> target (-728.8, 22.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-729.5, 464.9, 20.2) -> target (-728.8, 22.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-740.0, 464.9, 13.5) -> target (-743.6, 13.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-741.4, 464.9, 13.4) -> target (-743.6, 13.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-742.7, 464.9, 13.2) -> target (-743.6, 13.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-732.6, 464.9, 15.6) -> target (-731.6, 17.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-725.2, 464.9, 13.8) -> target (-725.1, 18.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-725.1, 464.9, 15.4) -> target (-725.1, 18.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-742.7, 464.9, 13.1) -> target (-738.7, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-741.3, 464.9, 13.1) -> target (-738.7, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-740.0, 464.9, 13.1) -> target (-738.7, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-725.2, 464.9, 18.4) -> target (-726.9, 12.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-725.6, 464.9, 16.8) -> target (-726.9, 12.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-726.0, 464.9, 15.3) -> target (-726.9, 12.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-739.9, 464.9, 13.1) -> target (-742.1, 13.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.2, 464.9, 13.3) -> target (-742.1, 13.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-731.5, 464.9, 16.8) -> target (-728.9, 17.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-726.8, 464.9, 12.7) -> target (-727.6, 14.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-727.5, 464.9, 14.2) -> target (-727.6, 14.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-741.6, 464.9, 12.5) -> target (-740.8, 8.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-741.4, 464.9, 11.2) -> target (-740.8, 8.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-741.1, 464.9, 9.8) -> target (-740.8, 8.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-732.3, 464.9, 17.8) -> target (-734.3, 18.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-733.4, 464.9, 18.0) -> target (-734.3, 18.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-734.9, 464.9, 15.5) -> target (-734.4, 20.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-734.7, 464.9, 17.4) -> target (-734.4, 20.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-740.2, 464.9, 9.8) -> target (-738.4, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-739.5, 464.9, 11.0) -> target (-738.4, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-738.9, 464.9, 12.2) -> target (-738.4, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-732.6, 464.9, 20.9) -> target (-732.0, 22.1)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-724.1, 464.9, 12.5) -> target (-726.1, 18.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-724.6, 464.9, 14.1) -> target (-726.1, 18.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-738.7, 464.9, 12.1) -> target (-740.6, 6.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-739.2, 464.9, 10.8) -> target (-740.6, 6.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-739.7, 464.9, 9.6) -> target (-740.6, 6.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-740.1, 464.9, 8.3) -> target (-740.6, 6.9)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-731.9, 464.9, 18.2) -> target (-731.8, 15.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-727.3, 464.9, 17.4) -> target (-730.4, 15.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-728.7, 464.9, 16.6) -> target (-730.4, 15.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-741.2, 464.9, 7.9) -> target (-744.0, 11.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-742.0, 464.9, 9.0) -> target (-744.0, 11.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-742.8, 464.9, 10.1) -> target (-744.0, 11.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=2 wander=13 face=2 sample: (-743.6, 464.9, 11.1) -> target (-744.0, 11.6)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-730.0, 464.9, 14.8) -> target (-729.6, 13.0)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-742.9, 464.9, 10.9) -> target (-742.7, 10.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=10 wander=5 face=2 sample: (-729.7, 464.9, 19.1) -> target (-729.6, 19.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=11 wander=4 face=2 sample: (-728.2, 464.3, 1.5) -> target (-728.2, 3.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-728.4, 464.9, 13.3) -> target (-725.9, 13.5)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=12 face=2 sample: (-742.6, 464.9, 10.5) -> target (-739.9, 7.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-741.7, 464.9, 9.5) -> target (-739.9, 7.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.20 ms avg (238.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-740.9, 464.9, 8.4) -> target (-739.9, 7.3)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=8 wander=7 face=2 sample: (-728.2, 464.3, 1.5) -> target (-728.2, 3.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-740.1, 464.9, 7.5) -> target (-736.9, 10.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=3 wander=12 face=2 sample: (-739.1, 464.9, 8.4) -> target (-736.9, 10.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-738.2, 464.9, 9.4) -> target (-736.9, 10.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-737.2, 464.9, 10.3) -> target (-736.9, 10.7)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.18 ms avg (239.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=9 wander=6 face=2 sample: (-728.2, 464.3, 1.5) -> target (-728.2, 3.4)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=7 wander=8 face=2 sample: (-729.8, 464.9, 13.7) -> target (-728.3, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=5 wander=10 face=2 sample: (-728.8, 464.9, 12.4) -> target (-728.3, 11.8)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.16 ms avg (240.1 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=6 wander=9 face=2 sample: (-730.6, 464.9, 18.7) -> target (-730.0, 17.2)
+[INFO] HUD demo: damage 10 -> health 0/100
+[INFO] Frame timing: 4.17 ms avg (240.0 fps) | cam (-736.3, 470.4, 3.8) yaw -1.65 pitch -1.55
+[INFO] Jimmy: (-736.38, 464.92, 3.84) onGround=1
+[INFO] NPC AI: idle=4 wander=11 face=2 sample: (-738.2, 464.9, 10.1) -> target (-741.5, 8.8)

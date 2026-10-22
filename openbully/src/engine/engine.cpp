@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "audio/audio.h"
 #include "formats/nif_loader.h"
 #include "formats/nft_loader.h"
 #include "formats/agr_loader.h"
@@ -22,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -58,6 +60,32 @@ Mesh MakeTestTriangle() {
 // collision-only or helper blocks are skipped).
 bool IsLoadableGeometry(const NifLoadResult& nif) {
     return nif.ok && nif.totalVertices >= 100;
+}
+
+// Track 20: unit cube for the objective beacon column (same Mesh layout as
+// the test box; scaled per-frame by the model matrix).
+Mesh MakeBeaconCubeMesh() {
+    Mesh mesh;
+    const float h = 0.5f;
+    struct Face { float n[3]; float quad[4][3]; };
+    const Face faces[6] = {
+        { { 0, 0, 1}, { { -h,-h, h}, { h,-h, h}, { h, h, h}, { -h, h, h} } },
+        { { 0, 0,-1}, { {  h,-h,-h}, { -h,-h,-h}, { -h, h,-h}, {  h, h,-h} } },
+        { { 1, 0, 0}, { {  h,-h, h}, {  h,-h,-h}, {  h, h,-h}, {  h, h, h} } },
+        { {-1, 0, 0}, { { -h,-h,-h}, { -h,-h, h}, { -h, h, h}, { -h, h,-h} } },
+        { { 0, 1, 0}, { { -h, h, h}, {  h, h, h}, {  h, h,-h}, { -h, h,-h} } },
+        { { 0,-1, 0}, { { -h,-h,-h}, {  h,-h,-h}, {  h,-h, h}, { -h,-h, h} } },
+    };
+    for (const Face& f : faces) {
+        const uint32_t base = uint32_t(mesh.vertices.size());
+        for (int i = 0; i < 4; ++i)
+            mesh.vertices.push_back({ f.quad[i][0], f.quad[i][1], f.quad[i][2],
+                                      f.n[0], f.n[1], f.n[2], 0.0f, 0.0f });
+        mesh.indices.insert(mesh.indices.end(),
+            { base, base + 1, base + 2, base, base + 2, base + 3 });
+    }
+    mesh.subMeshes.push_back({ "beacon", 0, uint32_t(mesh.indices.size()) });
+    return mesh;
 }
 
 } // namespace
@@ -369,9 +397,16 @@ void Engine::SpawnTestEntities(const glm::vec3& center) {
                      found ? "true" : "false", hit.index, hit.generation);
 
         // 2) Destroy + generation guard: recycle slot 0's first entity and
-        //    check stale handles fail.
+        //    check stale handles fail. Never target the player: Jimmy spawns
+        //    at the query center (layer 2, lowest index), so with small
+        //    mesh caps the first hit IS Jimmy (Track 21 verification hit
+        //    this: the self-test silently deleted him and the follow
+        //    camera/footsteps died with his stale handle).
         EntityID stale = hit;
-        if (stale.IsValid() && m_entities.IsAlive(stale)) {
+        const bool isPlayer = m_jimmyId.IsValid() &&
+                              stale.index == m_jimmyId.index &&
+                              stale.generation == m_jimmyId.generation;
+        if (stale.IsValid() && m_entities.IsAlive(stale) && !isPlayer) {
             m_entities.Destroy(stale);
             Logger::Info("Entities verify: destroyed idx=%u alive=%s (expect false)",
                          stale.index, m_entities.IsAlive(stale) ? "true" : "false");
@@ -794,6 +829,18 @@ void Engine::UpdateJimmy(float dt) {
     }
 
     t->position = pos;
+
+    // Track 21: footstep audio on a fixed cadence while walking on the ground
+    // (play-cycle phase sync deferred; 0.35 s matches the deliverable's
+    // cooldown, and AudioManager::PlayFootstep enforces it independently, so
+    // a fast call rate can never machine-gun the sound).
+    if (m_audio && wantsMove && p->onGround && !p->sliding) {
+        m_footstepTimer += dt;
+        if (m_footstepTimer >= kFootstepInterval) {
+            m_footstepTimer = 0.0f;
+            m_audio->PlayFootstep(pos);
+        }
+    }
 
     // Track 17: walk cycle while input moves him (grounded), idle otherwise.
     // Sprint could drive a faster walk later (clip speed scaling).
@@ -1503,6 +1550,107 @@ void Engine::BuildEntityRenderList() {
     });
 }
 
+Engine::Engine() = default; // members built here where the types are complete
+
+// Track 20: mission system. Loads the hand-authored JSON mission file
+// (data/missions/demo_missions.json) and registers trigger zones around the
+// demo level. Positions in the file are expressed relative to runtime
+// reference points (Jimmy's spawn, the anchor-mesh bounds) so the content
+// stays aligned with wherever the level geometry lands.
+bool Engine::InitMissions() {
+    // Reference points for the JSON loader.
+    std::unordered_map<std::string, glm::vec3> refs;
+    refs["spawn"] = m_jimmySpawn;
+    if (!m_worldMeshes.empty()) {
+        const WorldMesh* anchor = &m_worldMeshes.front();
+        for (const WorldMesh& wm : m_worldMeshes)
+            if (wm.gpu.vertexCount > anchor->gpu.vertexCount) anchor = &wm;
+        refs["anchor_center"] = 0.5f * (glm::make_vec3(anchor->boundsMin) +
+                                         glm::make_vec3(anchor->boundsMax));
+        refs["anchor_min"] = glm::make_vec3(anchor->boundsMin);
+        refs["anchor_max"] = glm::make_vec3(anchor->boundsMax);
+    }
+
+    // Same probing convention as geometry/textures: CWD first, then the
+    // source-tree fallback for dev-shell runs.
+    const char* paths[] = {
+        "data/missions/demo_missions.json",
+        "../data/missions/demo_missions.json",
+    };
+    bool loaded = false;
+    for (const char* p : paths) {
+        if (std::ifstream f(p); f.good()) {
+            f.close();
+            loaded = m_missions.LoadFromJson(p, refs);
+            break;
+        }
+    }
+    if (!loaded) {
+        Logger::Warning("Missions: demo_missions.json not found or empty "
+                        "(mission system idle)");
+        return false;
+    }
+    Logger::Info("Missions: %zu mission(s), %zu trigger zone(s) registered",
+                 m_missions.MissionCount(), m_missions.TriggerCount());
+
+    // Objective beacon geometry (renderer draws it with the emissive path).
+    m_beaconMesh = m_renderer->UploadMeshGpu(MakeBeaconCubeMesh());
+    m_beaconValid = m_beaconMesh.valid();
+    if (!m_beaconValid) Logger::Warning("Beacon mesh upload failed (no objective marker)");
+    return true;
+}
+
+// Track 20: vertical beacon column at the active objective's target. Only
+// drawn while a mission is active; subtle pulse on the horizontal scale.
+void Engine::RenderObjectiveMarker() {
+    if (!m_beaconValid) return;
+    const Mission* m = m_missions.ActiveMission();
+    if (!m || m->currentObjective >= m->objectives.size()) return;
+    const Objective& o = m->objectives[m->currentObjective];
+    if (o.complete) return;
+
+    // 8-unit column centered 4 above the target so it pierces the floor and
+    // reads from a distance; gentle breathing pulse on the cross-section.
+    const float pulse = 0.7f + 0.2f * float(std::sin(m_time * 4.0));
+    const glm::vec3 center = o.targetPosition + glm::vec3(0.0f, 4.0f, 0.0f);
+    const glm::mat4 model = glm::translate(glm::mat4(1.0f), center) *
+                            glm::scale(glm::mat4(1.0f),
+                                       glm::vec3(pulse, 8.0f, pulse));
+    m_renderer->DrawBeacon(m_beaconMesh, glm::value_ptr(model));
+}
+
+// Track 20: OPENBULLY_MISSION_DEMO=1 headless verification drive — steer the
+// camera yaw toward the active objective's beacon and hold Forward so Jimmy
+// walks into trigger zones and objective radii without OS-level input.
+void Engine::DriveMissionDemo() {
+    m_input.SetButton(Button::Forward, false);
+    m_input.SetButton(Button::Sprint, false);
+    m_input.SetMouseDelta(0, 0);
+    const Mission* m = m_missions.ActiveMission();
+    if (!m || m->currentObjective >= m->objectives.size()) return;
+    const Transform* jt = m_entities.GetTransform(m_jimmyId);
+    if (!jt) return;
+    const Objective& o = m->objectives[m->currentObjective];
+    const float dx = o.targetPosition.x - jt->position.x;
+    const float dz = o.targetPosition.z - jt->position.z;
+    const float distXZ = std::sqrt(dx * dx + dz * dz);
+    if (distXZ < 1.0f) return; // inside the check radius; stand still
+
+    // Movement uses camera yaw (UpdateJimmy); aim the camera straight at the
+    // objective each frame. SetLookAt maps (x,z) -> yaw directly, so carrying
+    // the current pitch over reconstructs the same view direction with the
+    // new yaw. (The old mouse-delta steering lost a per-frame tug-of-war with
+    // the follow camera's own SetLookAt re-aim in UpdateJimmyCamera; forcing
+    // the yaw makes drive + follow-cam agree: the camera settles behind Jimmy
+    // along the very yaw he walks.)
+    const float wantYaw = std::atan2(dx, dz);
+    const float pitch = m_camera.GetPitch();
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    m_camera.SetLookAt(glm::vec3(std::sin(wantYaw) * cp, sp, std::cos(wantYaw) * cp));
+    m_input.SetButton(Button::Forward, true);
+    m_input.SetButton(Button::Sprint, distXZ > 6.0f);
+}
+
 bool Engine::Init(const Window& window) {
     Logger::Info("Initializing engine...");
 
@@ -1528,6 +1676,19 @@ bool Engine::Init(const Window& window) {
                           shaderRoot)) {
         Logger::Error("Renderer initialization failed");
         return false;
+    }
+
+    // Track 21: audio device + procedural SFX, opened after window/renderer
+    // creation. Failure is non-fatal: the engine runs silently instead.
+    m_audio = std::make_unique<AudioManager>();
+    if (m_audio->Init()) {
+        // User .wav overrides (data/audio/) are the extensibility path;
+        // missing files are fine, the procedural sounds stay in place.
+        if (m_audio->LoadUserWavs("data/audio") == 0)
+            m_audio->LoadUserWavs("../data/audio");
+    } else {
+        Logger::Warning("Audio disabled: audio device could not be opened");
+        m_audio.reset();
     }
 
     // Reference triangle (2D NDC path) — kept per Phase-2 regression baseline.
@@ -1593,6 +1754,11 @@ bool Engine::Init(const Window& window) {
                  m_textureCache.size(), m_textureLoadFails,
                  m_texturedSubMeshes, m_placeholderSubMeshes);
     if (demoOnly) Logger::Info("Demo-only mode: restricted to the 3 test meshes");
+
+    // Track 21: level is loaded — start the ambient wind loop (seamless,
+    // non-spatialized bed; idempotent).
+    if (m_audio)
+        m_audio->StartAmbient();
     if (worldLoaded == 0) {
         Logger::Info("No World.img geometry loaded; triangle-only mode");
         // Default spawn: spec fallback (0, 5, -10) looking toward origin.
@@ -1764,6 +1930,19 @@ bool Engine::Init(const Window& window) {
         SpawnTestEntities(glm::vec3(0.0f, 0.5f, 0.0f));
     }
 
+    // Track 20: mission system — load demo missions, register trigger zones,
+    // and build the objective marker mesh. Needs Jimmy's spawn + anchor refs,
+    // so it runs after the character/NPC setup above.
+    InitMissions();
+
+    // Track 20 (UI): HUD renderer. Runs on bgfx view 10 with the same
+    // shaderRoot convention as Renderer::Init. Non-fatal on failure: the
+    // world keeps rendering, the HUD stays off.
+    if (!m_ui.Init(shaderRoot))
+        Logger::Warning("UI renderer init failed; HUD disabled");
+    else
+        m_ui.SetScreenSize(unsigned(window.GetWidth()), unsigned(window.GetHeight()));
+
     Logger::Info("Engine initialized successfully");
     return true;
 }
@@ -1801,8 +1980,14 @@ void Engine::Update() {
 
     // OPENBULLY_JIMMY_DEMO=1: scripted WASD drive for headless verification
     // of the character movement (same injection approach as CAM_DEMO).
-    static const bool s_jimmyDemo = std::getenv("OPENBULLY_JIMMY_DEMO") != nullptr;
-    if (s_jimmyDemo && m_jimmyActive) {
+    static const bool s_jimmyDemo   = std::getenv("OPENBULLY_JIMMY_DEMO") != nullptr;
+    static const bool s_missionDemo = std::getenv("OPENBULLY_MISSION_DEMO") != nullptr;
+    if (s_missionDemo && m_jimmyActive) {
+        // Track 20: scripted walk toward the active objective (beacon target)
+        // so headless runs exercise trigger activation, objective completion,
+        // and mission chaining without OS-level key injection.
+        DriveMissionDemo();
+    } else if (s_jimmyDemo && m_jimmyActive) {
         const double t = m_time;
         // Track 18 movement verification: ~120 s of varied phases so the
         // controller proves it never gets stuck. Pattern repeats every 15 s:
@@ -1828,6 +2013,27 @@ void Engine::Update() {
     // Track 16: NPC AI (after physics so ground/wall state is settled).
     UpdateNpcs(float(deltaTime));
     UpdateJimmyCamera(float(deltaTime));
+
+    // Track 20 (UI): H/J/K debug keys mutate vitals, then refresh the HUD
+    // snapshot the renderer draws from (called again in Render so pauses
+    // still present an accurate overlay).
+    HandleHudDebugKeys();
+    UpdateHUD(float(deltaTime));
+
+    // Track 20: mission system — fire trigger zones and check objective
+    // progress from Jimmy's position every frame.
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId))
+            m_missions.Update(jt->position);
+    }
+
+    // Track 21: audio listener follows the camera; M toggles mute. IsPressed
+    // fires on the down-transition frame only, so holding M doesn't flap.
+    if (m_audio) {
+        if (m_input.IsPressed(Button::Mute))
+            m_audio->ToggleMute();
+        m_audio->SetListener(m_camera.GetPosition(), m_camera.GetYaw());
+    }
 
     // Track 13: camera collision (free camera only; the 3rd-person follow
     // camera resolves inside UpdateJimmyCamera). Skip when Jimmy is active:
@@ -1865,6 +2071,86 @@ void Engine::Update() {
         LogFrameTiming();
         m_lastTimingLog = m_time;
     }
+}
+
+// Track 20 (UI): debug keys for HUD verification.
+//   H - damage Jimmy 10 (health bar shrinks)
+//   J - wanted level +1 (star fills, clamped 0..5)
+//   K - wanted level -1 (star empties)
+// Uses Input::WasKeyPressed edge detection, so holding a key fires once.
+void Engine::HandleHudDebugKeys() {
+    PlayerController* pc = m_jimmyId.IsValid()
+        ? m_entities.GetPlayer(m_jimmyId) : nullptr;
+    if (!pc) return; // no player: nothing to mutate (free-camera mode)
+
+    // OPENBULLY_HUD_DEMO=1: scripted vitals for headless HUD verification
+    // (same philosophy as CAM_DEMO/JIMMY_DEMO: OS key injection is
+    // unreliable from automated environments). t=1s: wanted -> 3;
+    // t>=2s: -10 health per second.
+    static const bool s_hudDemo = std::getenv("OPENBULLY_HUD_DEMO") != nullptr;
+    if (s_hudDemo) {
+        if (m_time >= 1.0 && pc->wanted < 3) {
+            pc->wanted = 3;
+            Logger::Info("HUD demo: wanted -> 3");
+        }
+        static double s_lastHit = -1e9;
+        if (m_time >= 2.0 && m_time - s_lastHit >= 1.0) {
+            s_lastHit = m_time;
+            pc->health.Damage(10);
+            Logger::Info("HUD demo: damage 10 -> health %d/%d",
+                         pc->health.current, pc->health.max);
+        }
+    }
+
+    if (m_input.WasKeyPressed(SDL_SCANCODE_H)) {
+        pc->health.Damage(10);
+        Logger::Info("HUD debug: damage 10 -> health %d/%d",
+                     pc->health.current, pc->health.max);
+    }
+    if (m_input.WasKeyPressed(SDL_SCANCODE_J)) {
+        pc->wanted = std::min(5, pc->wanted + 1);
+        Logger::Info("HUD debug: wanted -> %d", pc->wanted);
+    }
+    if (m_input.WasKeyPressed(SDL_SCANCODE_K)) {
+        pc->wanted = std::max(0, pc->wanted - 1);
+        Logger::Info("HUD debug: wanted -> %d", pc->wanted);
+    }
+}
+
+// Track 20 (UI): refresh the plain-data HUD snapshot from live game state.
+// Runs after gameplay updates so the overlay always reflects this frame.
+void Engine::UpdateHUD(float dt) {
+    (void)dt;
+
+    // Game clock: 1 in-game minute per real second (single-player pacing).
+    m_clockMinutes = (m_clockMinutes + 1) % (24 * 60);
+    m_hudState.clockMinutes = m_clockMinutes;
+
+    // Player vitals + minimap anchor.
+    if (m_jimmyActive && m_jimmyId.IsValid()) {
+        if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId)) {
+            m_hudState.health = pc->health.current;
+            m_hudState.maxHealth = pc->health.max;
+            m_hudState.wanted = pc->wanted;
+            m_hudState.money = pc->money;
+        }
+        if (const Transform* jt = m_entities.GetTransform(m_jimmyId)) {
+            m_hudState.playerX = jt->position.x;
+            m_hudState.playerZ = jt->position.z;
+            if (const PlayerController* pc = m_entities.GetPlayer(m_jimmyId))
+                m_hudState.playerYaw = pc->facingYaw;
+        }
+    }
+
+    // Nearby NPC dots for the minimap (player-relative screen mapping
+    // happens in UIRenderer::DrawHUD; here we only collect world XZ).
+    m_hudState.npcDotCount = 0;
+    m_entities.ForEachAI([&](EntityID, const Transform& t, const AIComponent&) {
+        if (m_hudState.npcDotCount >= HUDState::kMaxMinimapDots) return;
+        m_hudState.npcDots[m_hudState.npcDotCount].x = t.position.x;
+        m_hudState.npcDots[m_hudState.npcDotCount].z = t.position.z;
+        ++m_hudState.npcDotCount;
+    });
 }
 
 void Engine::LogFrameTiming() {
@@ -2030,12 +2316,22 @@ void Engine::Render() {
             }
         }
 
+        // Track 20: objective marker beacon (active mission only).
+        RenderObjectiveMarker();
+
         // Keep the reference triangle as a small 2D overlay in view 0 so the
         // Phase-2 regression baseline stays visibly green.
         m_renderer->DrawMesh(0, 3, 0.6f, -0.6f, 0.15f, 0.15f);
     } else {
         // Triangle-only mode (pre-extraction): full-size reference triangle.
         m_renderer->DrawMesh(0, 3, 0.0f, 0.0f, 1.0f, 1.0f);
+    }
+
+    // Track 20 (UI): HUD overlay on view 10, after every world view so it
+    // composites on top of the frame just assembled.
+    if (m_ui.IsInitialized()) {
+        m_ui.BeginFrame();
+        m_ui.DrawHUD(m_hudState);
     }
 
     m_renderer->Frame(); // present (VSync via BGFX_RESET_VSYNC)
@@ -2076,6 +2372,12 @@ void Engine::Shutdown() {
     if (!m_initialized) return;
 
     Logger::Info("Shutting down engine...");
+    // Track 21: stop audio first so the callback never runs against dead
+    // state while the GPU-side teardown proceeds.
+    if (m_audio) {
+        m_audio->Shutdown();
+        m_audio.reset();
+    }
     for (WorldMesh& wm : m_worldMeshes)
         m_renderer->DestroyGpuMesh(wm.gpu);
     m_worldMeshes.clear();
@@ -2094,6 +2396,8 @@ void Engine::Shutdown() {
         m_renderer->DestroyGpuMesh(m_jimmyMesh);
         m_jimmyMeshValid = false;
     }
+    // Track 20 (UI): release the HUD program/textures before bgfx dies.
+    m_ui.Shutdown();
     if (m_renderer) {
         m_renderer->Shutdown();
         m_renderer.reset();

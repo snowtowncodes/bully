@@ -468,6 +468,13 @@ void Renderer::RequestScreenshot(const char* name) {
     m_screenshotRequested = true;
 }
 
+bgfx::ProgramHandle Renderer::LoadProgramFiles(const char* dir,
+                                               const char* vsName,
+                                               const char* fsName) {
+    if (!dir || !vsName || !fsName) return BGFX_INVALID_HANDLE;
+    return LoadProgram(std::string(dir), vsName, fsName);
+}
+
 bool Renderer::InitDebugBox() {
     if (m_debugBoxValid) return true;
     if (!m_initialized) return false;
@@ -508,6 +515,23 @@ void Renderer::DrawDebugBox(const float model[16]) {
     const uint64_t kSavedNoCull = 0; // DrawMesh3DRange reads env once; set state manually
     (void)kSavedNoCull;
     DrawMesh3DRange(m_debugBox, 0, m_debugBox.indexCount, model);
+}
+
+void Renderer::DrawBeacon(const GpuMesh& mesh, const float model[16]) {
+    if (!m_initialized || !mesh.valid()) return;
+    // Track 20: objective marker. Swap in a full-bright "emissive" look so
+    // the column never shades dark: no directional term (light straight down;
+    // side faces get diff = 0) and a saturated cyan ambient. The engine sun
+    // is restored right after so later submits are unaffected.
+    const float savedDir[3] = { m_lightDir[0], m_lightDir[1], m_lightDir[2] };
+    const float savedCol[3] = { m_lightColor[0], m_lightColor[1], m_lightColor[2] };
+    const float savedAmb[3] = { m_ambientColor[0], m_ambientColor[1], m_ambientColor[2] };
+    const float down[3]     = { 0.0f, 1.0f, 0.0f };  // to-light = straight up
+    const float white[3]    = { 0.35f, 0.35f, 0.35f };
+    const float cyan[3]     = { 0.25f, 0.95f, 1.0f };
+    SetLight(down, white, cyan);
+    DrawMesh3DRange(mesh, 0, mesh.indexCount, model);
+    SetLight(savedDir, savedCol, savedAmb);
 }
 
 void Renderer::DrawMesh3D(const GpuMesh& mesh, const float mvp[16]) {

@@ -10,6 +10,8 @@
 #include "game/camera.h"
 #include "game/input.h"
 #include "game/player.h"
+#include "../mission/mission.h"
+#include "../ui/ui.h" // Track 20 (UI): HUDState + UIRenderer
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -19,6 +21,7 @@
 namespace OpenBully {
 
 class Window;
+class AudioManager; // Track 21: audio device + procedural SFX + mixer
 
 // One World.img NIF mesh loaded, uploaded to the GPU and tracked for the
 // debug camera fit. Kept alive for the engine's lifetime.
@@ -41,7 +44,7 @@ struct WorldMesh {
 
 class Engine {
 public:
-    Engine() = default;
+    Engine();                 // out-of-line: unique_ptr to fwd-declared AudioManager
     ~Engine(); // out-of-line: unique_ptr to forward-declared Renderer
 
     bool Init(const Window& window);
@@ -52,6 +55,10 @@ public:
     // True once Input reports Escape (or the window-close event fired).
     // main.cpp polls this after Update().
     bool QuitRequested() const { return m_quitRequested; }
+
+    // Track 20 (UI): HUD snapshot, refreshed each Update() and consumed by
+    // UIRenderer::DrawHUD (health / wanted / clock / money / minimap dots).
+    const HUDState& GetHUDState() const { return m_hudState; }
 
 private:
     void LogFrameTiming();
@@ -89,6 +96,18 @@ private:
     size_t LoadNpcModels(const char* dir);
     void   SpawnNpcs(const glm::vec3& center);
     void   UpdateNpcs(float dt);
+
+    // Track 20 (UI): debug keys (H damage / J,K wanted) + HUDState refresh.
+    void HandleHudDebugKeys();
+    void UpdateHUD(float dt);
+
+    // Track 20: mission system. Loads data/missions/demo_missions.json,
+    // registers trigger zones around the demo level, and drives the manager
+    // with Jimmy's position every frame. RenderObjectiveMarker draws the
+    // active objective's beacon column.
+    bool InitMissions();
+    void RenderObjectiveMarker();
+    void DriveMissionDemo(); // OPENBULLY_MISSION_DEMO scripted objective walk
 
     // Loads up to maxMeshes NIFs from `dir` into GPU meshes. Returns the
     // number loaded. Skips files that fail to parse, logs a summary.
@@ -188,6 +207,22 @@ private:
     // Track 16: NPC model collection (character NIFs from World.img).
     std::vector<NpcModel> m_npcModels;
     uint32_t              m_npcCount = 0;
+
+    // Track 20: mission system state.
+    MissionManager m_missions;         // missions + trigger zones
+    GpuMesh        m_beaconMesh;       // unit cube for the objective marker
+    bool           m_beaconValid = false;
+
+    // Track 21: audio. SDL2 device + procedural SFX + software mixer;
+    // unique_ptr to keep AudioManager out of this header.
+    std::unique_ptr<AudioManager> m_audio;
+    float m_footstepTimer = 0.0f;             // accumulates while Jimmy walks
+    static constexpr float kFootstepInterval = 0.35f; // walk cadence (s)
+
+    // Track 20 (UI): screen-space HUD renderer (bgfx view 10) + state.
+    UIRenderer m_ui;             // owns the view-10 program + textures
+    HUDState   m_hudState;       // plain-data snapshot for DrawHUD
+    int        m_clockMinutes = 8 * 60; // game clock, minutes since midnight
 
     // Per-entity GPU render record: which GpuMesh + sub-ranges to draw.
     // The WorldMesh list stays the storage for level geometry; entity

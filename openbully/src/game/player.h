@@ -15,6 +15,25 @@
 
 namespace OpenBully {
 
+// Track 20: player vitals. Kept in the player component so the HUD, gameplay
+// code and debug keys all read/write one source of truth.
+struct Health {
+    int current = 100;
+    int max     = 100;
+
+    void Damage(int amount) {
+        if (amount <= 0) return;
+        current -= amount;
+        if (current < 0) current = 0;
+    }
+    void Heal(int amount) {
+        if (amount <= 0) return;
+        current += amount;
+        if (current > max) current = max;
+    }
+    float Fraction() const { return max > 0 ? float(current) / float(max) : 0.0f; }
+};
+
 struct PlayerController {
     float moveSpeed     = 4.0f;   // horizontal units/sec (task spec)
     float turnSpeed     = 12.0f;  // rad/s toward the movement direction
@@ -25,6 +44,11 @@ struct PlayerController {
     // Runtime state (updated per frame by Engine::UpdateJimmy).
     float facingYaw   = 0.0f;     // current body yaw (radians, 0 = +Z)
     bool  facingValid = false;    // false until the first move command
+
+    // Track 20: vitals + wanted level (HUD state; debug keys mutate these).
+    Health health;                // 100/100 by default
+    int    wanted = 0;            // 0..5 wanted stars
+    int    money  = 0;            // cash on hand (display only for now)
 };
 
 } // namespace OpenBully

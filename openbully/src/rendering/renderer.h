@@ -123,6 +123,11 @@ public:
     // Call once per collision box per frame; sets up view 2 on first use.
     void DrawDebugBox(const float model[16]);
 
+    // Track 20: objective marker — draws `mesh` (engine-uploaded unit cube)
+    // with lighting overridden to a bright cyan "emissive" look so the beacon
+    // column reads as a full-bright marker independent of sun shading.
+    void DrawBeacon(const GpuMesh& mesh, const float model[16]);
+
     // Column-major projection matrix for the 3D view (fov/aspect/near/far
     // owned here). Callers multiply: mvp = proj * view * model.
     const glm::mat4& GetProjection() const { return m_projection; }
@@ -144,6 +149,13 @@ public:
     // upcoming frame (default callback appends .tga). Verification hook for
     // lighting work; harmless in normal play.
     void RequestScreenshot(const char* name);
+
+    // Track 20: public wrapper over the internal program loader so the UI
+    // renderer reuses the same compiled-binary convention (dir/vs.bin+fs.bin).
+    // Returns an invalid handle (with an error logged) on failure.
+    static bgfx::ProgramHandle LoadProgramFiles(const char* dir,
+                                                const char* vsName,
+                                                const char* fsName);
 
     // Builds the shared unit-cube wireframe mesh for DrawDebugBox. Returns
     // false when GPU upload fails (debug boxes silently skip).
